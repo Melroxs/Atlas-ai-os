@@ -218,7 +218,7 @@ $$;
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.admin_update_user_company(
   p_user_id uuid,
-  p_new_company text
+  p_new_company text DEFAULT NULL
 )
 RETURNS json
 LANGUAGE plpgsql

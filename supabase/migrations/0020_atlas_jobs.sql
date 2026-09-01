@@ -16,7 +16,7 @@
 -- ===========================================================================
 CREATE TABLE IF NOT EXISTS atlas_jobs (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id       uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  tenant_id       uuid NOT NULL REFERENCES tenants(_id) ON DELETE CASCADE,
   user_id         uuid REFERENCES auth.users(id) ON DELETE SET NULL,
 
   job_type        text NOT NULL,
@@ -66,7 +66,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_atlas_jobs_idempotency_active
 CREATE INDEX IF NOT EXISTS idx_atlas_jobs_dequeue
   ON atlas_jobs (priority, scheduled_at, created_at)
   WHERE status IN ('pending', 'queued')
-    AND (scheduled_at IS NULL OR scheduled_at <= now());
+;
 
 -- Status monitoring: for the observability dashboard.
 CREATE INDEX IF NOT EXISTS idx_atlas_jobs_status
@@ -298,10 +298,10 @@ CREATE POLICY atlas_job_events_tenant_read ON atlas_job_events
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION jobs_create_job(
   p_tenant_id    uuid,
-  p_user_id      uuid DEFAULT NULL,
   p_job_type     text,
-  p_priority     int DEFAULT 3,
   p_idempotency_key text,
+  p_user_id      uuid DEFAULT NULL,
+  p_priority     int DEFAULT 3,
   p_payload      jsonb DEFAULT '{}',
   p_max_attempts int DEFAULT 3,
   p_scheduled_at timestamptz DEFAULT NULL,

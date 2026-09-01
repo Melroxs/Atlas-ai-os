@@ -177,20 +177,25 @@ returns uuid language sql stable security definer as $$
 $$;
 
 -- ── email_accounts policies ─────────────────────────────────────────────
-create policy "email_accounts_select" on public.email_accounts
+DROP POLICY IF EXISTS "email_accounts_select" ON public.email_accounts;
+create policy "email_accounts_select" ON public.email_accounts
   for select using (tenant_id = public.get_current_tenant_id());
 
-create policy "email_accounts_insert" on public.email_accounts
+DROP POLICY IF EXISTS "email_accounts_insert" ON public.email_accounts;
+create policy "email_accounts_insert" ON public.email_accounts
   for insert with check (tenant_id = public.get_current_tenant_id());
 
-create policy "email_accounts_update" on public.email_accounts
+DROP POLICY IF EXISTS "email_accounts_update" ON public.email_accounts;
+create policy "email_accounts_update" ON public.email_accounts
   for update using (tenant_id = public.get_current_tenant_id());
 
-create policy "email_accounts_delete" on public.email_accounts
+DROP POLICY IF EXISTS "email_accounts_delete" ON public.email_accounts;
+create policy "email_accounts_delete" ON public.email_accounts
   for delete using (tenant_id = public.get_current_tenant_id());
 
 -- ── email_messages policies ─────────────────────────────────────────────
-create policy "email_messages_select" on public.email_messages
+DROP POLICY IF EXISTS "email_messages_select" ON public.email_messages;
+create policy "email_messages_select" ON public.email_messages
   for select using (
     account_id in (
       select id from public.email_accounts
@@ -198,7 +203,8 @@ create policy "email_messages_select" on public.email_messages
     )
   );
 
-create policy "email_messages_insert" on public.email_messages
+DROP POLICY IF EXISTS "email_messages_insert" ON public.email_messages;
+create policy "email_messages_insert" ON public.email_messages
   for insert with check (
     account_id in (
       select id from public.email_accounts
@@ -206,7 +212,8 @@ create policy "email_messages_insert" on public.email_messages
     )
   );
 
-create policy "email_messages_update" on public.email_messages
+DROP POLICY IF EXISTS "email_messages_update" ON public.email_messages;
+create policy "email_messages_update" ON public.email_messages
   for update using (
     account_id in (
       select id from public.email_accounts
@@ -214,7 +221,8 @@ create policy "email_messages_update" on public.email_messages
     )
   );
 
-create policy "email_messages_delete" on public.email_messages
+DROP POLICY IF EXISTS "email_messages_delete" ON public.email_messages;
+create policy "email_messages_delete" ON public.email_messages
   for delete using (
     account_id in (
       select id from public.email_accounts
@@ -223,7 +231,8 @@ create policy "email_messages_delete" on public.email_messages
   );
 
 -- ── email_threads policies ──────────────────────────────────────────────
-create policy "email_threads_select" on public.email_threads
+DROP POLICY IF EXISTS "email_threads_select" ON public.email_threads;
+create policy "email_threads_select" ON public.email_threads
   for select using (
     account_id in (
       select id from public.email_accounts
@@ -231,7 +240,8 @@ create policy "email_threads_select" on public.email_threads
     )
   );
 
-create policy "email_threads_insert" on public.email_threads
+DROP POLICY IF EXISTS "email_threads_insert" ON public.email_threads;
+create policy "email_threads_insert" ON public.email_threads
   for insert with check (
     account_id in (
       select id from public.email_accounts
@@ -239,7 +249,8 @@ create policy "email_threads_insert" on public.email_threads
     )
   );
 
-create policy "email_threads_update" on public.email_threads
+DROP POLICY IF EXISTS "email_threads_update" ON public.email_threads;
+create policy "email_threads_update" ON public.email_threads
   for update using (
     account_id in (
       select id from public.email_accounts
@@ -248,7 +259,8 @@ create policy "email_threads_update" on public.email_threads
   );
 
 -- ── email_attachments policies ──────────────────────────────────────────
-create policy "email_attachments_select" on public.email_attachments
+DROP POLICY IF EXISTS "email_attachments_select" ON public.email_attachments;
+create policy "email_attachments_select" ON public.email_attachments
   for select using (
     message_id in (
       select m.id from public.email_messages m
@@ -257,7 +269,8 @@ create policy "email_attachments_select" on public.email_attachments
     )
   );
 
-create policy "email_attachments_insert" on public.email_attachments
+DROP POLICY IF EXISTS "email_attachments_insert" ON public.email_attachments;
+create policy "email_attachments_insert" ON public.email_attachments
   for insert with check (
     message_id in (
       select m.id from public.email_messages m
@@ -267,7 +280,8 @@ create policy "email_attachments_insert" on public.email_attachments
   );
 
 -- ── email_drafts policies ───────────────────────────────────────────────
-create policy "email_drafts_select" on public.email_drafts
+DROP POLICY IF EXISTS "email_drafts_select" ON public.email_drafts;
+create policy "email_drafts_select" ON public.email_drafts
   for select using (
     account_id in (
       select id from public.email_accounts
@@ -275,7 +289,8 @@ create policy "email_drafts_select" on public.email_drafts
     )
   );
 
-create policy "email_drafts_insert" on public.email_drafts
+DROP POLICY IF EXISTS "email_drafts_insert" ON public.email_drafts;
+create policy "email_drafts_insert" ON public.email_drafts
   for insert with check (
     account_id in (
       select id from public.email_accounts
@@ -283,7 +298,8 @@ create policy "email_drafts_insert" on public.email_drafts
     )
   );
 
-create policy "email_drafts_update" on public.email_drafts
+DROP POLICY IF EXISTS "email_drafts_update" ON public.email_drafts;
+create policy "email_drafts_update" ON public.email_drafts
   for update using (
     account_id in (
       select id from public.email_accounts
@@ -291,7 +307,8 @@ create policy "email_drafts_update" on public.email_drafts
     )
   );
 
-create policy "email_drafts_delete" on public.email_drafts
+DROP POLICY IF EXISTS "email_drafts_delete" ON public.email_drafts;
+create policy "email_drafts_delete" ON public.email_drafts
   for delete using (
     account_id in (
       select id from public.email_accounts
@@ -300,30 +317,38 @@ create policy "email_drafts_delete" on public.email_drafts
   );
 
 -- ── email_signatures policies ───────────────────────────────────────────
-create policy "email_signatures_select" on public.email_signatures
+DROP POLICY IF EXISTS "email_signatures_select" ON public.email_signatures;
+create policy "email_signatures_select" ON public.email_signatures
   for select using (tenant_id = public.get_current_tenant_id());
 
-create policy "email_signatures_insert" on public.email_signatures
+DROP POLICY IF EXISTS "email_signatures_insert" ON public.email_signatures;
+create policy "email_signatures_insert" ON public.email_signatures
   for insert with check (tenant_id = public.get_current_tenant_id());
 
-create policy "email_signatures_update" on public.email_signatures
+DROP POLICY IF EXISTS "email_signatures_update" ON public.email_signatures;
+create policy "email_signatures_update" ON public.email_signatures
   for update using (tenant_id = public.get_current_tenant_id());
 
-create policy "email_signatures_delete" on public.email_signatures
+DROP POLICY IF EXISTS "email_signatures_delete" ON public.email_signatures;
+create policy "email_signatures_delete" ON public.email_signatures
   for delete using (tenant_id = public.get_current_tenant_id());
 
 -- ── email_labels policies ───────────────────────────────────────────────
-create policy "email_labels_select" on public.email_labels
+DROP POLICY IF EXISTS "email_labels_select" ON public.email_labels;
+create policy "email_labels_select" ON public.email_labels
   for select using (tenant_id = public.get_current_tenant_id());
 
-create policy "email_labels_insert" on public.email_labels
+DROP POLICY IF EXISTS "email_labels_insert" ON public.email_labels;
+create policy "email_labels_insert" ON public.email_labels
   for insert with check (tenant_id = public.get_current_tenant_id());
 
-create policy "email_labels_delete" on public.email_labels
+DROP POLICY IF EXISTS "email_labels_delete" ON public.email_labels;
+create policy "email_labels_delete" ON public.email_labels
   for delete using (tenant_id = public.get_current_tenant_id());
 
 -- ── email_message_labels policies ───────────────────────────────────────
-create policy "email_message_labels_select" on public.email_message_labels
+DROP POLICY IF EXISTS "email_message_labels_select" ON public.email_message_labels;
+create policy "email_message_labels_select" ON public.email_message_labels
   for select using (
     message_id in (
       select m.id from public.email_messages m
@@ -332,7 +357,8 @@ create policy "email_message_labels_select" on public.email_message_labels
     )
   );
 
-create policy "email_message_labels_insert" on public.email_message_labels
+DROP POLICY IF EXISTS "email_message_labels_insert" ON public.email_message_labels;
+create policy "email_message_labels_insert" ON public.email_message_labels
   for insert with check (
     message_id in (
       select m.id from public.email_messages m
@@ -341,7 +367,8 @@ create policy "email_message_labels_insert" on public.email_message_labels
     )
   );
 
-create policy "email_message_labels_delete" on public.email_message_labels
+DROP POLICY IF EXISTS "email_message_labels_delete" ON public.email_message_labels;
+create policy "email_message_labels_delete" ON public.email_message_labels
   for delete using (
     message_id in (
       select m.id from public.email_messages m

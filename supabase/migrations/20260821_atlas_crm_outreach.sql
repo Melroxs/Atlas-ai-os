@@ -65,6 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_crm_leads_email ON public.crm_leads(tenant_id, co
 ALTER TABLE public.crm_leads ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "crm_leads_isolation" ON public.crm_leads;
+DROP POLICY IF EXISTS "crm_leads_isolation" ON public.crm_leads;
 CREATE POLICY "crm_leads_isolation" ON public.crm_leads
   USING (tenant_id = public.my_tenant_id());
 
@@ -92,6 +93,7 @@ CREATE INDEX IF NOT EXISTS idx_crm_activities_tenant ON public.crm_activities(te
 
 ALTER TABLE public.crm_activities ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "crm_activities_isolation" ON public.crm_activities;
 DROP POLICY IF EXISTS "crm_activities_isolation" ON public.crm_activities;
 CREATE POLICY "crm_activities_isolation" ON public.crm_activities
   USING (tenant_id = public.my_tenant_id());
@@ -123,6 +125,7 @@ CREATE INDEX IF NOT EXISTS idx_crm_tasks_lead ON public.crm_tasks(lead_id);
 ALTER TABLE public.crm_tasks ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "crm_tasks_isolation" ON public.crm_tasks;
+DROP POLICY IF EXISTS "crm_tasks_isolation" ON public.crm_tasks;
 CREATE POLICY "crm_tasks_isolation" ON public.crm_tasks
   USING (tenant_id = public.my_tenant_id());
 
@@ -149,6 +152,7 @@ CREATE INDEX IF NOT EXISTS idx_email_templates_tenant ON public.email_templates(
 
 ALTER TABLE public.email_templates ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "email_templates_isolation" ON public.email_templates;
 DROP POLICY IF EXISTS "email_templates_isolation" ON public.email_templates;
 CREATE POLICY "email_templates_isolation" ON public.email_templates
   USING (tenant_id = public.my_tenant_id());
@@ -186,6 +190,7 @@ CREATE INDEX IF NOT EXISTS idx_email_outreach_status ON public.email_outreach(te
 ALTER TABLE public.email_outreach ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "email_outreach_isolation" ON public.email_outreach;
+DROP POLICY IF EXISTS "email_outreach_isolation" ON public.email_outreach;
 CREATE POLICY "email_outreach_isolation" ON public.email_outreach
   USING (tenant_id = public.my_tenant_id());
 
@@ -208,6 +213,7 @@ CREATE INDEX IF NOT EXISTS idx_email_signatures_user ON public.email_signatures(
 
 ALTER TABLE public.email_signatures ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "email_signatures_own" ON public.email_signatures;
 DROP POLICY IF EXISTS "email_signatures_own" ON public.email_signatures;
 CREATE POLICY "email_signatures_own" ON public.email_signatures
   USING (user_id = auth.uid());

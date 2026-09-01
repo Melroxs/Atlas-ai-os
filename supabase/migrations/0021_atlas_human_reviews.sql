@@ -14,7 +14,7 @@
 -- 1. Human reviews table
 CREATE TABLE IF NOT EXISTS atlas_human_reviews (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  tenant_id     UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  tenant_id     UUID NOT NULL REFERENCES tenants(_id) ON DELETE CASCADE,
   job_id        UUID NOT NULL REFERENCES atlas_jobs(id) ON DELETE CASCADE,
   step_id       TEXT,  -- job step that triggered the review
   agent_run_id  TEXT,  -- agent run that produced the recommendation
@@ -97,9 +97,9 @@ CREATE POLICY "tenant_read_human_reviews"
   TO authenticated
   USING (
     tenant_id = (
-      SELECT t.id FROM tenants t
-      JOIN memberships m ON m.tenant_id = t.id
-      WHERE m.user_id = auth.uid()
+      SELECT t._id FROM tenants t
+      JOIN memberships m ON m."tenantId" = t._id
+      WHERE m."userId" = auth.uid()
       LIMIT 1
     )
   );
@@ -111,9 +111,9 @@ CREATE POLICY "tenant_insert_human_reviews"
   TO authenticated
   WITH CHECK (
     tenant_id = (
-      SELECT t.id FROM tenants t
-      JOIN memberships m ON m.tenant_id = t.id
-      WHERE m.user_id = auth.uid()
+      SELECT t._id FROM tenants t
+      JOIN memberships m ON m."tenantId" = t._id
+      WHERE m."userId" = auth.uid()
       LIMIT 1
     )
   );
@@ -125,17 +125,17 @@ CREATE POLICY "tenant_update_human_reviews"
   TO authenticated
   USING (
     tenant_id = (
-      SELECT t.id FROM tenants t
-      JOIN memberships m ON m.tenant_id = t.id
-      WHERE m.user_id = auth.uid()
+      SELECT t._id FROM tenants t
+      JOIN memberships m ON m."tenantId" = t._id
+      WHERE m."userId" = auth.uid()
       LIMIT 1
     )
   )
   WITH CHECK (
     tenant_id = (
-      SELECT t.id FROM tenants t
-      JOIN memberships m ON m.tenant_id = t.id
-      WHERE m.user_id = auth.uid()
+      SELECT t._id FROM tenants t
+      JOIN memberships m ON m."tenantId" = t._id
+      WHERE m."userId" = auth.uid()
       LIMIT 1
     )
   );
@@ -148,14 +148,14 @@ CREATE POLICY "super_admin_all_human_reviews"
   USING (
     EXISTS (
       SELECT 1 FROM memberships m
-      WHERE m.user_id = auth.uid()
+      WHERE m."userId" = auth.uid()
       AND m.role = 'super_admin'
     )
   )
   WITH CHECK (
     EXISTS (
       SELECT 1 FROM memberships m
-      WHERE m.user_id = auth.uid()
+      WHERE m."userId" = auth.uid()
       AND m.role = 'super_admin'
     )
   );

@@ -592,23 +592,30 @@ ALTER TABLE pilot_outcomes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pilot_testimonials ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pilot_activity ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "pilot_companies_tenant_isolation" ON pilot_companies;
 CREATE POLICY "pilot_companies_tenant_isolation" ON pilot_companies
   USING (tenant_id = (SELECT "tenantId" FROM memberships WHERE "userId" = auth.uid() LIMIT 1));
 
+DROP POLICY IF EXISTS "pilot_applications_authenticated" ON pilot_applications;
 CREATE POLICY "pilot_applications_authenticated" ON pilot_applications
   FOR ALL USING (auth.uid() IS NOT NULL);
 
+DROP POLICY IF EXISTS "pilot_sessions_tenant_isolation" ON pilot_sessions;
 CREATE POLICY "pilot_sessions_tenant_isolation" ON pilot_sessions
   USING (tenant_id = (SELECT "tenantId" FROM memberships WHERE "userId" = auth.uid() LIMIT 1));
 
+DROP POLICY IF EXISTS "pilot_insights_tenant_isolation" ON pilot_insights;
 CREATE POLICY "pilot_insights_tenant_isolation" ON pilot_insights
   USING (tenant_id = (SELECT "tenantId" FROM memberships WHERE "userId" = auth.uid() LIMIT 1));
 
+DROP POLICY IF EXISTS "pilot_outcomes_tenant_isolation" ON pilot_outcomes;
 CREATE POLICY "pilot_outcomes_tenant_isolation" ON pilot_outcomes
   USING (tenant_id = (SELECT "tenantId" FROM memberships WHERE "userId" = auth.uid() LIMIT 1));
 
+DROP POLICY IF EXISTS "pilot_testimonials_tenant_isolation" ON pilot_testimonials;
 CREATE POLICY "pilot_testimonials_tenant_isolation" ON pilot_testimonials
   USING (tenant_id = (SELECT "tenantId" FROM memberships WHERE "userId" = auth.uid() LIMIT 1));
 
+DROP POLICY IF EXISTS "pilot_activity_tenant_isolation" ON pilot_activity;
 CREATE POLICY "pilot_activity_tenant_isolation" ON pilot_activity
   USING (tenant_id = (SELECT "tenantId" FROM memberships WHERE "userId" = auth.uid() LIMIT 1));

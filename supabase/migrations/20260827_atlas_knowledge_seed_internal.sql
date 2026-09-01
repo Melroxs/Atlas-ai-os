@@ -47,7 +47,7 @@ BEGIN
       ('epa-lead-rrp', 'EPA — Lead Renovation, Repair & Painting Rule', 'US EPA', 'tier1_primary', 'regulation')
     ) AS t(sourceId, sourceName, organization, authorityTier, sourceType)
   LOOP
-    INSERT INTO public.atlasIndustryProvenance (sourceId, sourceName, organization, authorityTier, sourceType, status)
+    INSERT INTO public."atlasIndustryProvenance" (sourceId, sourceName, organization, authorityTier, sourceType, status)
     VALUES (v_prov.sourceId, v_prov.sourceName, v_prov.organization, v_prov.authorityTier, v_prov.sourceType, 'active')
     ON CONFLICT (sourceId) DO UPDATE SET
       sourceName = EXCLUDED.sourceName,
@@ -97,7 +97,7 @@ BEGIN
     ',{"id":"role_estimator","title":"Restoration Estimator","statement":"The estimator builds Xactimate estimates, documents scope, identifies supplement opportunities, and supports adjuster negotiations.","interpretation":"Estimator accuracy directly affects revenue. Under-scoping is a common estimator-related revenue concern.","knowledgeType":"role","sourceClassification":"ATLAS_CURATED","industry":"insurance restoration","jurisdiction":"United States","confidence":0.85,"status":"active","isInference":false,"tags":["role","estimating","revenue"]}' ||
     ']') AS items(item)
   LOOP
-    INSERT INTO public.atlasIndustryKnowledge (
+    INSERT INTO public."atlasIndustryKnowledge" (
       title, statement, interpretation, knowledgeType, sourceClassification,
       industry, jurisdiction, confidence, status, isInference, tags
     ) VALUES (
@@ -131,8 +131,8 @@ REVOKE EXECUTE ON FUNCTION public.industry_seed_internal() FROM anon;
 
 -- Add knowledge_title_type_unique constraint if it does not exist
 DO $$ BEGIN
-  ALTER TABLE public.atlasIndustryKnowledge
-    ADD CONSTRAINT knowledge_title_type_unique UNIQUE (title, knowledgeType);
+  ALTER TABLE public."atlasIndustryKnowledge"
+    ADD CONSTRAINT knowledge_title_type_unique UNIQUE (title, "knowledgeType");
 EXCEPTION
-  WHEN duplicate_object THEN null;
+  WHEN duplicate_object OR duplicate_table THEN null;
 END $$;

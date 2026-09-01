@@ -36,6 +36,7 @@ CREATE INDEX IF NOT EXISTS idx_crm_custom_fields_entity ON public.crm_custom_fie
 ALTER TABLE public.crm_custom_fields ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "crm_custom_fields_isolation" ON public.crm_custom_fields;
+DROP POLICY IF EXISTS "crm_custom_fields_isolation" ON public.crm_custom_fields;
 CREATE POLICY "crm_custom_fields_isolation" ON public.crm_custom_fields
   USING (tenant_id = public.my_tenant_id());
 
@@ -60,6 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_cfv_lead ON public.crm_custom_field_values(lead_i
 
 ALTER TABLE public.crm_custom_field_values ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "crm_custom_field_values_isolation" ON public.crm_custom_field_values;
 DROP POLICY IF EXISTS "crm_custom_field_values_isolation" ON public.crm_custom_field_values;
 CREATE POLICY "crm_custom_field_values_isolation" ON public.crm_custom_field_values
   USING (tenant_id = public.my_tenant_id());

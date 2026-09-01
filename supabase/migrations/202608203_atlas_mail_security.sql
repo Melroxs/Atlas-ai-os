@@ -180,6 +180,7 @@ VALUES ('email-attachments', 'email-attachments', false)
 ON CONFLICT (id) DO NOTHING;
 
 -- Storage RLS: tenant-scoped access to email attachments
+DROP POLICY IF EXISTS "email_attachments_storage_select" ON storage.objects;
 CREATE POLICY "email_attachments_storage_select" ON storage.objects
   FOR SELECT USING (
     bucket_id = 'email-attachments'
@@ -189,6 +190,7 @@ CREATE POLICY "email_attachments_storage_select" ON storage.objects
     )
   );
 
+DROP POLICY IF EXISTS "email_attachments_storage_insert" ON storage.objects;
 CREATE POLICY "email_attachments_storage_insert" ON storage.objects
   FOR INSERT WITH CHECK (
     bucket_id = 'email-attachments'
@@ -198,6 +200,7 @@ CREATE POLICY "email_attachments_storage_insert" ON storage.objects
     )
   );
 
+DROP POLICY IF EXISTS "email_attachments_storage_delete" ON storage.objects;
 CREATE POLICY "email_attachments_storage_delete" ON storage.objects
   FOR DELETE USING (
     bucket_id = 'email-attachments'

@@ -103,6 +103,8 @@ ALTER TABLE outreach_templates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE outreach_suppression ENABLE ROW LEVEL SECURITY;
 
 -- outreach_records: tenant isolation
+DROP POLICY IF EXISTS "outreach_records_tenant_isolation" ON outreach_records;
+DROP POLICY IF EXISTS "outreach_records_tenant_isolation" ON outreach_records;
 CREATE POLICY "outreach_records_tenant_isolation" ON outreach_records
   FOR ALL
   USING (
@@ -111,6 +113,8 @@ CREATE POLICY "outreach_records_tenant_isolation" ON outreach_records
   );
 
 -- outreach_templates: tenant isolation
+DROP POLICY IF EXISTS "outreach_templates_tenant_isolation" ON outreach_templates;
+DROP POLICY IF EXISTS "outreach_templates_tenant_isolation" ON outreach_templates;
 CREATE POLICY "outreach_templates_tenant_isolation" ON outreach_templates
   FOR ALL
   USING (
@@ -119,10 +123,14 @@ CREATE POLICY "outreach_templates_tenant_isolation" ON outreach_templates
   );
 
 -- outreach_suppression: readable by all authenticated users, writable by admins
+DROP POLICY IF EXISTS "outreach_suppression_read" ON outreach_suppression;
+DROP POLICY IF EXISTS "outreach_suppression_read" ON outreach_suppression;
 CREATE POLICY "outreach_suppression_read" ON outreach_suppression
   FOR SELECT
   USING (auth.role() = 'authenticated');
 
+DROP POLICY IF EXISTS "outreach_suppression_admin_write" ON outreach_suppression;
+DROP POLICY IF EXISTS "outreach_suppression_admin_write" ON outreach_suppression;
 CREATE POLICY "outreach_suppression_admin_write" ON outreach_suppression
   FOR ALL
   USING (public.is_super_admin() OR public.is_atlas_admin());

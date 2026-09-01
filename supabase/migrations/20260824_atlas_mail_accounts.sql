@@ -136,12 +136,16 @@ DROP POLICY IF EXISTS "email_messages_insert" ON public.email_messages;
 DROP POLICY IF EXISTS "email_messages_update" ON public.email_messages;
 DROP POLICY IF EXISTS "email_messages_delete" ON public.email_messages;
 
+DROP POLICY IF EXISTS "email_messages_select" ON public.email_messages;
 CREATE POLICY "email_messages_select" ON public.email_messages
   FOR SELECT USING (tenant_id = public.get_current_tenant_id());
+DROP POLICY IF EXISTS "email_messages_insert" ON public.email_messages;
 CREATE POLICY "email_messages_insert" ON public.email_messages
   FOR INSERT WITH CHECK (tenant_id = public.get_current_tenant_id());
+DROP POLICY IF EXISTS "email_messages_update" ON public.email_messages;
 CREATE POLICY "email_messages_update" ON public.email_messages
   FOR UPDATE USING (tenant_id = public.get_current_tenant_id());
+DROP POLICY IF EXISTS "email_messages_delete" ON public.email_messages;
 CREATE POLICY "email_messages_delete" ON public.email_messages
   FOR DELETE USING (tenant_id = public.get_current_tenant_id());
 
@@ -151,12 +155,16 @@ DROP POLICY IF EXISTS "email_drafts_insert" ON public.email_drafts;
 DROP POLICY IF EXISTS "email_drafts_update" ON public.email_drafts;
 DROP POLICY IF EXISTS "email_drafts_delete" ON public.email_drafts;
 
+DROP POLICY IF EXISTS "email_drafts_select" ON public.email_drafts;
 CREATE POLICY "email_drafts_select" ON public.email_drafts
   FOR SELECT USING (tenant_id = public.get_current_tenant_id());
+DROP POLICY IF EXISTS "email_drafts_insert" ON public.email_drafts;
 CREATE POLICY "email_drafts_insert" ON public.email_drafts
   FOR INSERT WITH CHECK (tenant_id = public.get_current_tenant_id());
+DROP POLICY IF EXISTS "email_drafts_update" ON public.email_drafts;
 CREATE POLICY "email_drafts_update" ON public.email_drafts
   FOR UPDATE USING (tenant_id = public.get_current_tenant_id());
+DROP POLICY IF EXISTS "email_drafts_delete" ON public.email_drafts;
 CREATE POLICY "email_drafts_delete" ON public.email_drafts
   FOR DELETE USING (tenant_id = public.get_current_tenant_id());
 
@@ -165,10 +173,13 @@ DROP POLICY IF EXISTS "email_labels_select" ON public.email_labels;
 DROP POLICY IF EXISTS "email_labels_insert" ON public.email_labels;
 DROP POLICY IF EXISTS "email_labels_delete" ON public.email_labels;
 
+DROP POLICY IF EXISTS "email_labels_select" ON public.email_labels;
 CREATE POLICY "email_labels_select" ON public.email_labels
   FOR SELECT USING (tenant_id = public.get_current_tenant_id());
+DROP POLICY IF EXISTS "email_labels_insert" ON public.email_labels;
 CREATE POLICY "email_labels_insert" ON public.email_labels
   FOR INSERT WITH CHECK (tenant_id = public.get_current_tenant_id());
+DROP POLICY IF EXISTS "email_labels_delete" ON public.email_labels;
 CREATE POLICY "email_labels_delete" ON public.email_labels
   FOR DELETE USING (tenant_id = public.get_current_tenant_id());
 
@@ -177,20 +188,23 @@ DROP POLICY IF EXISTS "email_message_labels_select" ON public.email_message_labe
 DROP POLICY IF EXISTS "email_message_labels_insert" ON public.email_message_labels;
 DROP POLICY IF EXISTS "email_message_labels_delete" ON public.email_message_labels;
 
+DROP POLICY IF EXISTS "email_message_labels_select" ON public.email_message_labels;
 CREATE POLICY "email_message_labels_select" ON public.email_message_labels
   FOR SELECT USING (EXISTS (
     SELECT 1 FROM public.email_messages m
-    WHERE m.id = message_id AND m.tenant_id = public.get_current_tenant_id()
+    WHERE m.id = email_message_labels.message_id AND m.tenant_id = public.get_current_tenant_id()
   ));
+DROP POLICY IF EXISTS "email_message_labels_insert" ON public.email_message_labels;
 CREATE POLICY "email_message_labels_insert" ON public.email_message_labels
   FOR INSERT WITH CHECK (EXISTS (
     SELECT 1 FROM public.email_messages m
-    WHERE m.id = message_id AND m.tenant_id = public.get_current_tenant_id()
+    WHERE m.id = email_message_labels.message_id AND m.tenant_id = public.get_current_tenant_id()
   ));
+DROP POLICY IF EXISTS "email_message_labels_delete" ON public.email_message_labels;
 CREATE POLICY "email_message_labels_delete" ON public.email_message_labels
   FOR DELETE USING (EXISTS (
     SELECT 1 FROM public.email_messages m
-    WHERE m.id = message_id AND m.tenant_id = public.get_current_tenant_id()
+    WHERE m.id = email_message_labels.message_id AND m.tenant_id = public.get_current_tenant_id()
   ));
 
 
@@ -652,8 +666,8 @@ END;
 $$;
 
 CREATE OR REPLACE FUNCTION public.email_labels_save(
-  p_id uuid DEFAULT NULL,
   p_name text,
+  p_id uuid DEFAULT NULL,
   p_color text DEFAULT '#6b7280'
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE v_tenant uuid; v_label jsonb;

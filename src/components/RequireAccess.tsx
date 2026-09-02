@@ -47,18 +47,18 @@ export function RequireAccess({ children }: { children: ReactNode }) {
       <AccessDenied
         message="Your Atlas access has been suspended. Please contact support for assistance."
         ctaText="Contact Support"
-        ctaHref="/pilot"
+        ctaHref="/"
       />
     );
   }
 
   // Pending / missing-profile / unknown users — access denied with
-  // consultation CTA. No internal authorization details are revealed.
+  // pricing CTA. No internal authorization details are revealed.
   return (
     <AccessDenied
-      message="Atlas access has not been approved for this account. Atlas is currently available through our pilot program. Request a consultation to get started."
-      ctaText="Request Pilot Access"
-      ctaHref="/pilot-apply"
+      message="You need an active subscription to access Atlas. Choose a plan to get started."
+      ctaText="View Plans"
+      ctaHref="/pricing"
       showSignOut
     />
   );

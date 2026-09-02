@@ -648,6 +648,7 @@ export default function Landing() {
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const toAuth = () => navigate("/auth");
+  const toPricing = () => navigate("/pricing");
 
   return (
     <MotionConfig reducedMotion="user">
@@ -759,7 +760,7 @@ export default function Landing() {
               <motion.p variants={fadeUp} className="mt-2 flex items-center gap-2 text-xs text-muted-foreground/80">
                 <span className="font-mono uppercase tracking-[0.14em]">Industry knowledge · Company knowledge · Live evidence → Intelligence</span>
               </motion.p>              <motion.div variants={fadeUp} className="mt-8 flex flex-wrap items-center gap-3">
-                <PrimaryCta onClick={toAuth}>Apply for the Atlas Pilot</PrimaryCta>
+                <PrimaryCta onClick={toPricing}>Sign Up for Atlas</PrimaryCta>
                 <SecondaryCta href="#how">See How Atlas Works</SecondaryCta>
               </motion.div>
               <motion.div
@@ -1773,8 +1774,8 @@ export default function Landing() {
                 recover — from the first document through final payment.
                 </p>
                 <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-                  <PrimaryCta onClick={toAuth}>See Atlas in Action</PrimaryCta>
-                  <SecondaryCta href="/pilot">Join the Pilot Program</SecondaryCta>
+                  <PrimaryCta onClick={toPricing}>Sign Up for Atlas</PrimaryCta>
+                  <SecondaryCta onClick={toAuth}>Sign In</SecondaryCta>
                 </div>
                 <p className="mt-8 font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground/70">
                   Industry knowledge + company intelligence + live evidence
@@ -1809,10 +1810,10 @@ export default function Landing() {
                 <div className="mt-4 flex items-center gap-2">
                   <ThemeToggle />
                   <a
-                    href="/pilot"
+                    href="/pricing"
                     className="rounded-lg border border-border/70 px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
                   >
-                    Pilot Program
+                    Pricing
                   </a>
                   <button
                     type="button"
@@ -1826,7 +1827,7 @@ export default function Landing() {
               {[
                 ["Product", [["Ask Atlas", "#ask"], ["Company model", "#model"], ["Connections", "#how"], ["Security", "#security"]]],
                 ["How it works", [["The problem", "#problem"], ["The pipeline", "#product"], ["Industries", "#industries"], ["The roadmap", "#evolution"]]],
-                ["Company", [["About", "#product"], ["Industries", "#industries"], ["Trust", "#security"], ["Pilot Program", "/pilot"]]],
+                ["Company", [["About", "#product"], ["Industries", "#industries"], ["Trust", "#security"], ["Pricing", "/pricing"]]],
               ].map(([head, links]) => (
                 <div key={head as string}>
                   <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">

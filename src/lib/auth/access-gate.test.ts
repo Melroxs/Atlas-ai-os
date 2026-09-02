@@ -35,38 +35,81 @@ describe("evaluateAtlasAccess", () => {
     expect(evaluateAtlasAccess({ platform_role: "super_admin", account_status: null })?.allowed).toBe(true);
   });
 
-  it("allows an active regular user", () => {
-    expect(evaluateAtlasAccess({ platform_role: "user", account_status: "active" })).toEqual({
+  it("allows an active regular user WITH billing_state=active", () => {
+    expect(evaluateAtlasAccess({ platform_role: "user", account_status: "active", billing_state: "active" })).toEqual({
       allowed: true,
       reason: "active",
     });
   });
 
-  it("allows an active atlas_admin", () => {
-    expect(evaluateAtlasAccess({ platform_role: "atlas_admin", account_status: "active" })).toEqual({
+  it("allows an active atlas_admin WITH billing_state=active", () => {
+    expect(evaluateAtlasAccess({ platform_role: "atlas_admin", account_status: "active", billing_state: "active" })).toEqual({
       allowed: true,
       reason: "active",
     });
   });
 
-  it("allows an active customer_admin", () => {
-    expect(evaluateAtlasAccess({ platform_role: "customer_admin", account_status: "active" })).toEqual({
+  it("allows an active customer_admin WITH billing_state=active", () => {
+    expect(evaluateAtlasAccess({ platform_role: "customer_admin", account_status: "active", billing_state: "active" })).toEqual({
       allowed: true,
       reason: "active",
     });
   });
 
-  it("allows an active customer_user", () => {
-    expect(evaluateAtlasAccess({ platform_role: "customer_user", account_status: "active" })).toEqual({
+  it("allows an active customer_user WITH billing_state=active", () => {
+    expect(evaluateAtlasAccess({ platform_role: "customer_user", account_status: "active", billing_state: "active" })).toEqual({
       allowed: true,
       reason: "active",
     });
   });
 
-  it("allows an active pilot_user", () => {
-    expect(evaluateAtlasAccess({ platform_role: "pilot_user", account_status: "active" })).toEqual({
+  it("allows an active pilot_user WITH billing_state=active", () => {
+    expect(evaluateAtlasAccess({ platform_role: "pilot_user", account_status: "active", billing_state: "active" })).toEqual({
       allowed: true,
       reason: "active",
+    });
+  });
+
+  it("denies a regular user with active account but no billing_state", () => {
+    // billing_state = null means no tenant or no billing state → denied
+    expect(evaluateAtlasAccess({ platform_role: "user", account_status: "active", billing_state: null })).toEqual({
+      allowed: false,
+      reason: "missing_tenant",
+    });
+  });
+
+  it("denies a regular user with pending_checkout billing state", () => {
+    expect(evaluateAtlasAccess({ platform_role: "user", account_status: "active", billing_state: "pending_checkout" })).toEqual({
+      allowed: false,
+      reason: "pending_checkout",
+    });
+  });
+
+  it("denies a regular user with cancelled billing state", () => {
+    expect(evaluateAtlasAccess({ platform_role: "user", account_status: "active", billing_state: "cancelled" })).toEqual({
+      allowed: false,
+      reason: "cancelled",
+    });
+  });
+
+  it("denies a regular user with payment_failed billing state", () => {
+    expect(evaluateAtlasAccess({ platform_role: "user", account_status: "active", billing_state: "payment_failed" })).toEqual({
+      allowed: false,
+      reason: "payment_failed",
+    });
+  });
+
+  it("allows a regular user with past_due billing state (grace period)", () => {
+    expect(evaluateAtlasAccess({ platform_role: "user", account_status: "active", billing_state: "past_due" })).toEqual({
+      allowed: true,
+      reason: "past_due",
+    });
+  });
+
+  it("denies a regular user with unknown billing state (fail-closed)", () => {
+    expect(evaluateAtlasAccess({ platform_role: "user", account_status: "active", billing_state: "something_unknown" })).toEqual({
+      allowed: false,
+      reason: "unknown_billing_state",
     });
   });
 
@@ -109,22 +152,24 @@ describe("evaluateAtlasAccess", () => {
     expect(evaluateAtlasAccess({ account_status: "something_else" })?.allowed).toBe(false);
     expect(evaluateAtlasAccess({ account_status: "" })?.allowed).toBe(false);
     // An unknown role is NOT super_admin — still gated by account_status.
-    expect(evaluateAtlasAccess({ platform_role: "tenant_admin", account_status: "active" })?.allowed).toBe(true);
+    expect(evaluateAtlasAccess({ platform_role: "tenant_admin", account_status: "active" })?.allowed).toBe(false); // no billing_state → denied
     expect(evaluateAtlasAccess({ platform_role: "tenant_admin", account_status: "pending" })?.allowed).toBe(false);
   });
 
   it("matches the two verified production accounts", () => {
-    // Verified live against the deployed database (scripts/verify-real-accounts.mjs).
+    // super_admin always passes regardless of billing_state
     expect(
       evaluateAtlasAccess({
         platform_role: "super_admin",
         account_status: "active",
       }).allowed,
     ).toBe(true); // Melissa (founder)
+    // Regular customer requires billing_state = active
     expect(
       evaluateAtlasAccess({
         platform_role: "user",
         account_status: "active",
+        billing_state: "active",
       }).allowed,
     ).toBe(true); // YC Demo
   });

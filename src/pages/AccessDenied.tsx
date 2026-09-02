@@ -4,11 +4,32 @@ import { Link, useSearchParams } from "react-router";
 
 const DENIAL_MESSAGES: Record<string, { title: string; message: string; cta: string; href: string }> = {
   pending: {
-    title: "Access Pending",
+    title: "Subscription Required",
     message:
-      "Your Atlas account has been created, but access has not yet been approved. Atlas is currently available through our pilot program.",
-    cta: "Request Pilot Access",
-    href: "/pilot-apply",
+      "Your Atlas account has been created, but you need an active subscription to access Atlas. Choose a plan to get started.",
+    cta: "View Plans",
+    href: "/pricing",
+  },
+  pending_checkout: {
+    title: "Complete Your Subscription",
+    message:
+      "Your organization has been created. Complete your subscription to access Atlas.",
+    cta: "Complete Checkout",
+    href: "/checkout?plan=starter&billing=monthly",
+  },
+  payment_failed: {
+    title: "Payment Issue",
+    message:
+      "Your subscription payment could not be processed. Please update your payment method to continue using Atlas.",
+    cta: "Update Payment",
+    href: "/pricing",
+  },
+  cancelled: {
+    title: "Subscription Cancelled",
+    message:
+      "Your Atlas subscription has been cancelled. Resubscribe to regain access.",
+    cta: "Resubscribe",
+    href: "/pricing",
   },
   missing_profile: {
     title: "Account Not Provisioned",
@@ -41,11 +62,11 @@ const DENIAL_MESSAGES: Record<string, { title: string; message: string; cta: str
 };
 
 const DEFAULT_DENIED = {
-  title: "Access Not Approved",
+  title: "Subscription Required",
   message:
-    "Your account is authenticated, but it has not been approved for Atlas access. Atlas is currently available through our pilot program.",
-  cta: "Request Pilot Access",
-  href: "/pilot-apply",
+    "Your account is authenticated, but you need an active subscription to access Atlas. Choose a plan to get started.",
+  cta: "View Plans",
+  href: "/pricing",
 };
 
 export default function AccessDenied() {

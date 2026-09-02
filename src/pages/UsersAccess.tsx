@@ -195,7 +195,7 @@ export default function UsersAccess() {
             className="gap-2"
           >
             <UserPlus className="size-4" />
-            Add User
+            Invite User
           </Button>
         }
       />
@@ -329,11 +329,11 @@ export default function UsersAccess() {
         {userList.length} user{userList.length === 1 ? "" : "s"} found
       </p>
 
-      {/* Invite / Add User dialog */}
+      {/* Invite / Invite User dialog */}
       <Dialog open={showInvite} onOpenChange={setShowInvite}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add User</DialogTitle>
+            <DialogTitle>Invite User</DialogTitle>
             <DialogDescription>
               Provision a new user or activate an existing Supabase Auth user into Atlas.
             </DialogDescription>

@@ -35,7 +35,6 @@ import {
   LogIn,
   Mail,
   UserPlus,
-  UserX,
 } from "lucide-react";
 import { Suspense, useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
@@ -70,7 +69,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [companyName, setCompanyName] = useState("");
-  const createTenant = useMutation(api.tenants.createTenant);
+  const initForCheckout = useMutation(api.tenants.initForCheckout);
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -129,10 +128,18 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
         // RPC), so the company name the user typed is never lost.
         if (companyName.trim()) {
           try {
-            await createTenant({ name: companyName.trim() });
+            // Use initForCheckout instead of createTenant so the tenant
+            // is created with billing_state = 'pending_checkout', which
+            // the access gate uses to enforce subscription-based access.
+            const initResult = await initForCheckout({ name: companyName.trim() });
+            console.info(
+              "[auth] workspace initialized for checkout:",
+              initResult?.tenantId,
+              initResult?.alreadyExisted ? "(existing)" : "(new)",
+            );
           } catch (provisionError) {
             console.warn(
-              "[auth] workspace auto-provision failed, /setup will retry it:",
+              "[auth] workspace auto-provision failed, /checkout will retry it:",
               provisionError,
             );
             const provisionMsg =
@@ -143,11 +150,11 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
               `Your account is ready, but Atlas couldn't create the workspace yet: ` +
                 `${provisionMsg} You'll finish creating it on the next screen.`,
             );
-            // /setup's workspace step retries tenants_create_tenant (which is
-            // idempotent), so a failure here is recoverable — carry the name.
-            navigate("/setup", {
-              state: { workspaceName: companyName.trim() },
-            });
+            // /checkout's initForCheckout retries the same idempotent RPC,
+            // so a failure here is recoverable — carry the name.
+            navigate(
+              `/checkout?plan=${searchParams.get("plan") || "starter"}&billing=${searchParams.get("billing") || "monthly"}&company=${encodeURIComponent(companyName.trim())}`,
+            );
             setIsLoading(false);
             return;
           }
@@ -218,21 +225,6 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
       console.error("Password update error:", err);
       setError(classifyAuthError(err));
     } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleGuestLogin = async () => {
-    setIsLoading(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await signIn("anonymous");
-      navigate(redirect);
-    } catch (err) {
-      console.error("Guest login error:", err);
-      setError(`Failed to sign in as guest: ${classifyAuthError(err)}`);
-      setExistingAccount(false);
       setIsLoading(false);
     }
   };
@@ -343,8 +335,7 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
       Email sign-in isn't configured for this deployment yet. Ask the
       administrator to add the{" "}
       <code className="font-mono">VITE_SUPABASE_URL</code> and{" "}
-      <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> project keys —
-      or continue as Guest below.
+      <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> project keys.
     </div>
   ) : null;
 
@@ -584,27 +575,22 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                       </p>
                     )}
 
-                    <div className="relative">
-                      <div className="absolute inset-0 flex items-center">
-                        <span className="w-full border-t" />
+                    {mode === "signIn" && (
+                      <div className="text-center">
+                        <p className="text-sm text-muted-foreground">
+                          Don't have an Atlas account?{' '}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigate("/pricing");
+                            }}
+                            className="font-medium text-primary underline underline-offset-4 hover:text-primary/80"
+                          >
+                            Sign Up for Atlas
+                          </button>
+                        </p>
                       </div>
-                      <div className="relative flex justify-center text-xs uppercase">
-                        <span className="bg-background px-2 text-muted-foreground">
-                          Or
-                        </span>
-                      </div>
-                    </div>
-
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="w-full"
-                      onClick={handleGuestLogin}
-                      disabled={isLoading}
-                    >
-                      <UserX className="mr-2 h-4 w-4" />
-                      Continue as Guest
-                    </Button>
+                    )}
                   </CardContent>
                   <CardFooter>
                     <Button

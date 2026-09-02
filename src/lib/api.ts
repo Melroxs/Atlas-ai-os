@@ -528,6 +528,10 @@ export const api = {
   tenants: {
     getMyWorkspace: def<WorkspaceShape | null>("tenants_get_my_workspace", "query"),
     createTenant: def<{ tenantId: string }>("tenants_create_tenant", "mutation"),
+    initForCheckout: def<{ tenantId: string; alreadyExisted: boolean }>("tenants_init_for_checkout", "mutation"),
+    activateAfterPayment: def<{ ok: boolean; tenantId: string }>("tenants_activate_after_payment", "mutation"),
+    handlePaymentFailure: def<{ ok: boolean; tenantId: string }>("tenants_handle_payment_failure", "mutation"),
+    handleSubscriptionCancelled: def<{ ok: boolean; tenantId: string }>("tenants_handle_subscription_cancelled", "mutation"),
     inviteMember: def<Obj>("tenants_invite_member", "mutation"),
     claimInvites: def<{ claimed: number }>("tenants_claim_invites", "mutation"),
     updateMemberRole: def<{ ok: boolean }>("tenants_update_member_role", "mutation"),

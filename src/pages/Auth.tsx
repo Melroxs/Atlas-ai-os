@@ -64,7 +64,14 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
     redirectAfterAuth,
   );
 
-  const [mode, setMode] = useState<Mode>("signIn");
+  // Read initial mode from query params (e.g., mode=signup from Pricing CTA)
+  const initialMode: Mode = (() => {
+    const m = searchParams.get("mode");
+    if (m === "signUp" || m === "signup" || m === "sign-up") return "signUp";
+    if (m === "signIn" || m === "signin" || m === "sign-in") return "signIn";
+    return "signIn";
+  })();
+  const [mode, setMode] = useState<Mode>(initialMode);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");

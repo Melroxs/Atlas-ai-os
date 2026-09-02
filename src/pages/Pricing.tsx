@@ -70,8 +70,9 @@ export default function Pricing() {
       return;
     }
 
-    // Navigate to auth with plan info
+    // Navigate to auth with plan info and explicit signup intent
     const params = new URLSearchParams({
+      mode: "signup",
       plan: plan.name.toLowerCase(),
       billing,
       returnTo: "/checkout",

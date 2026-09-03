@@ -37,9 +37,11 @@ import type {
   NormalizedArchiveCandidate,
   NormalizedArchiveFile,
 } from "@/lib/archive/normalize";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { toast } from "sonner";
+import { CollectionBrowser } from "@/components/workforce/collection-browser";
+import { groupByKey, topFolder } from "@/lib/workforce/selectors";
 
 const TERMINAL = new Set([
   "completed",
@@ -134,6 +136,14 @@ export default function ArchiveDetail() {
   const st = archive.stats as Record<string, unknown>;
   const active = !TERMINAL.has(archive.status);
   const failedFiles = files.filter((f) => f.ingestStatus === "failed");
+
+  // Scalable collection: group the inventory by top-level folder so a
+  // 1,000+ file archive collapses into a handful of collections instead of
+  // one endless table.
+  const fileGroups = useMemo(
+    () => groupByKey(files, (f) => topFolder(f.path)),
+    [files],
+  );
 
   const statChips: Array<[string, number, string]> = [
     ["Ingested into knowledge", num(st.ingested), "text-emerald-600 dark:text-emerald-300"],
@@ -469,12 +479,12 @@ export default function ArchiveDetail() {
         </div>
       )}
 
-      {/* File inventory */}
-      <div>
-        <div className="mb-2 flex items-center justify-between">
+      {/* File inventory — scalable Collection → Group → Item browsing */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">File inventory</h2>
           <span className="font-mono text-xs text-muted-foreground">
-            {files.length.toLocaleString()} files
+            {files.length.toLocaleString()} files · {fileGroups.length.toLocaleString()} folder{fileGroups.length === 1 ? "" : "s"}
           </span>
         </div>
         {files.length === 0 ? (
@@ -482,118 +492,96 @@ export default function ArchiveDetail() {
             No files were recorded for this archive.
           </div>
         ) : (
-          <div className="overflow-hidden rounded-xl border border-border/70 bg-card/50">
-            <div className="max-h-[560px] overflow-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="sticky top-0 bg-muted/70 backdrop-blur">
-                  <tr className="text-muted-foreground">
-                    <th className="px-4 py-2.5 font-medium">Path</th>
-                    <th className="px-3 py-2.5 font-medium">Classification</th>
-                    <th className="px-3 py-2.5 font-medium">Size</th>
-                    <th className="px-3 py-2.5 font-medium">Status</th>
-                    <th className="px-3 py-2.5 font-medium">Details</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/50">
-                  {files.map((f) => {
-                    const doc = f.documentId ? docs[String(f.documentId)] : undefined;
-                    return (
-                      <tr key={f._id} className="align-top">
-                        <td className="max-w-[360px] px-4 py-2">
-                          <p className="truncate font-mono text-[11px]" title={f.path}>
-                            {f.path}
-                          </p>
-                          {f.isDuplicate && f.duplicateOfPath && (
-                            <p className="mt-0.5 text-[10px] text-violet-600 dark:text-violet-300">
-                              duplicate of {f.duplicateOfPath}
-                            </p>
-                          )}
-                          {f.isSuperseded && f.supersedesPath && (
-                            <p className="mt-0.5 text-[10px] text-muted-foreground">
-                              supersedes {f.supersedesPath}
-                            </p>
-                          )}
-                          {f.versionGroup && (
-                            <p className="mt-0.5 text-[10px] text-muted-foreground">
-                              version group: {f.versionGroup}
-                            </p>
-                          )}
-                          {doc && (
-                            <button
-                              type="button"
-                              onClick={() => navigate(`/dashboard/knowledge/${f.documentId}`)}
-                              className="mt-0.5 flex items-center gap-1 text-[10px] text-teal-600 hover:underline dark:text-teal-300"
-                            >
-                              <FileText className="size-3" />
-                              {doc.title.length > 60 ? `${doc.title.slice(0, 60)}…` : doc.title}
-                            </button>
-                          )}
-                        </td>
-                        <td className="px-3 py-2">
-                          <Badge variant="outline" className="capitalize">
-                            {f.classification.replace(/_/g, " ")}
-                          </Badge>
-                          {f.classificationConfidence < 0.6 && (
-                            <p className="mt-0.5 text-[10px] text-muted-foreground">
-                              {Math.round(f.classificationConfidence * 100)}% confidence
-                            </p>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-muted-foreground">
-                          {formatBytes(f.size)}
-                        </td>
-                        <td className="px-3 py-2">
-                          <FileIngestBadge status={f.ingestStatus} />
-                        </td>
-                        <td className="max-w-[260px] px-3 py-2">
-                          {f.error && (
-                            <p className="text-[10px] leading-snug text-rose-600 dark:text-rose-300" title={f.error}>
-                              {f.error.length > 90 ? `${f.error.slice(0, 90)}…` : f.error}
-                            </p>
-                          )}
-                          {f.blockReason && (
-                            <p className="text-[10px] leading-snug text-rose-600 dark:text-rose-300">
-                              {f.blockReason}
-                            </p>
-                          )}
-                          {f.ingestStatus === "failed" && f.storageId && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="mt-1 h-6 gap-1 px-1.5 text-[10px]"
-                              onClick={() => void handleRetryFile(String(f._id))}
-                              disabled={busy !== null}
-                            >
-                              {busy === `retry-${f._id}` ? (
-                                <Loader2 className="size-3 animate-spin" />
-                              ) : (
-                                <RefreshCw className="size-3" />
-                              )}
-                              Retry
-                            </Button>
-                          )}
-                          {f.ingestStatus === "failed" && !f.storageId && (
-                            <p className="text-[10px] text-muted-foreground">
-                              content not retained — cannot retry
-                            </p>
-                          )}
-                          {f.claimHints.length > 0 && (
-                            <div className="mt-1 flex flex-wrap gap-1">
-                              {f.claimHints.map((h) => (
-                                <span key={h.claimNumber} className="rounded bg-amber-400/10 px-1 py-0.5 font-mono text-[9px] text-amber-700 dark:text-amber-300">
-                                  {h.claimNumber}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          <CollectionBrowser
+            groups={fileGroups}
+            searchFields={[
+              (f) => f.path,
+              (f) => f.classification,
+              (f) => (f.documentId && docs[String(f.documentId)] ? docs[String(f.documentId)].title : null),
+            ]}
+            filters={[
+              { key: "failed", label: "Failed", test: (f) => f.ingestStatus === "failed" },
+              { key: "ingested", label: "Ingested", test: (f) => f.ingestStatus === "ingested" },
+              { key: "duplicates", label: "Duplicates", test: (f) => f.isDuplicate },
+              { key: "blocked", label: "Blocked", test: (f) => Boolean(f.blockReason) },
+              { key: "unsupported", label: "Unsupported", test: (f) => f.ingestStatus === "unsupported" },
+            ]}
+            searchPlaceholder="Search paths, classifications, document titles…"
+            emptyDescription="No files match this search or filter."
+            pageSize={50}
+            renderRow={(f) => {
+              const doc = f.documentId ? docs[String(f.documentId)] : undefined;
+              return (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-mono text-[11px] text-foreground" title={f.path}>
+                      {f.path}
+                    </p>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      {f.isDuplicate && f.duplicateOfPath && (
+                        <span className="text-[10px] text-violet-600 dark:text-violet-300">
+                          duplicate of {f.duplicateOfPath}
+                        </span>
+                      )}
+                      {f.isSuperseded && f.supersedesPath && (
+                        <span className="text-[10px] text-muted-foreground">supersedes {f.supersedesPath}</span>
+                      )}
+                      {f.versionGroup && (
+                        <span className="text-[10px] text-muted-foreground">version group: {f.versionGroup}</span>
+                      )}
+                      {doc && (
+                        <button
+                          type="button"
+                          onClick={() => navigate(`/dashboard/knowledge/${f.documentId}`)}
+                          className="flex items-center gap-1 text-[10px] text-teal-600 hover:underline dark:text-teal-300"
+                        >
+                          <FileText className="size-3" />
+                          {doc.title.length > 60 ? `${doc.title.slice(0, 60)}…` : doc.title}
+                        </button>
+                      )}
+                      {f.claimHints.length > 0 && (
+                        <span className="flex flex-wrap gap-1">
+                          {f.claimHints.map((h) => (
+                            <span key={h.claimNumber} className="rounded bg-amber-400/10 px-1 py-0.5 font-mono text-[9px] text-amber-700 dark:text-amber-300">
+                              {h.claimNumber}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <Badge variant="outline" className="shrink-0 capitalize">
+                    {f.classification.replace(/_/g, " ")}
+                  </Badge>
+                  <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{formatBytes(f.size)}</span>
+                  <FileIngestBadge status={f.ingestStatus} />
+                  {f.ingestStatus === "failed" && f.storageId && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 gap-1 px-1.5 text-[10px]"
+                      onClick={() => void handleRetryFile(String(f._id))}
+                      disabled={busy !== null}
+                    >
+                      {busy === `retry-${f._id}` ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                      Retry
+                    </Button>
+                  )}
+                  {f.error && (
+                    <span className="max-w-64 truncate text-[10px] text-rose-600 dark:text-rose-300" title={f.error}>
+                      {f.error}
+                    </span>
+                  )}
+                  {f.blockReason && (
+                    <span className="max-w-64 truncate text-[10px] text-rose-600 dark:text-rose-300">{f.blockReason}</span>
+                  )}
+                  {f.ingestStatus === "failed" && !f.storageId && (
+                    <span className="text-[10px] text-muted-foreground">content not retained — cannot retry</span>
+                  )}
+                </div>
+              );
+            }}
+          />
         )}
       </div>
     </div>

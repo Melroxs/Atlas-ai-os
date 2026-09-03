@@ -17,6 +17,8 @@ import {
   Sparkles,
   TrendingUp,
 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { filterBySearch, paginate, totalPages } from "@/lib/workforce/selectors";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import type { WorkItem } from "@/lib/work-queue/service";
@@ -73,6 +75,8 @@ export default function WorkQueue() {
     totalFinancialImpact: number;
   } | null>(null);
   const [filter, setFilter] = useState<string>("all");
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
 
   // Governance approvals — decisions Atlas evaluated that require a human.
   const [governanceItems, setGovernanceItems] = useState<GovernanceDecisionRow[] | null>(null);
@@ -110,12 +114,19 @@ export default function WorkQueue() {
 
   const filteredItems = useMemo(() => {
     if (!workItems) return [];
-    if (filter === "all") return workItems;
-    if (filter === "critical") return workItems.filter((w) => w.priority === "critical");
-    if (filter === "human") return workItems.filter((w) => w.actionable === "human_action_required");
-    if (filter === "financial") return workItems.filter((w) => w.financialImpact && w.financialImpact > 0);
-    return workItems.filter((w) => w.category === filter);
-  }, [workItems, filter]);
+    let items = workItems;
+    if (filter === "critical") items = items.filter((w) => w.priority === "critical");
+    else if (filter === "human") items = items.filter((w) => w.actionable === "human_action_required");
+    else if (filter === "financial") items = items.filter((w) => w.financialImpact && w.financialImpact > 0);
+    else if (filter !== "all") items = items.filter((w) => w.category === filter);
+    return filterBySearch(items, query, [
+      (w) => w.title,
+      (w) => w.claimNumber,
+      (w) => w.customer,
+      (w) => w.property,
+      (w) => w.description,
+    ]);
+  }, [workItems, filter, query]);
 
   // Group by claim
   const grouped = useMemo(() => {
@@ -129,6 +140,10 @@ export default function WorkQueue() {
     }
     return Array.from(map.values());
   }, [filteredItems]);
+
+  // Paginate the grouped list so a large book never renders every group.
+  const groupedPages = totalPages(grouped.length, 10);
+  const visibleGroups = paginate(grouped, Math.min(page, groupedPages), 10);
 
   return (
     <div className="flex flex-col gap-8">
@@ -252,31 +267,52 @@ export default function WorkQueue() {
         </div>
       )}
 
-      {/* Filters */}
+      {/* Filters + search */}
       {workItems && (
-        <div className="flex flex-wrap gap-1.5">
-          {[
-            { key: "all", label: "All" },
-            { key: "critical", label: "Critical" },
-            { key: "human", label: "Needs human" },
-            { key: "financial", label: "Financial" },
-            { key: "missing_evidence", label: "Missing evidence" },
-            { key: "supplement_opportunity", label: "Supplements" },
-            { key: "stale_claim", label: "Stale" },
-          ].map((f) => (
-            <button
-              key={f.key}
-              type="button"
-              onClick={() => setFilter(f.key)}
-              className={`rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors ${
-                filter === f.key
-                  ? "border-teal-400/40 bg-teal-400/10 text-teal-700 dark:text-teal-200"
-                  : "border-border/70 text-muted-foreground hover:border-teal-400/30"
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-52 flex-1">
+            <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(1);
+              }}
+              placeholder="Search claims, customers, items…"
+              className="h-8 pl-8 text-xs"
+              aria-label="Search work queue"
+            />
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {[
+              { key: "all", label: "All" },
+              { key: "critical", label: "Critical" },
+              { key: "human", label: "Needs human" },
+              { key: "financial", label: "Financial" },
+              { key: "missing_evidence", label: "Missing evidence" },
+              { key: "supplement_opportunity", label: "Supplements" },
+              { key: "stale_claim", label: "Stale" },
+            ].map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => {
+                  setFilter(f.key);
+                  setPage(1);
+                }}
+                className={`rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors ${
+                  filter === f.key
+                    ? "border-teal-400/40 bg-teal-400/10 text-teal-700 dark:text-teal-200"
+                    : "border-border/70 text-muted-foreground hover:border-teal-400/30"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <span className="ml-auto font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            {filteredItems.length} item{filteredItems.length === 1 ? "" : "s"}
+          </span>
         </div>
       )}
 
@@ -303,7 +339,7 @@ export default function WorkQueue() {
 
       {grouped.length > 0 && (
         <div className="space-y-6">
-          {grouped.map((group) => (
+          {visibleGroups.map((group) => (
             <Panel key={group.claim + (group.customer ?? "")}>
               <div className="flex items-center justify-between border-b border-border/60 px-5 py-3">
                 <div>
@@ -392,6 +428,22 @@ export default function WorkQueue() {
           <p className="text-sm font-medium text-foreground">No work items found</p>
           <p className="text-xs text-muted-foreground">All claims are in good shape — nothing requires immediate attention.</p>
         </Panel>
+      )}
+
+      {groupedPages > 1 && grouped.length > 0 && (
+        <div className="flex items-center justify-between">
+          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+            Page {Math.min(page, groupedPages)} of {groupedPages} · {grouped.length} claim group{grouped.length === 1 ? "" : "s"}
+          </p>
+          <div className="flex gap-1.5">
+            <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+              Previous
+            </Button>
+            <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs" disabled={page >= groupedPages} onClick={() => setPage((p) => Math.min(groupedPages, p + 1))}>
+              Next
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );

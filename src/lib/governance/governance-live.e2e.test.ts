@@ -15,13 +15,25 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it } from "vitest";
-import { getSupabaseClient } from "@/lib/supabase";
+import { createClient } from "@supabase/supabase-js";
+import { resolvedSupabaseUrl, resolvedSupabaseAnonKey } from "@/lib/supabase";
 import { rpcCall } from "@/lib/actions/rpc";
 
 const RUN = process.env.RUN_LIVE_E2E === "1";
 
+/** PostgrestError is a plain object, not an Error — extract its message. */
+function errMsg(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "object" && err !== null && "message" in err) {
+    return String((err as { message: unknown }).message);
+  }
+  return String(err);
+}
+
 async function createUser(name: string) {
-  const supabase = getSupabaseClient();
+  // Independent client per org: getSupabaseClient() is a module singleton, so
+  // two orgs sharing it would silently overwrite each other's session.
+  const supabase = createClient(resolvedSupabaseUrl, resolvedSupabaseAnonKey);
   if (!supabase) throw new Error("Supabase is not configured.");
   const email = `gov-e2e-${name}-${Date.now()}@example.com`;
   const password = "GovE2e!42";
@@ -154,7 +166,7 @@ describe.skipIf(!RUN)("governance persistence (real project)", () => {
           decision: "approved",
         });
       } catch (err) {
-        plainApproveError = err instanceof Error ? err.message : String(err);
+        plainApproveError = errMsg(err);
       }
       expect(plainApproveError).toContain("override_decision");
 
@@ -171,7 +183,7 @@ describe.skipIf(!RUN)("governance persistence (real project)", () => {
         })) as { override_decision: string | null; execution_status: string };
         overrideOutcome = `ok:${overridden.override_decision ?? "?"}:${overridden.execution_status}`;
       } catch (err) {
-        overrideOutcome = `error:${err instanceof Error ? err.message : String(err)}`;
+        overrideOutcome = `error:${errMsg(err)}`;
       }
       expect(
         overrideOutcome === "ok:ALLOW:approved" ||
@@ -219,7 +231,7 @@ describe.skipIf(!RUN)("governance persistence (real project)", () => {
           overrideDecision: "ALLOW",
         });
       } catch (err) {
-        foreignApproveError = err instanceof Error ? err.message : String(err);
+        foreignApproveError = errMsg(err);
       }
       expect(foreignApproveError).toContain("decision not found");
     },

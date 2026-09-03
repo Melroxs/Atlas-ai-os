@@ -4,7 +4,6 @@
 // ---------------------------------------------------------------------------
 
 import { ArrowRight } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { WorkerLoading } from "@/components/workforce/worker-page";
 import { WORKERS } from "@/lib/workforce/worker-defs";
 import { useWorkerData } from "@/lib/workforce/use-worker-data";

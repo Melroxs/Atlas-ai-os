@@ -310,8 +310,13 @@ export default function Governance() {
           </a>
         </Button>
         <span>·</span>
-        <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => navigate(-1)}>
-          <a href="#">back to where you were</a>
+        <Button
+          variant="link"
+          size="sm"
+          className="h-auto p-0 text-xs text-muted-foreground underline-offset-4 hover:underline"
+          onClick={() => navigate(-1)}
+        >
+          back to where you were
         </Button>
       </div>
     </div>

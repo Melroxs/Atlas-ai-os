@@ -54,6 +54,14 @@ const PilotApplications = lazy(() => import("./pages/pilot/PilotApplications.tsx
 const PilotCRM = lazy(() => import("./pages/pilot/PilotCRM.tsx"));
 const PilotOutreach = lazy(() => import("./pages/pilot/PilotOutreach.tsx"));
 const UsersAccess = lazy(() => import("./pages/UsersAccess.tsx"));
+const WorkersHub = lazy(() => import("./pages/workers/WorkersHub.tsx"));
+const ClaimsManager = lazy(() => import("./pages/workers/ClaimsManager.tsx"));
+const SupplementSpecialist = lazy(() => import("./pages/workers/SupplementSpecialist.tsx"));
+const RevenueRecoveryCoordinator = lazy(() => import("./pages/workers/RevenueRecoveryCoordinator.tsx"));
+const ProjectManager = lazy(() => import("./pages/workers/ProjectManager.tsx"));
+const EstimatorWorker = lazy(() => import("./pages/workers/Estimator.tsx"));
+const CustomerSuccess = lazy(() => import("./pages/workers/CustomerSuccess.tsx"));
+const Governance = lazy(() => import("./pages/Governance.tsx"));
 
 /** Protected section: auth gate + workspace shell.
  * VoiceSessionProvider is mounted OUTSIDE the router (see render tree) so the
@@ -191,6 +199,70 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <ProtectedLayout>
                     <Dashboard />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers"
+                element={
+                  <ProtectedLayout>
+                    <WorkersHub />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/claims"
+                element={
+                  <ProtectedLayout>
+                    <ClaimsManager />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/supplements"
+                element={
+                  <ProtectedLayout>
+                    <SupplementSpecialist />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/recovery"
+                element={
+                  <ProtectedLayout>
+                    <RevenueRecoveryCoordinator />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/projects"
+                element={
+                  <ProtectedLayout>
+                    <ProjectManager />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/estimator"
+                element={
+                  <ProtectedLayout>
+                    <EstimatorWorker />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/customers"
+                element={
+                  <ProtectedLayout>
+                    <CustomerSuccess />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/governance"
+                element={
+                  <ProtectedLayout>
+                    <Governance />
                   </ProtectedLayout>
                 }
               />

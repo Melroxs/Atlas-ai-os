@@ -30,6 +30,7 @@ const Recommendations = lazy(() => import("./pages/Recommendations.tsx"));
 const Connections = lazy(() => import("./pages/Connections.tsx"));
 const Actions = lazy(() => import("./pages/Actions.tsx"));
 const Events = lazy(() => import("./pages/Events.tsx"));
+const WorkQueue = lazy(() => import("./pages/WorkQueue.tsx"));
 const Workflows = lazy(() => import("./pages/Workflows.tsx"));
 const WorkflowDetail = lazy(() => import("./pages/WorkflowDetail.tsx"));
 const RevenueRecovery = lazy(() => import("./pages/RevenueRecovery.tsx"));
@@ -286,6 +287,14 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <ProtectedLayout>
                     <WorkflowDetail />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/work-queue"
+                element={
+                  <ProtectedLayout>
+                    <WorkQueue />
                   </ProtectedLayout>
                 }
               />

@@ -1,243 +1,222 @@
-// supabase/functions/stripe-checkout/index.ts
-//
-// Creates a Stripe Checkout Session for subscription billing.
-//
-// Flow:
-//   1. Authenticate the caller (must have a valid Supabase session)
-//   2. Verify the requested plan is valid
-//   3. Get or create a Stripe customer for the user
-//   4. Create a Stripe Checkout Session with the correct price + tenant metadata
-//   5. Return the checkout URL to the frontend
-//
-// Environment variables (set in Supabase Dashboard → Edge Functions → Secrets):
-//   STRIPE_SECRET_KEY — Stripe API secret key
-//
-// Uses SUPABASE_SECRET_KEYS (modern built-in env var) for service-role access.
+/**
+ * Stripe Checkout Edge Function
+ *
+ * Creates a Stripe Checkout Session for Atlas subscriptions.
+ *
+ * CRITICAL SECURITY:
+ * - Validates plan + billing combination server-side (never trusts client)
+ * - Maps to Stripe Price ID server-side (prevents manipulation)
+ * - Uses STRIPE_SECRET_KEY server-side only
+ * - Verifies user authentication via Supabase JWT
+ *
+ * Environment Variables Required:
+ * - STRIPE_SECRET_KEY (server-only)
+ * - STRIPE_PRICE_STARTER_MONTHLY
+ * - STRIPE_PRICE_STARTER_ANNUAL
+ * - STRIPE_PRICE_PRO_MONTHLY
+ * - STRIPE_PRICE_PRO_ANNUAL
+ * - SUPABASE_URL
+ * - SUPABASE_SERVICE_ROLE_KEY
+ */
 
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const ATLAS_ALLOWED_ORIGINS = [
-  "https://atlas-ai-os.com",
-  "https://atlasmvp.freebuff.app",
-  "https://atlasuniversalos.freebuff.app",
-];
+// Stripe Price ID mapping - environment-driven, server-side only
+const PRICE_MAP: Record<string, Record<string, string>> = {
+  starter: {
+    monthly: Deno.env.get("STRIPE_PRICE_STARTER_MONTHLY") || "",
+    annual: Deno.env.get("STRIPE_PRICE_STARTER_ANNUAL") || "",
+  },
+  professional: {
+    monthly: Deno.env.get("STRIPE_PRICE_PRO_MONTHLY") || "",
+    annual: Deno.env.get("STRIPE_PRICE_PRO_ANNUAL") || "",
+  },
+};
 
-function corsHeaders(req: Request): Record<string, string> {
-  const origin = req.headers.get("origin") ?? "";
-  const h: Record<string, string> = {
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Max-Age": "86400",
-    Vary: "Origin",
+// Valid plans and billing intervals
+const VALID_PLANS = ["starter", "professional"];
+const VALID_BILLING = ["monthly", "annual"];
+
+serve(async (req) => {
+  // CORS headers
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   };
-  if (ATLAS_ALLOWED_ORIGINS.includes(origin)) {
-    h["Access-Control-Allow-Origin"] = origin;
-  }
-  return h;
-}
 
-function respond(corsH: Record<string, string>, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsH, "Content-Type": "application/json" },
-  });
-}
-
-serve(async (req: Request) => {
-  const corsH = corsHeaders(req);
-
-  // Handle CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response("ok", { status: 200, headers: corsH });
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    // --- Authenticate the caller ---
+    // 1. Verify authentication
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) {
-      return respond(corsH, 401, { error: "Missing or invalid Authorization header" });
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: "Missing authorization" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_SECRET_KEYS");
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-    if (!supabaseUrl || !serviceRoleKey) {
-      return respond(corsH, 500, { error: "Server configuration error" });
-    }
-
-    // Verify the user's JWT via Supabase Auth API
-    const token = authHeader.replace("Bearer ", "");
-    const userRes = await fetch(`${supabaseUrl}/auth/v1/user`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        apikey: Deno.env.get("SUPABASE_ANON_KEY") || "",
-      },
+    // Verify JWT and get user
+    const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
     });
 
-    if (!userRes.ok) {
-      return respond(corsH, 401, { error: "Invalid or expired session" });
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      return new Response(
+        JSON.stringify({ error: "Unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const userData = await userRes.json();
-    const userId = userData.id;
-    const userEmail = userData.email;
-
-    if (!userId || !userEmail) {
-      return respond(corsH, 401, { error: "Could not identify user" });
-    }
-
-    // --- Validate the request ---
-    const body = await req.json().catch(() => ({}));
-    const plan = body.plan as string;
-    const billing = body.billing as string;
-    const tenantId = body.tenantId as string | undefined;
+    // 2. Parse and validate request body
+    const body = await req.json();
+    const { plan, billing, tenantId } = body;
 
     if (!plan || !billing) {
-      return respond(corsH, 400, { error: "Missing required fields: plan, billing" });
+      return new Response(
+        JSON.stringify({ error: "Missing plan or billing" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    if (!["starter", "professional"].includes(plan)) {
-      return respond(corsH, 400, { error: "Invalid plan. Must be 'starter' or 'professional'." });
+    // Validate plan and billing (prevents manipulation)
+    if (!VALID_PLANS.includes(plan)) {
+      return new Response(
+        JSON.stringify({ error: "Invalid plan" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    if (!["monthly", "annual"].includes(billing)) {
-      return respond(corsH, 400, { error: "Invalid billing interval. Must be 'monthly' or 'annual'." });
+    if (!VALID_BILLING.includes(billing)) {
+      return new Response(
+        JSON.stringify({ error: "Invalid billing interval" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // --- Resolve tenant_id from the authenticated user's membership ---
-    // NEVER trust tenant_id from the browser. Always resolve from the
-    // server-side membership relationship.
-    const membershipRes = await fetch(
-      `${supabaseUrl}/rest/v1/memberships?userId=eq.${userId}&status=eq.active&select=tenantId,role`,
-      {
-        headers: {
-          Authorization: `Bearer ${serviceRoleKey}`,
-          apikey: serviceRoleKey,
-        },
-      }
-    );
-    const memberships = await membershipRes.json();
-    if (!memberships?.length) {
-      return respond(corsH, 403, { error: "You do not have an active organization membership." });
-    }
-    // Use the server-resolved tenant_id, not the client-provided one
-    const resolvedTenantId = memberships[0].tenantId;
-    if (!resolvedTenantId) {
-      return respond(corsH, 403, { error: "No organization associated with your account." });
-    }
-
-    // --- Get Stripe configuration ---
-    const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
-    if (!stripeKey) {
-      return respond(corsH, 500, { error: "Stripe is not configured. Please contact support." });
-    }
-
-    // Resolve price ID from plan + billing
-    const priceEnvKey = `STRIPE_${plan.toUpperCase()}_${billing.toUpperCase()}_PRICE_ID`;
-    const priceId = Deno.env.get(priceEnvKey);
+    // 3. Resolve Price ID server-side (never from client)
+    const priceId = PRICE_MAP[plan]?.[billing];
     if (!priceId) {
-      return respond(corsH, 500, { error: `Price not configured for ${plan} ${billing}. Please contact support.` });
+      return new Response(
+        JSON.stringify({ error: "Price not configured" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // --- Get or create Stripe customer ---
-    let stripeCustomerId: string;
+    // 4. Get or create Stripe customer
+    const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
+    if (!stripeSecretKey) {
+      console.error("[stripe-checkout] STRIPE_SECRET_KEY not configured");
+      return new Response(
+        JSON.stringify({ error: "Stripe not configured" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
-    // Check if this tenant already has a Stripe customer ID
-    const customerCheckRes = await fetch(
-      `${supabaseUrl}/rest/v1/stripe_customers?tenant_id=eq.${resolvedTenantId}&select=stripe_customer_id`,
-      {
-        headers: {
-          Authorization: `Bearer ${serviceRoleKey}`,
-          apikey: serviceRoleKey,
-        },
-      }
-    );
+    // Check if tenant already has a Stripe customer
+    const adminClient = createClient(supabaseUrl, supabaseServiceKey);
+    const { data: tenant } = await adminClient
+      .from("tenants")
+      .select("id, stripe_customer_id, name")
+      .eq("id", tenantId)
+      .single();
 
-    const existingCustomers = await customerCheckRes.json();
+    let customerId = tenant?.stripe_customer_id;
 
-    if (existingCustomers?.length > 0 && existingCustomers[0].stripe_customer_id) {
-      stripeCustomerId = existingCustomers[0].stripe_customer_id;
-    } else {
+    if (!customerId) {
       // Create new Stripe customer
-      const customerRes = await fetch("https://api.stripe.com/v1/customers", {
+      const customerResponse = await fetch("https://api.stripe.com/v1/customers", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${stripeKey}`,
+          Authorization: `Bearer ${stripeSecretKey}`,
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({
-          email: userEmail,
-          name: userData.user_metadata?.full_name || "",
-          "metadata[supabase_user_id]": userId,
-          "metadata[atlas_tenant_id]": resolvedTenantId,
+          email: user.email || "",
+          name: tenant?.name || user.user_metadata?.full_name || "",
+          metadata: {
+            atlas_user_id: user.id,
+            atlas_tenant_id: tenantId,
+          },
         }).toString(),
       });
 
-      if (!customerRes.ok) {
-        const err = await customerRes.json();
-        return respond(corsH, 500, { error: `Failed to create Stripe customer: ${err.message}` });
+      if (!customerResponse.ok) {
+        const error = await customerResponse.text();
+        console.error("[stripe-checkout] Customer creation failed:", error);
+        return new Response(
+          JSON.stringify({ error: "Failed to create customer" }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
 
-      const customerData = await customerRes.json();
-      stripeCustomerId = customerData.id;
+      const customer = await customerResponse.json();
+      customerId = customer.id;
 
-      // Save the mapping (tenant-scoped)
-      await fetch(`${supabaseUrl}/rest/v1/stripe_customers`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${serviceRoleKey}`,
-          apikey: serviceRoleKey,
-          "Content-Type": "application/json",
-          Prefer: "resolution=merge-duplicates",
-        },
-        body: JSON.stringify({
-          user_id: userId,
-          tenant_id: resolvedTenantId,
-          stripe_customer_id: stripeCustomerId,
-        }),
-      });
+      // Save customer ID to tenant
+      await adminClient
+        .from("tenants")
+        .update({ stripe_customer_id: customerId })
+        .eq("id", tenantId);
     }
 
-    // --- Create Checkout Session ---
-    const appOrigin = req.headers.get("origin") || "https://atlas-ai-os.com";
+    // 5. Create Checkout Session
+    const appUrl = Deno.env.get("APP_URL") || "https://atlas-ai-os.com";
+    const successUrl = `${appUrl}/pricing-success?session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${appUrl}/pricing`;
 
-    const sessionRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+    const checkoutResponse = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${stripeKey}`,
+        Authorization: `Bearer ${stripeSecretKey}`,
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: new URLSearchParams({
-        customer: stripeCustomerId,
-        mode: "subscription",
+        customer: customerId,
         "line_items[0][price]": priceId,
         "line_items[0][quantity]": "1",
-        success_url: `${appOrigin}/pricing-success`,
-        cancel_url: `${appOrigin}/pricing?cancelled=true`,
-        // Metadata that the webhook will use to identify the Atlas tenant
-        "metadata[supabase_user_id]": userId,
-        "metadata[atlas_tenant_id]": resolvedTenantId,
-        "metadata[plan]": plan,
-        "metadata[billing]": billing,
+        mode: "subscription",
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        "metadata[atluser_id]": user.id,
+        "metadata[atlas_tenant_id]": tenantId,
+        "metadata[atlas_plan]": plan,
+        "metadata[atlas_billing]": billing,
+        "subscription_data[metadata][atluser_id]": user.id,
+        "subscription_data[metadata][atlas_tenant_id]": tenantId,
       }).toString(),
     });
 
-    if (!sessionRes.ok) {
-      const err = await sessionRes.json();
-      return respond(corsH, 500, { error: `Failed to create checkout session: ${err.message}` });
+    if (!checkoutResponse.ok) {
+      const error = await checkoutResponse.text();
+      console.error("[stripe-checkout] Checkout session creation failed:", error);
+      return new Response(
+        JSON.stringify({ error: "Failed to create checkout session" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const sessionData = await sessionRes.json();
+    const session = await checkoutResponse.json();
 
-    return respond(corsH, 200, {
-      url: sessionData.url,
-      sessionId: sessionData.id,
-    });
+    // 6. Return checkout URL
+    return new Response(
+      JSON.stringify({ url: session.url }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
 
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[stripe-checkout] Error:", msg);
-    return respond(corsH, 500, { error: "Internal server error" });
+  } catch (error) {
+    console.error("[stripe-checkout] Error:", error);
+    return new Response(
+      JSON.stringify({ error: "Internal server error" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   }
 });

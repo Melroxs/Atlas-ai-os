@@ -70,12 +70,16 @@ export default function Pricing() {
       return;
     }
 
-    // Navigate to auth with plan info and explicit signup intent
+    // Navigate to auth with plan info and explicit signup intent.
+    // The returnTo carries the plan + billing so Checkout receives them
+    // after Auth redirects back (URLSearchParams properly encodes the
+    // nested query string as a single value).
+    const checkoutReturnTo = `/checkout?plan=${encodeURIComponent(plan.name.toLowerCase())}&billing=${encodeURIComponent(billing)}`;
     const params = new URLSearchParams({
       mode: "signup",
       plan: plan.name.toLowerCase(),
       billing,
-      returnTo: "/checkout",
+      returnTo: checkoutReturnTo,
     });
     navigate(`/auth?${params.toString()}`);
   };

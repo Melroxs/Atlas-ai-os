@@ -1,5 +1,8 @@
 import { api } from "@/lib/api";
 import type { Id } from "@/lib/data-model";
+import { useAtlasWorkforce } from "@/hooks/use-atlas-workforce";
+import { AtlasReviewPanel } from "@/components/workforce/atlas-review-panel";
+import type { WorkItem } from "@/lib/work-queue/service";
 import {
   ConfidenceBar,
   EmptyPanel,
@@ -1080,6 +1083,9 @@ export default function ClaimDetail() {
         claimId={claimId}
         evidenceDocs={evidenceDocs}
       />
+
+      {/* Atlas Workforce Review — digital employee analysis */}
+      <AtlasWorkforceSection claimId={claimId} />
     </div>
   );
 }
@@ -1161,5 +1167,27 @@ function SupplementDocumentDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Wrapper that hooks up the Atlas Workforce Review panel for this claim. */
+function AtlasWorkforceSection({ claimId }: { claimId: Id<"insuranceClaims"> }) {
+  const { reviewClaim, running, lastResult, error } = useAtlasWorkforce();
+  const [workItems, setWorkItems] = useState<WorkItem[]>([]);
+
+  const handleReview = async () => {
+    const result = await reviewClaim(String(claimId));
+    if (result) setWorkItems(result.workItems);
+  };
+
+  return (
+    <AtlasReviewPanel
+      result={lastResult}
+      workItems={workItems}
+      running={running}
+      error={error}
+      onRunReview={handleReview}
+      claimId={String(claimId)}
+    />
   );
 }

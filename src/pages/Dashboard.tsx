@@ -1,5 +1,6 @@
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
+import { DailyBriefingPanel } from "@/components/workforce/daily-briefing-panel";
 import {
   ConfidenceBar,
   EmptyPanel,
@@ -333,6 +334,9 @@ export default function Dashboard() {
           )}
         </div>
       </Panel>
+
+      {/* Atlas Daily Briefing — digital employee overview */}
+      <DailyBriefingPanel />
 
       {/* Phase 12 — quick commands (restoration MVP) */}
       <Panel

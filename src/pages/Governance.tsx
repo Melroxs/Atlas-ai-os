@@ -17,6 +17,7 @@ import {
   listActionableGovernance,
   listGovernanceDecisions,
   decideGovernanceDecision,
+  normalizeKnowledgeGaps,
   type GovernanceDecisionRow,
 } from "@/lib/governance/persistence";
 import { filterBySearch, paginate, totalPages } from "@/lib/workforce/selectors";
@@ -58,7 +59,7 @@ function DecisionRow({
   busy: boolean;
 }) {
   const requiresOverride = row.decision === "BLOCK" || row.decision === "UNKNOWN";
-  const gaps = Array.isArray(row.knowledge_gaps) ? (row.knowledge_gaps as Array<{ description: string }>) : [];
+  const gaps = normalizeKnowledgeGaps(row.knowledge_gaps);
   return (
     <div className="px-4 py-3">
       <div className="flex flex-wrap items-center gap-2">

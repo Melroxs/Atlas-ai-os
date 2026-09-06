@@ -25,6 +25,7 @@ import type { WorkItem } from "@/lib/work-queue/service";
 import {
   listActionableGovernance,
   decideGovernanceDecision,
+  normalizeGovernanceDecisionRow,
   type GovernanceDecisionRow,
 } from "@/lib/governance/persistence";
 
@@ -181,21 +182,22 @@ export default function WorkQueue() {
               </p>
             )}
             {governanceItems.map((row) => {
-              const requiresOverride = row.decision === "BLOCK" || row.decision === "UNKNOWN";
+              const g = normalizeGovernanceDecisionRow(row);
+              const requiresOverride = g.decision === "BLOCK" || g.decision === "UNKNOWN";
               return (
-                <div key={row.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-5 py-3">
-                  <Badge variant="outline" className={`font-mono text-[9px] uppercase tracking-wide ${DECISION_CLS[row.decision] ?? ""}`}>
-                    {row.decision.replace(/_/g, " ")}
+                <div key={g.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-5 py-3">
+                  <Badge variant="outline" className={`font-mono text-[9px] uppercase tracking-wide ${DECISION_CLS[g.decision] ?? ""}`}>
+                    {g.decision.replace(/_/g, " ")}
                   </Badge>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-medium text-foreground">
-                      {row.action_type.replace(/_/g, " ")}
-                      {row.claim_id ? ` — claim ${row.claim_id}` : ""}
+                      {g.action_type.replace(/_/g, " ")}
+                      {g.claim_id ? ` — claim ${g.claim_id}` : ""}
                     </p>
-                    <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">{row.decision_rationale}</p>
-                    {row.knowledge_gaps.length > 0 && (
+                    <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">{g.decision_rationale}</p>
+                    {g.knowledgeGaps.length > 0 && (
                       <p className="mt-0.5 text-[10px] text-rose-500">
-                        Gaps: {(row.knowledge_gaps as Array<{ description: string }>).map((g) => g.description).join("; ")}
+                        Gaps: {g.knowledgeGaps.map((gap) => gap.description).join("; ")}
                       </p>
                     )}
                     {requiresOverride && (

@@ -31,6 +31,8 @@ import type { GovernanceSummary } from "../orchestrator/types";
 export const GOVERNANCE_ENGINE_VERSION = "atlas-governance-engine-1";
 export const KNOWLEDGE_CORPUS_VERSION = "1.0.0";
 
+export { normalizeKnowledgeGaps, normalizeGovernanceDecisionRow, type KnowledgeGapRow, type NormalizedGovernanceDecisionRow } from "./normalize-knowledge-gaps";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

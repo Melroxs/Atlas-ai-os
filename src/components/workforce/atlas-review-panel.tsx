@@ -18,6 +18,7 @@ import type { OrchestrationResult, TaskResult, EvidenceRecord, CommunicationReco
 import type { WorkItem } from "@/lib/work-queue/service";
 import {
   listGovernanceDecisions,
+  normalizeGovernanceDecisionRow,
   type GovernanceDecisionRow,
 } from "@/lib/governance/persistence";
 import {
@@ -212,16 +213,17 @@ function GovernanceHistory({ claimId, currentDecisionId }: { claimId: string; cu
       </div>
       <div className="mt-2 space-y-1.5">
         {rows.map((r) => {
-          const isCurrent = currentDecisionId === r.id;
+          const row = normalizeGovernanceDecisionRow(r);
+          const isCurrent = currentDecisionId === row.id;
           return (
-            <div key={r.id} className="rounded-lg border border-border/50 bg-background/40 px-3 py-2">
+            <div key={row.id} className="rounded-lg border border-border/50 bg-background/40 px-3 py-2">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="text-[11px] font-medium text-foreground">{r.action_type.replace(/_/g, " ")}</span>
-                <Badge variant="outline" className={`font-mono text-[9px] uppercase tracking-wide ${decisionBadgeCls(r.decision)}`}>
-                  {r.decision.replace(/_/g, " ")}
+                <span className="text-[11px] font-medium text-foreground">{row.action_type.replace(/_/g, " ")}</span>
+                <Badge variant="outline" className={`font-mono text-[9px] uppercase tracking-wide ${decisionBadgeCls(row.decision)}`}>
+                  {row.decision.replace(/_/g, " ")}
                 </Badge>
                 <span className="font-mono text-[9px] text-muted-foreground">
-                  {formatDecisionTime(r.evaluated_at)} · {r.evaluated_at.slice(11, 19)}Z
+                  {formatDecisionTime(row.evaluated_at)} · {row.evaluated_at.slice(11, 19)}Z
                 </span>
                 {isCurrent && (
                   <Badge variant="outline" className="font-mono text-[9px] uppercase tracking-wide text-teal-600 dark:text-teal-300">
@@ -229,21 +231,21 @@ function GovernanceHistory({ claimId, currentDecisionId }: { claimId: string; cu
                   </Badge>
                 )}
                 <span className="ml-auto font-mono text-[9px] text-muted-foreground">
-                  risk {r.risk_level} · {r.execution_status.replace(/_/g, " ")} · approval {r.approval_status.replace(/_/g, " ")}
+                  risk {row.risk_level} · {row.execution_status.replace(/_/g, " ")} · approval {row.approval_status.replace(/_/g, " ")}
                 </span>
               </div>
-              {r.jurisdiction && (
-                <p className="mt-0.5 text-[10px] text-muted-foreground/70">Jurisdiction: {r.jurisdiction}</p>
+              {row.jurisdiction && (
+                <p className="mt-0.5 text-[10px] text-muted-foreground/70">Jurisdiction: {row.jurisdiction}</p>
               )}
-              <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-muted-foreground">{r.decision_rationale}</p>
-              {(r.override_decision || r.override_reason) && (
+              <p className="mt-0.5 line-clamp-2 text-[10px] leading-4 text-muted-foreground">{row.decision_rationale}</p>
+              {(row.override_decision || row.override_reason) && (
                 <p className="mt-0.5 text-[10px] text-violet-600 dark:text-violet-300">
-                  Overridden: {r.override_decision} — {r.override_reason}
+                  Overridden: {row.override_decision} — {row.override_reason}
                 </p>
               )}
-              {r.knowledge_gaps.length > 0 && (
+              {row.knowledgeGaps.length > 0 && (
                 <p className="mt-0.5 text-[10px] text-rose-500">
-                  Gaps: {(r.knowledge_gaps as Array<{ description: string }>).map((g) => g.description).join("; ")}
+                  Gaps: {row.knowledgeGaps.map((g) => g.description).join("; ")}
                 </p>
               )}
             </div>

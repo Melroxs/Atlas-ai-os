@@ -1,5 +1,5 @@
 import type { JurisdictionRecord, ResearchTopic, SourceCandidate } from "./types";
-import { WAVE_1_CODES } from "./types";
+const WAVE_1_CODES = ["FL", "TX", "CA", "NY", "CO", "MD", "GA", "LA", "AZ", "WA"] as const;
 
 const STATE_NAMES: Record<string, string> = {
   AL: "Alabama",

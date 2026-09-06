@@ -177,6 +177,7 @@ const NAV_SECTIONS: Array<{
     items: [
       { to: "/dashboard/ask", label: "Ask Atlas", icon: MessageSquareText },
       { to: "/dashboard/knowledge", label: "Knowledge & Ingestion", icon: Database },
+      { to: "/dashboard/regulatory", label: "Regulatory", icon: Landmark },
       { to: "/dashboard/intelligence", label: "Intelligence Packs", icon: Layers },
       { to: "/dashboard/brain", label: "Business Brain", icon: Brain },
       {
@@ -241,6 +242,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/dashboard/workers/estimator": "Estimator",
   "/dashboard/workers/customers": "Customer Success Manager",
   "/dashboard/governance": "Governance",
+  "/dashboard/regulatory": "Regulatory Intelligence",
   "/dashboard/ask": "Ask Atlas",
   "/dashboard/knowledge": "Knowledge & Ingestion",
   "/dashboard/intelligence": "Intelligence Packs",

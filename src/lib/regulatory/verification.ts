@@ -1,108 +1,184 @@
-import type { AcquiredSource, Contradiction, RegulatoryProposition, SourceCandidate, VerificationResult, VerificationState } from "./types";
+// ---------------------------------------------------------------------------
+// Atlas Regulatory Intelligence — Verification State Machine
+//
+// A proposition is NEVER verified merely because a model believes it. The
+// verification path is: source exists → URL resolves → authority matches →
+// citation exists → extracted text supports the proposition → jurisdiction
+// matches → effective dates considered → supersession considered →
+// contradictions checked. Every transition below is enforced; the critical
+// invariants are:
+//
+//   - secondary sources (tier 4) can NEVER reach VERIFIED / VERIFIED_PRIMARY
+//   - UNVERIFIED / INSUFFICIENT_EVIDENCE can never auto-promote
+//   - "not found" is represented as INSUFFICIENT_EVIDENCE, never "does not exist"
+//   - BLOCK-style uncertainty (no authoritative source) must surface, not fold
+// ---------------------------------------------------------------------------
 
-const PRIMARY_TIERS = new Set<RegulatoryProposition["authorityTier"]>([
-  "current_enacted_statute",
-  "current_administrative_regulation",
-  "official_regulator_material",
-  "controlling_court_authority",
-  "recognized_official_guidance",
-]);
+import type {
+  AuthorityTier,
+  RegulatorySource,
+  VerificationStatus,
+} from "./types";
+import { SOURCE_TYPE_TIERS } from "./types";
 
-const TIER_RANK: Record<RegulatoryProposition["authorityTier"], number> = {
-  current_enacted_statute: 1,
-  current_administrative_regulation: 2,
-  official_regulator_material: 3,
-  controlling_court_authority: 4,
-  recognized_official_guidance: 5,
-  model_law_or_standard: 6,
-  secondary_reference: 7,
+// ---------------------------------------------------------------------------
+// Status metadata
+// ---------------------------------------------------------------------------
+
+export const VERIFICATION_STATUS_ORDER: VerificationStatus[] = [
+  "DISCOVERED",
+  "FETCHED",
+  "EXTRACTED",
+  "UNVERIFIED",
+  "VERIFIED",
+  "PARTIALLY_VERIFIED",
+  "CONTRADICTED",
+  "SUPERSEDED",
+  "STALE",
+  "FAILED",
+  "NEEDS_HUMAN_REVIEW",
+  "INSUFFICIENT_EVIDENCE",
+];
+
+export const VERIFICATION_STATUS_LABELS: Record<VerificationStatus, string> = {
+  DISCOVERED: "Discovered",
+  FETCHED: "Fetched",
+  EXTRACTED: "Extracted",
+  UNVERIFIED: "Unverified",
+  VERIFIED: "Verified",
+  PARTIALLY_VERIFIED: "Partially Verified",
+  CONTRADICTED: "Contradicted",
+  SUPERSEDED: "Superseded",
+  STALE: "Stale",
+  FAILED: "Failed",
+  NEEDS_HUMAN_REVIEW: "Needs Human Review",
+  INSUFFICIENT_EVIDENCE: "Insufficient Evidence",
 };
 
-export function authorityRank(tier: RegulatoryProposition["authorityTier"]): number {
-  return TIER_RANK[tier];
+/** Human label for the two distinct knowledge states around absence. */
+export const SUPPLEMENT_STATE_LABELS = {
+  explicitly_regulated: "Explicitly regulated",
+  indirectly_regulated: "Indirectly regulated",
+  no_identified_specific_provision: "No identified specific provision",
+  insufficient_evidence: "Insufficient evidence",
+  research_incomplete: "Research incomplete",
+} as const;
+
+// ---------------------------------------------------------------------------
+// Verification evidence
+// ---------------------------------------------------------------------------
+
+export interface VerificationChecklist {
+  /** Source object exists in the registry. */
+  sourceExists: boolean;
+  /** The canonical URL resolves (reachable). */
+  urlResolves: boolean;
+  /** The source belongs to the expected authority (publisher/domain check). */
+  authorityMatches: boolean;
+  /** The cited statute/regulation identifier exists in the source text. */
+  citationExists: boolean;
+  /** The extracted rule text appears in (or is directly supported by) the source text. */
+  textSupported: boolean;
+  /** Jurisdiction matches the proposition's jurisdiction. */
+  jurisdictionMatches: boolean;
+  /** Effective dates considered (rule was in force at the reference date). */
+  effectiveDateConsidered: boolean;
+  /** No newer superseding source is known. */
+  notSuperseded: boolean;
+  /** No open contradiction records reference this proposition/source. */
+  noContradictions: boolean;
 }
 
-export function canBeVerified(proposition: RegulatoryProposition, source?: SourceCandidate): boolean {
-  return Boolean(
-    source &&
-      source.jurisdictionCode === proposition.jurisdictionCode &&
-      source.relationship !== "DISCOVERY_SOURCE" &&
-      PRIMARY_TIERS.has(proposition.authorityTier) &&
-      proposition.sourceId &&
-      proposition.citation.citation &&
-      proposition.evidenceText &&
-      proposition.evidenceText.trim().length > 0,
-  );
-}
+export type VerificationDecision =
+  | "VERIFIED"
+  | "PARTIALLY_VERIFIED"
+  | "UNVERIFIED"
+  | "NEEDS_HUMAN_REVIEW"
+  | "CONTRADICTED"
+  | "FAILED";
 
-export function verifyProposition(
-  proposition: RegulatoryProposition,
-  source: AcquiredSource | undefined,
-  now = new Date().toISOString(),
-  contradictions: Contradiction[] = [],
-): VerificationResult {
-  const reasons: string[] = [];
-  if (!source) reasons.push("authoritative source is not available");
-  if (source && source.jurisdictionCode !== proposition.jurisdictionCode) reasons.push("source jurisdiction does not match proposition jurisdiction");
-  if (source?.relationship === "DISCOVERY_SOURCE" || proposition.authorityTier === "secondary_reference") reasons.push("secondary source is discovery-only and cannot verify law");
-  if (!proposition.citation.citation) reasons.push("citation could not be resolved");
-  if (!proposition.evidenceText?.trim()) reasons.push("supporting source text is missing");
-  if (!proposition.effectiveFrom && !proposition.enactedAt) reasons.push("effective or enacted date is unresolved");
-  const criticalContradictions = contradictions.filter((item) => item.resolutionStatus !== "RESOLVED_PRIMARY_PREVAILS");
-  if (criticalContradictions.length > 0) reasons.push("critical contradiction remains unresolved");
-  if (reasons.length === 0 && canBeVerified(proposition, source)) {
-    return { state: "VERIFIED", reasons: [], checkedAt: now, authoritativeSourceId: source?.id };
+/**
+ * Evaluate a verification checklist against the rules. Tier-4 sources are
+ * structurally capped: they can reach at most UNVERIFIED-with-review.
+ */
+export function decideVerification(
+  source: RegulatorySource,
+  checklist: VerificationChecklist,
+): VerificationDecision {
+  // Secondary research can never be verified as controlling authority.
+  if (source.authorityTier === 4 || SOURCE_TYPE_TIERS[source.sourceType] === 4) {
+    return checklist.noContradictions ? "UNVERIFIED" : "CONTRADICTED";
   }
-  const missingSource = !source || source.status !== "FETCHED";
-  const state: VerificationState = criticalContradictions.length > 0
-    ? "CONTRADICTED"
-    : missingSource
-      ? "INSUFFICIENT_EVIDENCE"
-      : proposition.requiresHumanReview
-        ? "NEEDS_HUMAN_REVIEW"
-        : proposition.citation.citation
-          ? "PARTIALLY_VERIFIED"
-          : "UNVERIFIED";
-  return { state, reasons, checkedAt: now, authoritativeSourceId: source?.id, contradictionIds: criticalContradictions.map((item) => item.id).filter((id): id is string => Boolean(id)) };
+
+  // Any open contradiction blocks verification.
+  if (!checklist.noContradictions) return "CONTRADICTED";
+
+  // Hard failures.
+  if (!checklist.sourceExists || !checklist.urlResolves) return "FAILED";
+  if (!checklist.authorityMatches || !checklist.jurisdictionMatches) return "FAILED";
+
+  // Full verification requires every substantive check.
+  const substantive = [
+    checklist.citationExists,
+    checklist.textSupported,
+    checklist.effectiveDateConsidered,
+    checklist.notSuperseded,
+  ];
+  if (substantive.every(Boolean)) return "VERIFIED";
+
+  // Content AND citation confirmed against the source, but temporal or
+  // supersession checks are incomplete — partial, never full.
+  if (checklist.citationExists && checklist.textSupported) return "PARTIALLY_VERIFIED";
+
+  // Neither the text nor the citation is confirmed — human review required.
+  if (!checklist.textSupported && !checklist.citationExists) {
+    return "NEEDS_HUMAN_REVIEW";
+  }
+
+  // The proposition cannot be anchored to a verified citation — stays
+  // UNVERIFIED (never auto-promoted).
+  return "UNVERIFIED";
 }
 
-export function detectContradiction(
-  left: RegulatoryProposition,
-  right: RegulatoryProposition,
-): Contradiction | undefined {
-  if (left.jurisdictionCode !== right.jurisdictionCode || left.topic !== right.topic) return undefined;
-  const leftTime = left.normalizedValue?.amount;
-  const rightTime = right.normalizedValue?.amount;
-  const leftUnit = left.normalizedValue?.unit;
-  const rightUnit = right.normalizedValue?.unit;
-  const deadlineConflict = typeof leftTime === "number" && typeof rightTime === "number" && (leftTime !== rightTime || leftUnit !== rightUnit);
-  const textConflict = left.statement.trim().toLowerCase() !== right.statement.trim().toLowerCase();
-  if (!deadlineConflict && !textConflict) return undefined;
-  const leftRank = authorityRank(left.authorityTier);
-  const rightRank = authorityRank(right.authorityTier);
-  const resolved = leftRank !== rightRank ? "RESOLVED_PRIMARY_PREVAILS" : "NEEDS_HUMAN_REVIEW";
-  return {
-    jurisdictionCode: left.jurisdictionCode,
-    sourceAId: left.sourceId,
-    sourceBId: right.sourceId,
-    propositionAId: left.id,
-    propositionBId: right.id,
-    authorityTierA: left.authorityTier,
-    authorityTierB: right.authorityTier,
-    conflictType: deadlineConflict ? "DEADLINE" : left.effectiveFrom !== right.effectiveFrom ? "VERSION" : "SCOPE",
-    description: `Conflicting propositions for ${left.topic}: ${left.statement} / ${right.statement}`,
-    resolutionStatus: resolved,
-  };
+// ---------------------------------------------------------------------------
+// Anti-hallucination guards
+// ---------------------------------------------------------------------------
+
+/**
+ * A proposition whose source is tier 4 can never be presented as primary.
+ * Returns the effective status to store.
+ */
+export function capVerificationForSource(
+  status: VerificationStatus,
+  source: RegulatorySource,
+): VerificationStatus {
+  const tier = Math.max(source.authorityTier, SOURCE_TYPE_TIERS[source.sourceType] ?? source.authorityTier);
+  // Secondary research: can never even be partially verified — discovery only.
+  if (tier === 4) {
+    if (status === "VERIFIED" || status === "PARTIALLY_VERIFIED") return "UNVERIFIED";
+  }
+  // Industry/standards: verifiable as to their own content, never as law.
+  if (tier === 3) {
+    if (status === "VERIFIED") return "PARTIALLY_VERIFIED";
+  }
+  return status;
 }
 
-export function applyVerification(
-  proposition: RegulatoryProposition,
-  result: VerificationResult,
-): RegulatoryProposition {
-  return {
-    ...proposition,
-    verificationState: result.state,
-    verifiedAt: result.checkedAt,
-    requiresHumanReview: result.state === "NEEDS_HUMAN_REVIEW" || result.state === "CONTRADICTED",
-  };
+/** A secondary source is usable for discovery but never as a citation basis. */
+export function canCiteAsPrimary(source: RegulatorySource): boolean {
+  return SOURCE_TYPE_TIERS[source.sourceType] <= 1;
+}
+
+// ---------------------------------------------------------------------------
+// Absence semantics
+// ---------------------------------------------------------------------------
+
+/**
+ * "No authoritative source found for this topic in this jurisdiction" is
+ * represented as INSUFFICIENT_EVIDENCE (or research_incomplete at the topic
+ * level) — never as "the rule does not exist". This function produces the
+ * honest status for a topic-level gap.
+ */
+export function statusForAbsence(researchComplete: boolean): VerificationStatus {
+  return researchComplete ? "INSUFFICIENT_EVIDENCE" : "UNVERIFIED";
 }

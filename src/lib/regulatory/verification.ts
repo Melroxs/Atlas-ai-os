@@ -15,7 +15,6 @@
 // ---------------------------------------------------------------------------
 
 import type {
-  AuthorityTier,
   RegulatorySource,
   VerificationStatus,
 } from "./types";

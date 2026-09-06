@@ -38,7 +38,6 @@ import { computeJurisdictionCoverage } from "@/lib/regulatory/completeness";
 import type { JurisdictionCoverage } from "@/lib/regulatory/types";
 import { SUPPLEMENT_TOPICS } from "@/lib/regulatory/taxonomy";
 import { VERIFICATION_STATUS_LABELS } from "@/lib/regulatory/verification";
-import { AUTHORITY_TIER_NAMES } from "@/lib/regulatory/types";
 import { detectRegulatoryContradictions } from "@/lib/regulatory/contradictions";
 import {
   runFreshnessMonitor,
@@ -150,14 +149,12 @@ export default function RegulatoryIntelligence() {
           configuredTargetTopics: SUPPLEMENT_TOPICS,
         }),
       ),
-    [JURISDICTIONS, sources, propositions, openContradictions],
+    [sources, propositions, openContradictions],
   );
 
   const verifiedProps = propositions.filter((p) => p.verificationStatus === "VERIFIED");
-  const unverifiedProps = propositions.filter((p) => p.verificationStatus !== "VERIFIED");
   const registeredSources = sources.filter((s) => s.status === "REGISTERED");
   const verifiedSources = sources.filter((s) => s.status === "VERIFIED");
-  const failedSources = sources.filter((s) => s.status === "FAILED");
 
   // -------------------------------------------------------------------------
   // Admin action: run an observable acquisition scan over the registry.

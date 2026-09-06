@@ -2,7 +2,7 @@ import { AtlasAssistant } from "@/components/atlas-assistant";
 import { useVoiceSession } from "@/components/voice-session";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
-import { canAccessPilotAdmin, canAccessCRM, canAccessMail, canAccessUserAdmin, isInternalRole } from "@/lib/auth/access-gate";
+import { canAccessPilotAdmin, canAccessCRM, canAccessMail, canAccessUserAdmin } from "@/lib/auth/access-gate";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/atlas-ui";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -202,7 +202,10 @@ const NAV_SECTIONS: Array<{
   },
   {
     label: "Admin",
-    items: [{ to: "/dashboard/users", label: "Users & Access", icon: Users }],
+    items: [
+      { to: "/dashboard/users", label: "Users & Access", icon: Users },
+      { to: "/dashboard/regulatory", label: "Regulatory Intelligence", icon: ShieldCheck },
+    ],
   },
   {
     label: "Mail",
@@ -267,6 +270,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/dashboard/pilot/crm": "CRM",
   "/dashboard/pilot/outreach": "Outreach Center",
   "/dashboard/users": "Users & Access",
+  "/dashboard/regulatory": "Regulatory Intelligence",
 };
 
 function initials(name?: string | null, email?: string | null): string {

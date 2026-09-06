@@ -45,7 +45,8 @@ export interface CompletenessInput {
   now?: number;
 }
 
-const TOPIC_GROUP_FOR: Record<string, "claims_handling_coverage" | "supplement_coverage" | "contractor_coverage" | "public_adjuster_coverage"> = {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const TOPIC_GROUP_FOR_UNUSED: Record<string, "claims_handling_coverage" | "supplement_coverage" | "contractor_coverage" | "public_adjuster_coverage"> = {
   // claims handling group targets
   notice_of_loss: "claims_handling_coverage",
   acknowledgment: "claims_handling_coverage",

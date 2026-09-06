@@ -62,6 +62,7 @@ const ProjectManager = lazy(() => import("./pages/workers/ProjectManager.tsx"));
 const EstimatorWorker = lazy(() => import("./pages/workers/Estimator.tsx"));
 const CustomerSuccess = lazy(() => import("./pages/workers/CustomerSuccess.tsx"));
 const Governance = lazy(() => import("./pages/Governance.tsx"));
+const RegulatoryDashboard = lazy(() => import("./pages/RegulatoryDashboard.tsx"));
 const RegulatoryIntelligence = lazy(() => import("./pages/RegulatoryIntelligence.tsx"));
 
 /** Protected section: auth gate + workspace shell.
@@ -269,6 +270,16 @@ createRoot(document.getElementById("root")!).render(
               />
               <Route
                 path="/dashboard/regulatory"
+                element={
+                  <ProtectedLayout>
+                    <RequireInternalAuth section="users">
+                      <RegulatoryDashboard />
+                    </RequireInternalAuth>
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/regulatory-intelligence"
                 element={
                   <ProtectedLayout>
                     <RegulatoryIntelligence />

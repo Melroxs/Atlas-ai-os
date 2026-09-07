@@ -9,6 +9,7 @@ import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation } from "react-router";
+import BillingSettings from "./pages/BillingSettings.tsx";
 import "./index.css";
 
 // Lazy load route components for better code splitting
@@ -427,6 +428,14 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <ProtectedLayout>
                     <Settings />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/billing"
+                element={
+                  <ProtectedLayout>
+                    <BillingSettings />
                   </ProtectedLayout>
                 }
               />

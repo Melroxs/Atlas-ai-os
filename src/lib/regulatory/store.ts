@@ -3,13 +3,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   AcquiredSource,
-  Contradiction,
   CoverageReport,
   HumanReviewItem,
   JurisdictionRecord,
-  RegulatoryProposition,
+  LegacyContradiction,
+  LegacyProposition,
   RegulatoryStore,
-} from "./types";
+} from "./legacy";
 
 function sourceRow(source: AcquiredSource): Record<string, unknown> {
   return {
@@ -39,7 +39,7 @@ function sourceRow(source: AcquiredSource): Record<string, unknown> {
   };
 }
 
-function propositionRow(proposition: RegulatoryProposition): Record<string, unknown> {
+function propositionRow(proposition: LegacyProposition): Record<string, unknown> {
   return {
     id: proposition.id,
     jurisdiction_code: proposition.jurisdictionCode,
@@ -98,7 +98,7 @@ function sourceFromRow(row: Record<string, any>): AcquiredSource {
   };
 }
 
-function propositionFromRow(row: Record<string, any>): RegulatoryProposition {
+function propositionFromRow(row: Record<string, any>): LegacyProposition {
   return {
     id: row.id,
     jurisdictionCode: row.jurisdiction_code,
@@ -132,8 +132,8 @@ function propositionFromRow(row: Record<string, any>): RegulatoryProposition {
 export class InMemoryRegulatoryStore implements RegulatoryStore {
   readonly jurisdictions = new Map<string, JurisdictionRecord>();
   readonly sources = new Map<string, AcquiredSource>();
-  readonly propositions = new Map<string, RegulatoryProposition>();
-  readonly contradictions = new Map<string, Contradiction>();
+  readonly propositions = new Map<string, LegacyProposition>();
+  readonly contradictions = new Map<string, LegacyContradiction>();
   readonly reviews = new Map<string, HumanReviewItem>();
   readonly coverage = new Map<string, CoverageReport>();
 
@@ -156,7 +156,7 @@ export class InMemoryRegulatoryStore implements RegulatoryStore {
     return this.sources.get(id);
   }
 
-  async upsertProposition(proposition: RegulatoryProposition): Promise<RegulatoryProposition> {
+  async upsertProposition(proposition: LegacyProposition): Promise<LegacyProposition> {
     let id = proposition.id ?? `${proposition.sourceId}_${proposition.topic}_${this.propositions.size}`;
     const previous = this.propositions.get(id);
     if (previous && (previous.statement !== proposition.statement || previous.evidenceText !== proposition.evidenceText || previous.effectiveFrom !== proposition.effectiveFrom || previous.effectiveTo !== proposition.effectiveTo)) {
@@ -168,18 +168,18 @@ export class InMemoryRegulatoryStore implements RegulatoryStore {
     return next;
   }
 
-  async listPropositions(filter: Partial<Pick<RegulatoryProposition, "jurisdictionCode" | "topic" | "verificationState">> = {}): Promise<RegulatoryProposition[]> {
+  async listPropositions(filter: Partial<Pick<LegacyProposition, "jurisdictionCode" | "topic" | "verificationState">> = {}): Promise<LegacyProposition[]> {
     return [...this.propositions.values()].filter((item) => Object.entries(filter).every(([key, value]) => item[key as keyof typeof item] === value));
   }
 
-  async addContradiction(contradiction: Contradiction): Promise<Contradiction> {
+  async addContradiction(contradiction: LegacyContradiction): Promise<LegacyContradiction> {
     const id = contradiction.id ?? `contradiction_${this.contradictions.size + 1}`;
     const next = { ...contradiction, id };
     this.contradictions.set(id, next);
     return next;
   }
 
-  async listContradictions(jurisdictionCode?: string): Promise<Contradiction[]> {
+  async listContradictions(jurisdictionCode?: string): Promise<LegacyContradiction[]> {
     return [...this.contradictions.values()].filter((item) => !jurisdictionCode || item.jurisdictionCode === jurisdictionCode);
   }
 
@@ -249,7 +249,7 @@ export class SupabaseRegulatoryStore implements RegulatoryStore {
     return data ? sourceFromRow(data as Record<string, any>) : undefined;
   }
 
-  async upsertProposition(proposition: RegulatoryProposition): Promise<RegulatoryProposition> {
+  async upsertProposition(proposition: LegacyProposition): Promise<LegacyProposition> {
     let nextProposition = proposition;
     if (proposition.id) {
       const previousResult = await this.client.from("atlas_regulatory_propositions").select("*").eq("id", proposition.id).maybeSingle();
@@ -270,7 +270,7 @@ export class SupabaseRegulatoryStore implements RegulatoryStore {
     return persisted;
   }
 
-  async listPropositions(filter: Partial<Pick<RegulatoryProposition, "jurisdictionCode" | "topic" | "verificationState">> = {}): Promise<RegulatoryProposition[]> {
+  async listPropositions(filter: Partial<Pick<LegacyProposition, "jurisdictionCode" | "topic" | "verificationState">> = {}): Promise<LegacyProposition[]> {
     let query = this.client.from("atlas_regulatory_propositions").select("*");
     if (filter.jurisdictionCode) query = query.eq("jurisdiction_code", filter.jurisdictionCode);
     if (filter.topic) query = query.eq("topic", filter.topic);
@@ -280,13 +280,13 @@ export class SupabaseRegulatoryStore implements RegulatoryStore {
     return ((data ?? []) as Record<string, any>[]).map(propositionFromRow);
   }
 
-  async addContradiction(contradiction: Contradiction): Promise<Contradiction> {
+  async addContradiction(contradiction: LegacyContradiction): Promise<LegacyContradiction> {
     const { data, error } = await this.client.from("atlas_regulatory_contradictions").insert({ jurisdiction_code: contradiction.jurisdictionCode, source_a_id: contradiction.sourceAId, source_b_id: contradiction.sourceBId, proposition_a_id: contradiction.propositionAId ?? null, proposition_b_id: contradiction.propositionBId ?? null, authority_tier_a: contradiction.authorityTierA, authority_tier_b: contradiction.authorityTierB, conflict_type: contradiction.conflictType, description: contradiction.description, resolution_status: contradiction.resolutionStatus }).select("*").single();
     if (error) throw new Error(`Failed to persist contradiction: ${error.message}`);
     return { ...contradiction, id: (data as any).id };
   }
 
-  async listContradictions(jurisdictionCode?: string): Promise<Contradiction[]> {
+  async listContradictions(jurisdictionCode?: string): Promise<LegacyContradiction[]> {
     let query = this.client.from("atlas_regulatory_contradictions").select("*");
     if (jurisdictionCode) query = query.eq("jurisdiction_code", jurisdictionCode);
     const { data, error } = await query;

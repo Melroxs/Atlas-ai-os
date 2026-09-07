@@ -1,12 +1,15 @@
+// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { ReactElement } from "react";
 import { render, screen } from "@testing-library/react";
+import "@testing-library/jest-dom/vitest";
 import { BrowserRouter } from "react-router";
 import { useNavigate } from "react-router";
 import { useAuth } from "@/hooks/use-auth";
 import BillingSettings from "./BillingSettings";
 
-vi.mock("react-router", () => {
-  const actual = vi.importActual<typeof import("react-router")>("react-router");
+vi.mock(import("react-router"), async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router")>();
   return {
     ...actual,
     useNavigate: vi.fn(),
@@ -18,7 +21,7 @@ vi.mock("@/hooks/use-auth", () => ({
   useAuth: vi.fn(),
 }));
 
-function wrapInRouter(element: React.ReactElement) {
+function wrapInRouter(element: ReactElement) {
   return (
     <BrowserRouter>
       {element}
@@ -56,7 +59,9 @@ describe("BillingSettings placeholder UI", () => {
 
     render(wrapInRouter(<BillingSettings />));
 
-    expect(screen.getByRole("heading", { name: /billing/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: /billing/i }),
+    ).toBeInTheDocument();
     expect(
       screen.getByText(/manage your atlas subscription/i),
     ).toBeInTheDocument();

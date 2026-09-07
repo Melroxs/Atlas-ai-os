@@ -134,6 +134,8 @@ export interface BillingState {
   canUsePaidFeatures: boolean;
 }
 
+import type { BillingWebhookEvent } from "./types";
+
 // ---------------------------------------------------------------------------
 // Provider adapter contract
 // ---------------------------------------------------------------------------
@@ -280,9 +282,3 @@ export function resolveBillingState(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Export the plan model too, so checkout/plans can import from one place.
-// ---------------------------------------------------------------------------
-
-export { INTERNAL_PLANS };
-export type { InternalPlan };

@@ -270,7 +270,6 @@ const PAGE_TITLES: Record<string, string> = {
   "/dashboard/pilot/crm": "CRM",
   "/dashboard/pilot/outreach": "Outreach Center",
   "/dashboard/users": "Users & Access",
-  "/dashboard/regulatory": "Regulatory Intelligence",
 };
 
 function initials(name?: string | null, email?: string | null): string {

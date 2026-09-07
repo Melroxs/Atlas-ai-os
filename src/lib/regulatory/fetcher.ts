@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import type { AcquiredSource, FetchPolicy, RegulatoryError, SourceCandidate } from "./types";
+import type {
+  AcquiredSource,
+  FetchPolicy,
+  RegulatoryError,
+  SourceCandidate,
+} from "./legacy";
 
 export const DEFAULT_FETCH_POLICY: FetchPolicy = {
   allowedDomains: [],

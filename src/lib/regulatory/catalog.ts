@@ -1,4 +1,8 @@
-import type { JurisdictionRecord, ResearchTopic, SourceCandidate } from "./types";
+import type {
+  JurisdictionRecord,
+  ResearchTopic,
+  SourceCandidate,
+} from "./legacy";
 const WAVE_1_CODES = ["FL", "TX", "CA", "NY", "CO", "MD", "GA", "LA", "AZ", "WA"] as const;
 
 const STATE_NAMES: Record<string, string> = {

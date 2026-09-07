@@ -15,14 +15,16 @@
 // the contract but must match the installed package.
 // ---------------------------------------------------------------------------
 
-import type { BillingProviderAdapter, BillingWebhookEvent, ProviderSubscription } from "./provider";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import type { BillingProviderAdapter, ProviderSubscription } from "./provider";
+import type { BillingWebhookEvent } from "./types";
 import type {
   BillingProvider,
   OrganizationSubscription,
   SubscriptionStatus,
   InternalPlan,
 } from "./types";
-import { paddlePriceId, internalPlanForPaddlePriceId, type InternalPlan as InternalPlanType } from "./plans";
+import { paddlePriceId, internalPlanForPaddlePriceId } from "./plans";
 import { INTERNAL_PLANS, SUBSCRIPTION_STATUSES } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -148,7 +150,31 @@ export function canBuildPaddleCheckout(): boolean {
   return Boolean(PADDLE_API_KEY && PADDLE_CLIENT_TOKEN);
 }
 
-export const PADDLE_ADAPTER: BillingProviderAdapter = {
+/**
+ * The Paddle adapter surface, including the internal extraction/mapping
+ * helpers used by parseWebhookEvent / mapSubscriptionToRecord.
+ */
+interface PaddleAdapter extends BillingProviderAdapter {
+  extractProviderCustomerId(data: Record<string, unknown>): string | null;
+  extractProviderSubscriptionId(data: Record<string, unknown>): string | null;
+  mapStatus(data: Record<string, unknown>): SubscriptionStatus;
+  extractInternalPlan(data: Record<string, unknown>): InternalPlan | null;
+  extractCurrentPeriodStart(data: Record<string, unknown>): number | null;
+  extractCurrentPeriodEnd(data: Record<string, unknown>): number | null;
+  extractCancelAt(data: Record<string, unknown>): number | null;
+  extractCanceledAt(data: Record<string, unknown>): number | null;
+  extractTrialStart(data: Record<string, unknown>): number | null;
+  extractTrialEnd(data: Record<string, unknown>): number | null;
+  mapProviderSubscription(json: Record<string, unknown>): ProviderSubscription;
+  mapInternalPlanForSubscription(
+    subscription: ProviderSubscription,
+  ): InternalPlan | null;
+  mapStatusForSubscription(
+    subscription: ProviderSubscription,
+  ): SubscriptionStatus;
+}
+
+export const PADDLE_ADAPTER: PaddleAdapter = {
   name: "paddle" as BillingProvider,
 
   init(): void {
@@ -232,7 +258,7 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
       );
     }
 
-    const expected = crypto.createHmac("sha256", PADDLE_WEBHOOK_SECRET)
+    const expected = createHmac("sha256", PADDLE_WEBHOOK_SECRET)
       .update(`${timestamp}.${rawBody}`)
       .digest("hex");
 
@@ -244,7 +270,7 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
     if (expectedBuf.length !== actualBuf.length) {
       throw new Error("Paddle webhook signature verification failed.");
     }
-    if (!crypto.subtle.timingSafeEqual(expectedBuf, actualBuf)) {
+    if (!timingSafeEqual(expectedBuf, actualBuf)) {
       throw new Error("Paddle webhook signature verification failed.");
     }
 
@@ -330,6 +356,7 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
     try {
       const response = await paddleFetch(
         `/v1/subscriptions/${providerSubscriptionId}`,
+        {},
       );
       if (!response.ok) {
         if (response.status === 404) return null;
@@ -356,28 +383,14 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
       provider_customer_id: providerCustomerId,
       provider_subscription_id: providerSubscription.id,
       internal_plan: this.mapInternalPlanForSubscription(providerSubscription),
-      provider_price_id: (providerSubscription.priceId as string) ?? null,
+      provider_price_id: providerSubscription.priceId ?? null,
       status: this.mapStatusForSubscription(providerSubscription),
-      current_period_start:
-        providerSubscription.currentPeriodStart ??
-        providerSubscription.current_period_start ??
-        null,
-      current_period_end:
-        providerSubscription.currentPeriodEnd ??
-        providerSubscription.current_period_end ??
-        null,
-      cancel_at: (providerSubscription.cancelAt as number) ??
-        (providerSubscription.cancel_at as number) ??
-        null,
-      canceled_at: (providerSubscription.canceledAt as number) ??
-        (providerSubscription.canceled_at as number) ??
-        null,
-      trial_start: (providerSubscription.trialStartDate as number) ??
-        (providerSubscription.trial_start as number) ??
-        null,
-      trial_end: (providerSubscription.trialEndDate as number) ??
-        (providerSubscription.trial_end as number) ??
-        null,
+      current_period_start: providerSubscription.currentPeriodStart ?? null,
+      current_period_end: providerSubscription.currentPeriodEnd ?? null,
+      cancel_at: providerSubscription.cancelAt ?? null,
+      canceled_at: providerSubscription.canceledAt ?? null,
+      trial_start: providerSubscription.trialStartDate ?? null,
+      trial_end: providerSubscription.trialEndDate ?? null,
       created_at: existing?.created_at ?? now,
       updated_at: now,
     };
@@ -418,9 +431,13 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
   },
 
   mapStatus(data: Record<string, unknown>): SubscriptionStatus {
+    const subs =
+      data.subscription && typeof data.subscription === "object"
+        ? (data.subscription as Record<string, unknown>)
+        : undefined;
     const status =
       (data.status as string) ??
-      (data.subscription?.status as string) ??
+      (subs?.status as string) ??
       (data.subscriptionStatus as string) ??
       "unknown";
 
@@ -455,10 +472,14 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
       }
     }
 
+    const subs =
+      data.subscription && typeof data.subscription === "object"
+        ? (data.subscription as Record<string, unknown>)
+        : undefined;
     const priceId =
       (data.priceId as string) ??
       (data.price_id as string) ??
-      (data.subscription?.priceId as string) ??
+      (subs?.priceId as string) ??
       null;
 
     if (priceId) {
@@ -471,8 +492,11 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
   extractCurrentPeriodStart(
     data: Record<string, unknown>,
   ): number | null {
-    const subs = data.subscription;
-    if (subs && typeof subs === "object") {
+    const subs =
+      data.subscription && typeof data.subscription === "object"
+        ? (data.subscription as Record<string, unknown>)
+        : undefined;
+    if (subs) {
       const v = (subs.currentPeriodStart as number) ??
         (subs.current_period_start as number);
       if (typeof v === "number") return v;
@@ -485,8 +509,11 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
   extractCurrentPeriodEnd(
     data: Record<string, unknown>,
   ): number | null {
-    const subs = data.subscription;
-    if (subs && typeof subs === "object") {
+    const subs =
+      data.subscription && typeof data.subscription === "object"
+        ? (data.subscription as Record<string, unknown>)
+        : undefined;
+    if (subs) {
       const v = (subs.currentPeriodEnd as number) ??
         (subs.current_period_end as number);
       if (typeof v === "number") return v;
@@ -499,8 +526,11 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
   extractCancelAt(
     data: Record<string, unknown>,
   ): number | null {
-    const subs = data.subscription;
-    if (subs && typeof subs === "object") {
+    const subs =
+      data.subscription && typeof data.subscription === "object"
+        ? (data.subscription as Record<string, unknown>)
+        : undefined;
+    if (subs) {
       const v = (subs.cancelAt as number) ?? (subs.cancel_at as number);
       if (typeof v === "number") return v;
     }
@@ -511,8 +541,11 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
   extractCanceledAt(
     data: Record<string, unknown>,
   ): number | null {
-    const subs = data.subscription;
-    if (subs && typeof subs === "object") {
+    const subs =
+      data.subscription && typeof data.subscription === "object"
+        ? (data.subscription as Record<string, unknown>)
+        : undefined;
+    if (subs) {
       const v = (subs.canceledAt as number) ?? (subs.canceled_at as number);
       if (typeof v === "number") return v;
     }
@@ -523,8 +556,11 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
   extractTrialStart(
     data: Record<string, unknown>,
   ): number | null {
-    const subs = data.subscription;
-    if (subs && typeof subs === "object") {
+    const subs =
+      data.subscription && typeof data.subscription === "object"
+        ? (data.subscription as Record<string, unknown>)
+        : undefined;
+    if (subs) {
       const v = (subs.trialStartDate as number) ?? (subs.trial_start as number);
       if (typeof v === "number") return v;
     }
@@ -535,8 +571,11 @@ export const PADDLE_ADAPTER: BillingProviderAdapter = {
   extractTrialEnd(
     data: Record<string, unknown>,
   ): number | null {
-    const subs = data.subscription;
-    if (subs && typeof subs === "object") {
+    const subs =
+      data.subscription && typeof data.subscription === "object"
+        ? (data.subscription as Record<string, unknown>)
+        : undefined;
+    if (subs) {
       const v = (subs.trialEndDate as number) ?? (subs.trial_end as number);
       if (typeof v === "number") return v;
     }

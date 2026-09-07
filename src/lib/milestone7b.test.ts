@@ -18,7 +18,9 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
   rejected: [],
   expired: [],
 };
-import { JOB_STATUSES } from "./jobs/types";
+import { JOB_STATUSES, JOB_EVENT_TYPES } from "./jobs/types";
+import { getPipelineConfig } from "./jobs/pipeline-config";
+import { getAgentConfig } from "./agents/runtime";
 
 // ---------------------------------------------------------------------------
 // 1. Review State Machine
@@ -207,13 +209,11 @@ describe("Milestone 7B: Database RPC Conventions", () => {
 
 describe("Milestone 7B: Feature Flags", () => {
   it("pipeline is disabled by default", () => {
-    const { getPipelineConfig } = require("./jobs/pipeline-config");
     const config = getPipelineConfig();
     expect(config.enabled).toBe(false);
   });
 
   it("agents are disabled by default", () => {
-    const { getAgentConfig } = require("./agents/runtime");
     const config = getAgentConfig();
     expect(config.enabled).toBe(false);
   });
@@ -315,7 +315,6 @@ describe("Milestone 7B: Audit Trail", () => {
       "human_rejection",
     ];
     // These should be in the JOB_EVENT_TYPES
-    const { JOB_EVENT_TYPES } = require("./jobs/types");
     for (const event of reviewEvents) {
       expect(JOB_EVENT_TYPES).toContain(event);
     }

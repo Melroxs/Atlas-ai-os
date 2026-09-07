@@ -1,8 +1,13 @@
 import { WAVE_1_JURISDICTIONS, sourceCandidatesFor } from "./catalog";
 import { DEFAULT_FETCH_POLICY, fetchRegulatorySource } from "./fetcher";
-import { extractPropositions, normalizeProposition } from "./extraction";
 import { InMemoryRegulatoryStore } from "./store";
-import { applyVerification, detectContradiction, verifyProposition } from "./verification";
+import {
+  applyVerification,
+  detectContradiction,
+  extractPropositions,
+  normalizeProposition,
+  verifyProposition,
+} from "./legacy";
 import type {
   AcquiredSource,
   CoverageReport,
@@ -12,7 +17,7 @@ import type {
   JurisdictionRecord,
   RegulatoryStore,
   SourceCandidate,
-} from "./types";
+} from "./legacy";
 
 export interface AcquisitionJob {
   id: string;

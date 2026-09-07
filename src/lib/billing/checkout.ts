@@ -14,12 +14,11 @@
 // ---------------------------------------------------------------------------
 
 import {
+  PLAN_METADATA,
+  ALL_INTERNAL_PLANS,
   paddlePriceId,
-  internalPlanForPaddlePriceId,
-  type PlanMetadata,
 } from "./plans";
 import type { InternalPlan, BillingInterval, BillingState } from "./types";
-import { resolveBillingState } from "./provider";
 
 // ---------------------------------------------------------------------------
 // Client-safe checkout request / response
@@ -148,6 +147,24 @@ export function planForCheckout(
 // Plan-display helpers (provider-agnostic in shape)
 // ---------------------------------------------------------------------------
 
+/** Client-visible pricing plan data for a billing interval. */
+export interface PricingPlanData {
+  internalPlan: InternalPlan;
+  displayName: string;
+  description: string;
+  /** Monthly headline price for the plan. */
+  price: number;
+  /** Price for the selected billing interval. */
+  billingIntervalPrice: number;
+  /** Alias for billingIntervalPrice (kept for UI/contract compatibility). */
+  intervalPrice: number;
+  interval: BillingInterval;
+  /** Monthly price shown as a comparison on annual plans (null for monthly). */
+  compareAtPrice: number | null;
+  /** Whether the provider has a price id configured for this plan/interval. */
+  providerConfigured: boolean;
+}
+
 /**
  * Client-visible pricing plan data for a billing interval.
  *
@@ -158,20 +175,19 @@ export function pricingPlanData(
   plan: InternalPlan,
   interval: BillingInterval,
 ): PricingPlanData {
-  const metadata = PlanMetadata[plan];
-  const intervalPrice =
-    interval === "monthly"
-      ? metadata.billingIntervalPrice.monthly
-      : metadata.billingIntervalPrice.annual;
+  const metadata = PLAN_METADATA[plan];
+  const intervalPrice = metadata.billingIntervalPrice[interval];
 
   return {
     internalPlan: plan,
     displayName: metadata.displayName,
     description: metadata.description,
     price: metadata.billingIntervalPrice.monthly,
-    billingIntervalPrice: metadata.billingIntervalPrice[interval],
+    billingIntervalPrice: intervalPrice,
     intervalPrice,
     interval,
+    compareAtPrice:
+      interval === "annual" ? metadata.billingIntervalPrice.monthly : null,
     providerConfigured: Boolean(
       paddlePriceId(plan, interval),
     ),
@@ -184,11 +200,7 @@ export function pricingPlanData(
 export function allPricingPlans(
   interval: BillingInterval,
 ): PricingPlanData[] {
-  return PlanMetadata[InternalPlan.ATLAS_STARTER]
-    ? Object.values(InternalPlan).map((plan) =>
-        pricingPlanData(plan, interval),
-      )
-    : [];
+  return ALL_INTERNAL_PLANS.map((plan) => pricingPlanData(plan, interval));
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +209,7 @@ export function allPricingPlans(
 
 /** Internal plans that can be purchased right now. */
 export function purchasablePlans(): InternalPlan[] {
-  return Object.values(InternalPlan).filter((plan) => {
+  return ALL_INTERNAL_PLANS.filter((plan) => {
     return Boolean(paddlePriceId(plan, "monthly")) ||
       Boolean(paddlePriceId(plan, "annual"));
   });
@@ -212,9 +224,3 @@ export function isActiveBillingState(state: BillingState): boolean {
   return state.isActive;
 }
 
-// ---------------------------------------------------------------------------
-// Plan metadata type alias
-// ---------------------------------------------------------------------------
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type PlanMetadata = any;

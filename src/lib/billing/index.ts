@@ -8,7 +8,6 @@
 export { PADDLE_ADAPTER, paddleAdapterInit, canBuildPaddleCheckout } from "./paddle";
 export {
   BillingProviderAdapter,
-  BillingWebhookEvent,
   ProviderSubscription,
   setActiveAdapter,
   hasActiveAdapter,
@@ -24,6 +23,7 @@ export {
   OrganizationSubscription,
   ProcessedWebhookEvent,
   BillingState,
+  BillingWebhookEvent,
   BILLING_PROVIDERS,
   INTERNAL_PLANS,
   SUBSCRIPTION_STATUSES,

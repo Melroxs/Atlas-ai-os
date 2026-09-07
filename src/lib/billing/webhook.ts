@@ -109,10 +109,10 @@ const ALLOWED_EVENT_TYPES = new Set([
  * The processor:
  *   - rejects unknown event types with an "ignored" result
  *   - deduplicates by provider event id
-//   - resolves the owning organization
-//   - applies the lifecycle transition
-//   - persists the subscription + audit record
-// ---------------------------------------------------------------------------
+ *   - resolves the owning organization
+ *   - applies the lifecycle transition
+ *   - persists the subscription + audit record
+ */
 
 export async function processPaddleWebhook(
   storage: BillingStorage,

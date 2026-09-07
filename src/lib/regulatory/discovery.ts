@@ -1,5 +1,10 @@
 import { sourceCandidatesFor } from "./catalog";
-import type { DiscoverySourceAdapter, JurisdictionRecord, ResearchTopic, SourceCandidate } from "./types";
+import type {
+  DiscoverySourceAdapter,
+  JurisdictionRecord,
+  ResearchTopic,
+  SourceCandidate,
+} from "./legacy";
 
 export interface SecondaryDiscoveryRecord {
   url: string;

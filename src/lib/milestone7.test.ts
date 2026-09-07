@@ -22,6 +22,8 @@ import {
   isAgentStep,
   isDeterministicStep,
 } from "./jobs/pipeline-orchestrator";
+import { getPipelineConfig } from "./jobs/pipeline-config";
+import { generateCorrelationId } from "./jobs/evidence-pipeline";
 import {
   isValidTransition,
   getValidTransitions,
@@ -30,8 +32,7 @@ import {
   scanDocumentsForContradictions,
   compareClaimAgainstDocuments,
 } from "./evidence/contradictions";
-import { setAgentConfig } from "./agents/runtime";
-import { resetAgentConfig } from "./agents/runtime";
+import { setAgentConfig, getAgentConfig, resetAgentConfig } from "./agents/runtime";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -335,15 +336,11 @@ describe("Milestone 7 — Security & Tenant Isolation", () => {
 
 describe("Milestone 7 — Feature Flags", () => {
   it("pipeline is disabled by default", () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getPipelineConfig } = require("./jobs/pipeline-config");
     const config = getPipelineConfig();
     expect(config.enabled).toBe(false);
   });
 
   it("agents are disabled by default", () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getAgentConfig } = require("./agents/runtime");
     const config = getAgentConfig();
     expect(config.enabled).toBe(false);
   });
@@ -377,8 +374,6 @@ describe("Milestone 7 — Audit Trail & Observability", () => {
   });
 
   it("correlation IDs are generated for traceability", () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { generateCorrelationId } = require("./jobs/evidence-pipeline");
     const id1 = generateCorrelationId();
     const id2 = generateCorrelationId();
     expect(id1).toMatch(/^ep-/);

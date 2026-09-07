@@ -118,14 +118,16 @@ Deno.serve(async (req) => {
       );
     }
 
+    // tenants_get_my_workspace serializes rows with their real column names:
+    // tenants._id and memberships."tenantId" (quoted camelCase).
     const ws = workspace as Record<string, unknown>;
     const tenant =
       (ws.tenant as Record<string, unknown> | null) ?? null;
     const membership =
       (ws.membership as Record<string, unknown> | null) ?? null;
     const tenantId =
-      (tenant?.id as string | undefined) ??
-      (membership?.tenant_id as string | undefined) ??
+      (tenant?._id as string | undefined) ??
+      (membership?.tenantId as string | undefined) ??
       "";
 
     if (!tenantId) {

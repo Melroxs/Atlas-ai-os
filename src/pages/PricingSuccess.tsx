@@ -51,15 +51,48 @@ function formatDate(ms: number | null | undefined): string | null {
 const POLL_MS = 2500;
 const STALL_AFTER_MS = 30000;
 
+export type CheckoutConfirmationStatus = "activating" | "confirmed" | "unconfirmed";
+
+/**
+ * Resolve the checkout confirmation status from the SERVER-provided billing
+ * state.
+ *
+ * The success page never grants access directly: confirmation is ONLY true
+ * when the verified Paddle webhook has written an active/trialing
+ * subscription that `billing_get_state` reports back. A redirect back from
+ * Paddle, or any client-side shape ({plan, status}) that lacks the server
+ * `isActive` flag, is never treated as payment success.
+ */
+export function resolveCheckoutConfirmation(
+  billing: { isActive?: boolean } | null | undefined,
+  stalled: boolean,
+): CheckoutConfirmationStatus {
+  if (billing?.isActive) return "confirmed";
+  return stalled ? "unconfirmed" : "activating";
+}
+
+/**
+ * Extract the caller's tenant id from the workspace RPC shape.
+ *
+ * tenants_get_my_workspace serializes rows with their real column names:
+ * tenants._id and memberships."tenantId" (quoted camelCase).
+ */
+export function tenantIdFromWorkspace(
+  workspace: Obj | null | undefined,
+): string | null {
+  return (
+    (workspace?.tenant as Obj | null | undefined)?._id ??
+    (workspace?.membership as Obj | null | undefined)?.tenantId ??
+    null
+  );
+}
+
 export default function PricingSuccess() {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading } = useAuth();
 
   const workspace = useQuery(api.tenants.getMyWorkspace);
-  const tenantId =
-    (workspace?.tenant as Obj | null | undefined)?.id ??
-    (workspace?.membership as Obj | null | undefined)?.tenant_id ??
-    null;
+  const tenantId = tenantIdFromWorkspace(workspace);
 
   const billing = useQuery<Obj | null>(
     api.billing.getState,
@@ -81,7 +114,7 @@ export default function PricingSuccess() {
     return () => clearTimeout(t);
   }, [billing?.isActive]);
 
-  const confirmed = Boolean(billing?.isActive);
+  const confirmed = resolveCheckoutConfirmation(billing, stalled) === "confirmed";
 
   // Auto-redirect to dashboard once confirmed (authenticated users only).
   useEffect(() => {
@@ -99,8 +132,8 @@ export default function PricingSuccess() {
     return () => clearInterval(timer);
   }, [isLoading, isAuthenticated, confirmed, navigate]);
 
-  const showActivating = !confirmed && !stalled;
-  const showUnconfirmed = !confirmed && stalled;
+  const showActivating = resolveCheckoutConfirmation(billing, stalled) === "activating";
+  const showUnconfirmed = resolveCheckoutConfirmation(billing, stalled) === "unconfirmed";
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">

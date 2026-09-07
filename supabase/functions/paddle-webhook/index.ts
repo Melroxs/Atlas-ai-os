@@ -127,7 +127,7 @@ Deno.serve(async (req) => {
   const isTransactionEvent = TRANSACTION_EVENT_TYPES.has(event.eventType);
 
   if (!isSubscriptionEvent && !isTransactionEvent) {
-    await recordProcessed(supabase, event, "ignored");
+    await recordProcessed(supabase, event, event.organizationIdHint ?? null, "ignored");
     console.info("[paddle-webhook] ignored event type", { event_type: event.eventType });
     return jsonResponse({ ok: true, ignored: true });
   }
@@ -155,8 +155,8 @@ Deno.serve(async (req) => {
   }
 
   if (!organizationId) {
-    await recordProcessed(supabase, event, "rejected");
-    await appendAudit(supabase, event, "rejected",
+    await recordProcessed(supabase, event, organizationId, "rejected");
+    await appendAudit(supabase, event, organizationId, "rejected",
       "Could not resolve the owning organization; event rejected.");
     console.error("[paddle-webhook] unresolved organization", {
       event_id: event.eventId,
@@ -186,6 +186,27 @@ Deno.serve(async (req) => {
       .eq("organization_id", organizationId)
       .maybeSingle();
 
+    // ---- Event ordering guard ----
+    // Paddle can deliver events out of order. Never let an older event
+    // overwrite newer subscription state: when the stored row was synced from
+    // a NEWER provider event, this event is recorded as processed (so a
+    // retry is not reprocessed) but its state is discarded.
+    if (
+      existingSub?.provider_event_at != null &&
+      event.providerEventAt != null &&
+      event.providerEventAt < existingSub.provider_event_at
+    ) {
+      await appendAudit(supabase, event, organizationId, "ignored",
+        "Out-of-order event; newer subscription state already applied.");
+      await recordProcessed(supabase, event, organizationId, "ignored");
+      console.info("[paddle-webhook] out-of-order event ignored", {
+        ...logFields,
+        event_occurred_at: event.providerEventAt,
+        stored_provider_event_at: existingSub.provider_event_at,
+      });
+      return jsonResponse({ ok: true, outOfOrder: true });
+    }
+
     const row = {
       organization_id: organizationId,
       billing_provider: "paddle",
@@ -207,6 +228,8 @@ Deno.serve(async (req) => {
       next_billed_at: event.nextBilledAt ?? existingSub?.next_billed_at ?? null,
       cancel_at: event.cancelAt ?? existingSub?.cancel_at ?? null,
       canceled_at: event.canceledAt ?? existingSub?.canceled_at ?? null,
+      provider_event_at:
+        event.providerEventAt ?? existingSub?.provider_event_at ?? null,
       updated_at: now,
     };
 
@@ -239,18 +262,18 @@ Deno.serve(async (req) => {
       }
     }
 
-    await appendAudit(supabase, event, "processed",
+    await appendAudit(supabase, event, organizationId, "processed",
       `Subscription state synchronized: ${status} | plan=${event.internalPlan ?? "none"} | interval=${event.billingInterval ?? "none"}`);
-    await recordProcessed(supabase, event, "processed");
+    await recordProcessed(supabase, event, organizationId, "processed");
 
     console.info("[paddle-webhook] subscription synchronized", logFields);
     return jsonResponse({ ok: true, organizationId });
   }
 
   // ---- Transaction events: informational (audit only) ----
-  await appendAudit(supabase, event, "informational",
+  await appendAudit(supabase, event, organizationId, "informational",
     "Transaction event received; subscription state follows via subscription.* events.");
-  await recordProcessed(supabase, event, "ignored");
+  await recordProcessed(supabase, event, organizationId, "ignored");
 
   console.info("[paddle-webhook] transaction event audited", logFields);
   return jsonResponse({ ok: true, informational: true });
@@ -263,6 +286,7 @@ Deno.serve(async (req) => {
 async function recordProcessed(
   supabase: ReturnType<typeof createClient>,
   event: ParsedPaddleEvent,
+  organizationId: string | null,
   result: string,
 ): Promise<void> {
   await supabase
@@ -271,7 +295,7 @@ async function recordProcessed(
       provider: "paddle",
       provider_event_id: event.eventId,
       event_type: event.eventType,
-      organization_id: event.organizationIdHint ?? null,
+      organization_id: organizationId,
       provider_customer_id: event.providerCustomerId ?? null,
       provider_subscription_id: event.providerSubscriptionId ?? null,
       result,
@@ -284,11 +308,12 @@ async function recordProcessed(
 async function appendAudit(
   supabase: ReturnType<typeof createClient>,
   event: ParsedPaddleEvent,
+  organizationId: string | null,
   result: string,
   note: string,
 ): Promise<void> {
   await supabase.from("billing_audit_events").insert({
-    organization_id: event.organizationIdHint ?? null,
+    organization_id: organizationId,
     provider: "paddle",
     provider_event_id: event.eventId,
     event_type: event.eventType,

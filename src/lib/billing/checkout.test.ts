@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   ALL_INTERNAL_PLANS,
   PLAN_METADATA,
@@ -72,14 +72,180 @@ describe("billing/checkout plan shapes", () => {
   });
 
   it("only returns purchasable plans when a price id is configured", () => {
-    // PADDLE_*_PRICE_ID_* env vars are not set in tests, so nothing is
-    // purchasable right now. This is the intended gating behavior: the
-    // checkout UI should not advertise prices that cannot be purchased.
-    expect(purchasablePlans()).toEqual([]);
+    // Simulate "no price ids configured" explicitly — the runtime may carry
+    // the real PADDLE_*_PRICE_ID_* vars. This is the intended gating
+    // behavior: the checkout UI should not advertise prices that cannot be
+    // purchased.
+    const prior = snapshotPriceEnv();
+    try {
+      clearEnv();
+      expect(purchasablePlans()).toEqual([]);
+    } finally {
+      restorePriceEnv(prior);
+    }
 
     // The shape is still stable — it returns an array of internal plans
     // and does not throw when the provider is not configured.
     expect(Array.isArray(purchasablePlans())).toBe(true);
+  });
+});
+
+const PRICE_IDS = {
+  starterMonthly: "pri_test_starter_monthly",
+  starterAnnual: "pri_test_starter_annual",
+  growthMonthly: "pri_test_growth_monthly",
+  growthAnnual: "pri_test_growth_annual",
+  scaleMonthly: "pri_test_scale_monthly",
+  scaleAnnual: "pri_test_scale_annual",
+} as const;
+
+function setPriceEnv() {
+  process.env.PADDLE_STARTER_PRICE_ID_MONTHLY = PRICE_IDS.starterMonthly;
+  process.env.PADDLE_STARTER_PRICE_ID_ANNUAL = PRICE_IDS.starterAnnual;
+  process.env.PADDLE_GROWTH_PRICE_ID_MONTHLY = PRICE_IDS.growthMonthly;
+  process.env.PADDLE_GROWTH_PRICE_ID_ANNUAL = PRICE_IDS.growthAnnual;
+  process.env.PADDLE_SCALE_PRICE_ID_MONTHLY = PRICE_IDS.scaleMonthly;
+  process.env.PADDLE_SCALE_PRICE_ID_ANNUAL = PRICE_IDS.scaleAnnual;
+}
+
+function clearEnv() {
+  delete process.env.PADDLE_STARTER_PRICE_ID_MONTHLY;
+  delete process.env.PADDLE_STARTER_PRICE_ID_ANNUAL;
+  delete process.env.PADDLE_GROWTH_PRICE_ID_MONTHLY;
+  delete process.env.PADDLE_GROWTH_PRICE_ID_ANNUAL;
+  delete process.env.PADDLE_SCALE_PRICE_ID_MONTHLY;
+  delete process.env.PADDLE_SCALE_PRICE_ID_ANNUAL;
+  delete process.env.PADDLE_API_KEY;
+}
+
+const PRICE_ENV_KEYS = [
+  "PADDLE_STARTER_PRICE_ID_MONTHLY",
+  "PADDLE_STARTER_PRICE_ID_ANNUAL",
+  "PADDLE_GROWTH_PRICE_ID_MONTHLY",
+  "PADDLE_GROWTH_PRICE_ID_ANNUAL",
+  "PADDLE_SCALE_PRICE_ID_MONTHLY",
+  "PADDLE_SCALE_PRICE_ID_ANNUAL",
+  "PADDLE_API_KEY",
+] as const;
+
+/**
+ * Snapshot the Paddle env vars so a test can simulate "no provider
+ * configured" regardless of what the runtime environment provides (the
+ * deployed sandbox may legitimately set the real PADDLE_* price ids).
+ */
+function snapshotPriceEnv(): Record<string, string | undefined> {
+  const prior: Record<string, string | undefined> = {};
+  for (const key of PRICE_ENV_KEYS) prior[key] = process.env[key];
+  return prior;
+}
+
+function restorePriceEnv(prior: Record<string, string | undefined>): void {
+  for (const key of PRICE_ENV_KEYS) {
+    const value = prior[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
+describe("initiateCheckout (real Paddle transaction path)", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    setPriceEnv();
+    process.env.PADDLE_API_KEY = "test_api_key";
+  });
+
+  afterEach(() => {
+    clearEnv();
+    globalThis.fetch = originalFetch;
+  });
+
+  it("creates a valid checkout with the mapped price id and custom_data (no secrets in the body)", async () => {
+    let sentBody: Record<string, unknown> | null = null;
+    let sentHeaders: Headers | null = null;
+    globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      sentBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      sentHeaders = new Headers(init?.headers);
+      return new Response(
+        JSON.stringify({
+          data: { id: "txn_01test", checkout: { url: "https://checkout.paddle.com/checkout/txn_01test" } },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const response = await initiateCheckout({
+      organizationId: "org-11111111-1111-1111-1111-111111111111",
+      plan: "ATLAS_GROWTH",
+      billingInterval: "annual",
+    });
+
+    expect(response.canCheckout).toBe(true);
+    expect(response.providerConfigured).toBe(true);
+    expect(response.checkoutUrl).toBe(
+      "https://checkout.paddle.com/checkout/txn_01test",
+    );
+    expect(response.plan).toBe("ATLAS_GROWTH");
+    expect(response.billingInterval).toBe("annual");
+
+    // Price id is resolved server-side from the environment — the mapped
+    // Growth annual price, never a client-supplied value.
+    expect(sentBody).not.toBeNull();
+    expect((sentBody!.items as Array<{ price_id: string }>)[0].price_id).toBe(
+      PRICE_IDS.growthAnnual,
+    );
+    expect(
+      (sentBody!.custom_data as Record<string, unknown>).atlas_organization_id,
+    ).toBe("org-11111111-1111-1111-1111-111111111111");
+    expect(
+      (sentBody!.custom_data as Record<string, unknown>).atlas_internal_plan,
+    ).toBe("ATLAS_GROWTH");
+
+    // The Paddle create-transaction API has no top-level description field;
+    // sending one risks a 400, so it must never appear in the body.
+    expect(sentBody).not.toHaveProperty("description");
+  });
+
+  it("fails cleanly when PADDLE_API_KEY is missing", async () => {
+    delete process.env.PADDLE_API_KEY;
+    const response = await initiateCheckout({
+      organizationId: "org-1",
+      plan: "ATLAS_STARTER",
+      billingInterval: "monthly",
+    });
+    expect(response.canCheckout).toBe(false);
+    expect(response.checkoutUrl).toBe("");
+    expect(response.serverNote).toContain("not configured");
+  });
+
+  it("fails cleanly when Paddle is unavailable (network error)", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("fetch failed");
+    }) as unknown as typeof fetch;
+    const response = await initiateCheckout({
+      organizationId: "org-1",
+      plan: "ATLAS_STARTER",
+      billingInterval: "monthly",
+    });
+    expect(response.canCheckout).toBe(false);
+    expect(response.checkoutUrl).toBe("");
+    expect(response.serverNote).toBeTruthy();
+  });
+
+  it("fails cleanly when Paddle rejects the transaction", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      return new Response(JSON.stringify({ error: "invalid_request" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const response = await initiateCheckout({
+      organizationId: "org-1",
+      plan: "ATLAS_STARTER",
+      billingInterval: "monthly",
+    });
+    expect(response.canCheckout).toBe(false);
+    expect(response.serverNote).toContain("Paddle");
   });
 });
 
@@ -152,18 +318,25 @@ describe("billing/checkout request/response contract", () => {
   });
 
   it("returns a gated checkout response when no price id is configured", async () => {
-    // PADDLE_*_PRICE_ID_* env vars are not set in tests → no checkout.
-    const response = await initiateCheckout({
-      organizationId: "org-1",
-      plan: "ATLAS_STARTER",
-      billingInterval: "monthly",
-    });
+    // Explicitly remove price ids + API key so the runtime environment's
+    // real Paddle config cannot make this test pass for the wrong reason.
+    const prior = snapshotPriceEnv();
+    try {
+      clearEnv();
+      const response = await initiateCheckout({
+        organizationId: "org-1",
+        plan: "ATLAS_STARTER",
+        billingInterval: "monthly",
+      });
 
-    expect(response.providerConfigured).toBe(false);
-    expect(response.canCheckout).toBe(false);
-    expect(response.serverNote).toBe(
-      "The selected Atlas plan is not configured for billing.",
-    );
-    expect(response.checkoutUrl).toBe("");
+      expect(response.providerConfigured).toBe(false);
+      expect(response.canCheckout).toBe(false);
+      expect(response.serverNote).toBe(
+        "The selected Atlas plan is not configured for billing.",
+      );
+      expect(response.checkoutUrl).toBe("");
+    } finally {
+      restorePriceEnv(prior);
+    }
   });
 });

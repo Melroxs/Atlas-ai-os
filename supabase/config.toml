@@ -371,6 +371,23 @@ authorization_url_path = "/oauth/consent"
 # Allow dynamic client registration
 allow_dynamic_registration = false
 
+# ---------------------------------------------------------------------------
+# Edge Function auth (JWT verification)
+#
+#   paddle-checkout — default verify_jwt = true (the caller must send a
+#                     Supabase JWT; the function also re-checks it).
+#   paddle-webhook  — verify_jwt = false: Paddle does NOT send a Supabase
+#                     JWT. The function verifies Paddle's own Paddle-Signature
+#                     header (HMAC over ts:rawBody) instead, then runs with
+#                     the service role. Never deploy it with JWT verification.
+# ---------------------------------------------------------------------------
+
+[functions.paddle-checkout]
+verify_jwt = true
+
+[functions.paddle-webhook]
+verify_jwt = false
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.

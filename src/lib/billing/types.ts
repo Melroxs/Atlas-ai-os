@@ -93,6 +93,12 @@ export interface OrganizationSubscription {
   cancel_at: number | null;
   /** When the subscription was canceled (Unix ms). */
   canceled_at: number | null;
+  /**
+   * Paddle event timestamp (occurred_at, Unix ms) that last synced this
+   * record. Used to reject out-of-order webhook deliveries: an older event
+   * must never overwrite newer subscription state.
+   */
+  provider_event_at: number | null;
   /** When this record was created (Unix ms). */
   created_at: number;
   /** When this record was last updated (Unix ms). */

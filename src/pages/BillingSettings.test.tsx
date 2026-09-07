@@ -6,6 +6,8 @@ import "@testing-library/jest-dom/vitest";
 import { BrowserRouter } from "react-router";
 import { useNavigate } from "react-router";
 import { useAuth } from "@/hooks/use-auth";
+import { useQuery } from "@/hooks/use-supabase";
+import { api } from "@/lib/api";
 import BillingSettings from "./BillingSettings";
 
 vi.mock(import("react-router"), async (importOriginal) => {
@@ -19,6 +21,14 @@ vi.mock(import("react-router"), async (importOriginal) => {
 
 vi.mock("@/hooks/use-auth", () => ({
   useAuth: vi.fn(),
+}));
+
+// The page reads billing state through useQuery (RPC-backed). The tests
+// control what the queries return so the page renders deterministically
+// without a Supabase connection.
+vi.mock("@/hooks/use-supabase", () => ({
+  useQuery: vi.fn(),
+  useMutation: vi.fn(),
 }));
 
 function wrapInRouter(element: ReactElement) {
@@ -41,6 +51,7 @@ describe("BillingSettings placeholder UI", () => {
       isAuthenticated: false,
       isLoading: false,
     });
+    vi.mocked(useQuery).mockReturnValue(undefined);
 
     render(wrapInRouter(<BillingSettings />));
 
@@ -55,6 +66,21 @@ describe("BillingSettings placeholder UI", () => {
     vi.mocked(useAuth).mockReturnValue({
       isAuthenticated: true,
       isLoading: false,
+    });
+    // Workspace resolves with a tenant; billing state resolves to null (no
+    // subscription row yet) — the page renders the "not on a paid plan"
+    // placeholder instead of spinning.
+    vi.mocked(useQuery).mockImplementation((fn, _args, _options) => {
+      if (fn === api.tenants.getMyWorkspace) {
+        return {
+          tenant: { _id: "tenant-1" },
+          membership: { tenantId: "tenant-1" },
+        } as never;
+      }
+      if (fn === api.billing.getState) {
+        return null as never;
+      }
+      return undefined as never;
     });
 
     render(wrapInRouter(<BillingSettings />));

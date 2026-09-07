@@ -326,6 +326,72 @@ describe("processPaddleWebhook", () => {
     expect(storage.webhookEvents.get("evt_txn_completed")?.result).toBe("ignored");
   });
 
+  it("ignores an out-of-order event: an older delivery never overwrites newer state", async () => {
+    // Newer event first (trialing, occurred 2024-05-11).
+    const newer = await processPaddleWebhook(
+      storage,
+      subscriptionEvent({
+        eventId: "evt_newer",
+        eventType: "subscription.trialing",
+        status: "trialing",
+        occurredAt: "2024-05-11T10:18:47Z",
+        trialEnd: "2024-05-12T10:18:47Z",
+      }),
+      "paddle",
+    );
+    expect(newer.changed).toBe(true);
+
+    // Older event arrives late (canceled, occurred 2024-05-09) — it must be
+    // recorded as processed (so a retry is not reprocessed) but its state
+    // must NOT overwrite the newer trialing state.
+    const older = await processPaddleWebhook(
+      storage,
+      subscriptionEvent({
+        eventId: "evt_older",
+        eventType: "subscription.canceled",
+        status: "canceled",
+        occurredAt: "2024-05-09T10:18:47Z",
+        trialEnd: "2024-05-12T10:18:47Z",
+      }),
+      "paddle",
+    );
+
+    expect(older.accepted).toBe(true);
+    expect(older.changed).toBe(false);
+
+    const record = await storage.loadSubscription(ORG);
+    expect(record!.status).toBe("trialing");
+    expect(record!.provider_event_at).toBe(Date.parse("2024-05-11T10:18:47Z"));
+
+    // The stale event is ledgered as ignored (never replayed) and audited.
+    expect(storage.webhookEvents.get("evt_older")?.result).toBe("ignored");
+    expect(
+      storage.audits.some(
+        (a) =>
+          a.providerEventId === "evt_older" &&
+          a.result === "ignored" &&
+          String(a.note).includes("Out-of-order"),
+      ),
+    ).toBe(true);
+  });
+
+  it("applies an equal-timestamp event (full-state upsert is safe)", async () => {
+    await processPaddleWebhook(
+      storage,
+      subscriptionEvent({ eventId: "evt_a", status: "trialing", occurredAt: "2024-05-11T10:18:47Z" }),
+      "paddle",
+    );
+    // Same occurred_at, different event id → applied, never rejected.
+    const same = await processPaddleWebhook(
+      storage,
+      subscriptionEvent({ eventId: "evt_b", status: "active", occurredAt: "2024-05-11T10:18:47Z" }),
+      "paddle",
+    );
+    expect(same.changed).toBe(true);
+    const record = await storage.loadSubscription(ORG);
+    expect(record!.status).toBe("active");
+  });
+
   it("grants the paid trial access but never from a browser-supplied value", async () => {
     // The browser could claim plan=scale + status=active, but the webhook
     // processor derives state from the verified payload's price id — a

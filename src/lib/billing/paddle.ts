@@ -36,7 +36,6 @@ import type {
 } from "./types";
 import { SUBSCRIPTION_STATUSES } from "./types";
 import {
-  PLAN_METADATA,
   paddlePriceId,
   billingIntervalForPaddlePriceId,
   internalPlanForPaddlePriceId,
@@ -127,6 +126,10 @@ export async function createPaddleCheckoutTransaction(
   internalPlan: InternalPlan,
   interval: BillingInterval,
 ): Promise<{ transactionId: string; url: string }> {
+  if (!paddleApiKey()) {
+    throw new Error("PADDLE_API_KEY is not configured for the billing provider.");
+  }
+
   const priceId = paddlePriceId(internalPlan, interval);
   if (!priceId) {
     throw new Error(
@@ -141,12 +144,14 @@ export async function createPaddleCheckoutTransaction(
     atlas_billing_interval: interval,
   };
 
+  // Note: Paddle's create-transaction API has no top-level `description`
+  // field — sending undocumented fields risks a 400. The plan name is carried
+  // by the catalog price itself and custom_data below.
   const response = await paddleFetch("/v1/transactions", {
     method: "POST",
     body: {
       items: [{ price_id: priceId, quantity: 1 }],
       custom_data: customData,
-      description: `Atlas ${PLAN_METADATA[internalPlan].displayName} subscription`,
     },
   });
 
@@ -537,6 +542,9 @@ export const PADDLE_ADAPTER: PaddleAdapter = {
       next_billed_at: providerSubscription.nextBilledAt ?? null,
       cancel_at: providerSubscription.cancelAt ?? null,
       canceled_at: providerSubscription.canceledAt ?? null,
+      // The event timestamp that produced this provider state; preserved
+      // from the existing row when the fetch/sync did not carry an event.
+      provider_event_at: existing?.provider_event_at ?? null,
       created_at: existing?.created_at ?? now,
       updated_at: now,
     };

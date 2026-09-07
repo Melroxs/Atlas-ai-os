@@ -13,10 +13,11 @@
 --   * `billing_audit_events` — append-only structured audit trail.
 --
 -- Assumptions (matches the existing Atlas schema): the tenants table is
--- `public.tenants` (id uuid, billing_state text), and memberships live in
--- `public.memberships` (user_id uuid, tenant_id uuid). The access gate reads
--- tenant.billing_state through the profile query — the webhook flips that
--- value, so entitlement remains server-authoritative.
+-- `public.tenants` (_id uuid primary key, billing_state text), and
+-- memberships live in `public.memberships` ("userId" uuid, "tenantId" uuid
+-- — quoted camelCase). The access gate reads tenant.billing_state through
+-- the profile query — the webhook flips that value, so entitlement remains
+-- server-authoritative.
 -- ===========================================================================
 
 -- ---------------------------------------------------------------------------
@@ -25,7 +26,7 @@
 
 create table if not exists public.organization_subscriptions (
   id uuid primary key default gen_random_uuid(),
-  organization_id uuid not null references public.tenants (id) on delete cascade,
+  organization_id uuid not null references public.tenants (_id) on delete cascade,
   billing_provider text not null default 'paddle'
     check (billing_provider in ('paddle', 'stripe')),
   provider_customer_id text,
@@ -44,6 +45,7 @@ create table if not exists public.organization_subscriptions (
   next_billed_at bigint,
   cancel_at bigint,
   canceled_at bigint,
+  provider_event_at bigint,
   created_at bigint not null default (extract(epoch from now()) * 1000)::bigint,
   updated_at bigint not null default (extract(epoch from now()) * 1000)::bigint
 );
@@ -76,7 +78,7 @@ create table if not exists public.processed_webhook_events (
   provider_event_id text not null,
   provider text not null default 'paddle',
   event_type text not null,
-  organization_id uuid references public.tenants (id) on delete set null,
+  organization_id uuid references public.tenants (_id) on delete set null,
   provider_customer_id text,
   provider_subscription_id text,
   result text not null
@@ -97,7 +99,7 @@ revoke all on table public.processed_webhook_events from anon, authenticated;
 
 create table if not exists public.billing_audit_events (
   id uuid primary key default gen_random_uuid(),
-  organization_id uuid references public.tenants (id) on delete set null,
+  organization_id uuid references public.tenants (_id) on delete set null,
   provider text not null default 'paddle',
   provider_event_id text,
   event_type text,
@@ -157,8 +159,8 @@ as $$
     and exists (
       select 1
       from public.memberships m
-      where m.user_id = auth.uid()
-        and m.tenant_id = p_tenantid
+      where m."userId" = auth.uid()
+        and m."tenantId" = p_tenantid
     )
 $$;
 
@@ -184,8 +186,12 @@ as $$
 begin
   update public.tenants
   set billing_state = p_billing_state
-  where id = p_tenantid;
+  where _id = p_tenantid;
 end;
 $$;
 
+-- Client roles must never flip their own billing state. The paddle-webhook
+-- Edge Function runs as service_role, so it needs EXECUTE back after the
+-- PUBLIC revoke (PUBLIC includes service_role in Postgres).
 revoke execute on function public.billing_apply_state(uuid, text) from public, anon, authenticated;
+grant execute on function public.billing_apply_state(uuid, text) to service_role;

@@ -529,9 +529,12 @@ export const api = {
     getMyWorkspace: def<WorkspaceShape | null>("tenants_get_my_workspace", "query"),
     createTenant: def<{ tenantId: string }>("tenants_create_tenant", "mutation"),
     initForCheckout: def<{ tenantId: string; alreadyExisted: boolean }>("tenants_init_for_checkout", "mutation"),
-    activateAfterPayment: def<{ ok: boolean; tenantId: string }>("tenants_activate_after_payment", "mutation"),
-    handlePaymentFailure: def<{ ok: boolean; tenantId: string }>("tenants_handle_payment_failure", "mutation"),
-    handleSubscriptionCancelled: def<{ ok: boolean; tenantId: string }>("tenants_handle_subscription_cancelled", "mutation"),
+    // NOTE: the legacy tenants_activate_after_payment /
+    // tenants_handle_payment_failure / tenants_handle_subscription_cancelled
+    // RPCs are NOT registered here (and their DB EXECUTE was revoked from
+    // client roles in migration 20260908) — a client must never be able to
+    // flip its own billing_state. Billing state is written only by the
+    // verified Paddle webhook via billing_apply_state.
     inviteMember: def<Obj>("tenants_invite_member", "mutation"),
     claimInvites: def<{ claimed: number }>("tenants_claim_invites", "mutation"),
     updateMemberRole: def<{ ok: boolean }>("tenants_update_member_role", "mutation"),

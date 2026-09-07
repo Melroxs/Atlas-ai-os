@@ -338,6 +338,9 @@ export async function createPaddleTransaction(
       "Authorization": `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
+    // Note: Paddle's create-transaction API has no top-level `description`
+    // field — sending undocumented fields risks a 400. The price name/plan
+    // is carried by the catalog price itself and custom_data below.
     body: JSON.stringify({
       items: [{ price_id: priceId, quantity: 1 }],
       custom_data: {
@@ -345,7 +348,6 @@ export async function createPaddleTransaction(
         atlas_internal_plan: plan,
         atlas_billing_interval: interval,
       },
-      description: `Atlas ${plan.replace("ATLAS_", "")} subscription`,
     }),
   });
 

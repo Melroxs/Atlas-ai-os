@@ -59,10 +59,12 @@ export default function BillingSettings() {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
 
+  // tenants_get_my_workspace serializes rows with their real column names:
+  // tenants._id and memberships."tenantId" (quoted camelCase).
   const workspace = useQuery(api.tenants.getMyWorkspace);
   const tenantId =
-    (workspace?.tenant as Obj | null | undefined)?.id ??
-    (workspace?.membership as Obj | null | undefined)?.tenant_id ??
+    (workspace?.tenant as Obj | null | undefined)?._id ??
+    (workspace?.membership as Obj | null | undefined)?.tenantId ??
     null;
 
   const state = useQuery<Obj | null>(
@@ -71,7 +73,7 @@ export default function BillingSettings() {
     { enabled: Boolean(isAuthenticated && tenantId) },
   ) as BillingStateShape | null | undefined;
 
-  if (authLoading || (!isAuthenticated && workspace === undefined)) {
+  if (authLoading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background">
         <Loader2 className="size-8 animate-spin text-teal-500" />
@@ -80,6 +82,9 @@ export default function BillingSettings() {
   }
 
   if (!isAuthenticated) {
+    // Never wait on the workspace query here: without a session the RPC
+    // cannot resolve, so an unauthenticated visitor must be redirected
+    // immediately (RequireAuth normally handles this; this is the fallback).
     navigate("/auth?returnTo=/settings/billing");
     return null;
   }

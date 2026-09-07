@@ -290,6 +290,51 @@ export async function processPaddleWebhook(
   const existingSubscription = await storage.loadSubscription(organizationId);
   const adapter = getActiveAdapter();
 
+  // ---- Event ordering guard ----
+  // Paddle can deliver events out of order. An older event must never
+  // overwrite newer subscription state: when the stored row was synced from a
+  // NEWER provider event, record this event as processed (so retries are not
+  // reprocessed) but discard its state.
+  if (
+    existingSubscription?.provider_event_at != null &&
+    event.providerEventAt != null &&
+    event.providerEventAt < existingSubscription.provider_event_at
+  ) {
+    await storage.saveWebhookEvent({
+      provider_event_id: event.providerEventId,
+      provider: "paddle",
+      event_type: event.eventType,
+      organization_id: organizationId,
+      provider_customer_id: event.providerCustomerId,
+      provider_subscription_id: event.providerSubscriptionId,
+      result: "ignored",
+      provider_event_at: event.providerEventAt ?? null,
+      processed_at: Date.now(),
+    });
+    await storage.appendAuditEntry(
+      organizationId,
+      {
+        providerEventId: event.providerEventId,
+        eventType: event.eventType,
+        providerCustomerId: event.providerCustomerId,
+        providerSubscriptionId: event.providerSubscriptionId,
+        result: "ignored",
+        note: "Out-of-order event; newer subscription state already applied.",
+      },
+      event.providerEventAt ?? null,
+    );
+    return {
+      accepted: true,
+      changed: false,
+      note: `Out-of-order ${event.eventType} ignored (newer state already applied).`,
+      organizationId,
+      providerEventId: event.providerEventId,
+      eventType: event.eventType,
+      providerCustomerId: event.providerCustomerId,
+      providerSubscriptionId: event.providerSubscriptionId,
+    };
+  }
+
   const providerSubscription = {
     id: event.providerSubscriptionId ?? existingSubscription?.provider_subscription_id ?? "",
     customerId: event.providerCustomerId ?? existingSubscription?.provider_customer_id ?? "",
@@ -312,6 +357,8 @@ export async function processPaddleWebhook(
   );
   // The adapter does not know the Atlas organization id — attach it here.
   updatedSubscription.organization_id = organizationId;
+  updatedSubscription.provider_event_at =
+    event.providerEventAt ?? existingSubscription?.provider_event_at ?? null;
 
   // Preserve plan/interval from the existing record when the event does not
   // carry them (e.g. status-only events).

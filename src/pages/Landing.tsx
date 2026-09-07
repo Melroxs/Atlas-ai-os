@@ -16,6 +16,7 @@ import {
   EyeOff,
   Factory,
   FileCheck2,
+  FileSearch,
   FileSpreadsheet,
   FileText,
   FileType,
@@ -24,6 +25,7 @@ import {
   Gauge,
   GitBranch,
   Globe,
+  Handshake,
   HardHat,
   History,
   Home,
@@ -57,6 +59,8 @@ import {
   Waves,
   Workflow,
 } from "lucide-react";
+
+import { WORKERS } from "@/lib/workforce/worker-defs";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/atlas-ui";
 
@@ -588,6 +592,31 @@ function ringPos(i: number, total: number, radius: number) {
   };
 }
 
+function NavyRing({ children, className, accent = "teal" }: {
+  children: ReactNode;
+  className?: string;
+  accent?: "teal" | "violet" | "emerald" | "sky" | "amber" | "rose";
+}) {
+  const colors: Record<NonNullable<typeof accent>, string> = {
+    teal: "border-teal-400/40 bg-teal-400/8 text-teal-600 dark:text-teal-300 ring-teal-400/20",
+    violet: "border-violet-400/40 bg-violet-400/8 text-violet-600 dark:text-violet-300 ring-violet-400/20",
+    emerald: "border-emerald-400/40 bg-emerald-400/8 text-emerald-600 dark:text-emerald-300 ring-emerald-400/20",
+    sky: "border-sky-400/40 bg-sky-400/8 text-sky-600 dark:text-sky-300 ring-sky-400/20",
+    amber: "border-amber-400/40 bg-amber-400/8 text-amber-600 dark:text-amber-300 ring-amber-400/20",
+    rose: "border-rose-400/40 bg-rose-400/8 text-rose-600 dark:text-rose-300 ring-rose-400/20",
+  };
+  return (
+    <div className={cn("relative flex size-14 items-center justify-center rounded-2xl border", colors[accent])}>
+      <motion.div
+        className={cn("absolute inset-0 rounded-2xl border", colors[accent].split(" ")[0])}
+        animate={{ opacity: [0.55, 0], scale: [1, 1.4] }}
+        transition={{ duration: 2.2, repeat: Infinity, ease: "easeOut" }}
+      />
+      {children}
+    </div>
+  );
+}
+
 function ClosedLoopRing() {
   return (
     <Reveal className="relative mx-auto hidden aspect-square w-full max-w-[540px] sm:block">
@@ -742,26 +771,27 @@ export default function Landing() {
             >
               <motion.p variants={fadeUp} className="atlas-eyebrow mb-4 flex items-center gap-2">
                 <Sparkles className="size-3.5" />
-                Revenue Recovery + Prevention
-              </motion.p>                <motion.h1
+                Your AI Workforce for Revenue Recovery
+              </motion.p>
+              <motion.h1
                 variants={fadeUp}
                 className="text-4xl font-semibold leading-[1.06] tracking-tight sm:text-5xl lg:text-[3.4rem]"
               >
-                Atlas builds an intelligence layer{" "}
-                <span className="bg-gradient-to-r from-teal-600 via-cyan-600 to-teal-600 bg-clip-text text-transparent dark:from-teal-300 dark:via-cyan-300 dark:to-teal-300">
-                  around your company.
-                </span>
+                Six AI workers.
+                <br />
+                One revenue recovery system.
               </motion.h1>
               <motion.p variants={fadeUp} className="mt-5 max-w-lg text-base leading-7 text-muted-foreground">
-                Atlas combines industry knowledge, your company's own knowledge, and live
-                operational evidence — then uses that intelligence to identify missed revenue,
-                surface gaps, answer questions, and power specialized AI workflows.
+                Atlas gives restoration companies a team of specialized AI workers that understand
+                claims, evidence, documents, requirements, and revenue opportunities — and help move
+                the work from intake to recovery.
               </motion.p>
               <motion.p variants={fadeUp} className="mt-2 flex items-center gap-2 text-xs text-muted-foreground/80">
                 <span className="font-mono uppercase tracking-[0.14em]">Industry knowledge · Company knowledge · Live evidence → Intelligence</span>
-              </motion.p>              <motion.div variants={fadeUp} className="mt-8 flex flex-wrap items-center gap-3">
+              </motion.p>
+              <motion.div variants={fadeUp} className="mt-8 flex flex-wrap items-center gap-3">
                 <PrimaryCta onClick={toPricing}>Sign Up for Atlas</PrimaryCta>
-                <SecondaryCta href="#how">See How Atlas Works</SecondaryCta>
+                <SecondaryCta href="#workforce">Meet the Workforce</SecondaryCta>
               </motion.div>
               <motion.div
                 variants={fadeUp}
@@ -769,7 +799,7 @@ export default function Landing() {
               >
                 {["Evidence-backed intelligence",
                   "Source-aware reasoning with provenance",
-                  "Recover missed revenue · Prevent future losses",
+                  "Six specialized AI workers · One system",
                 ].map((f) => (
                   <span key={f} className="flex items-center gap-1.5">
                     <Check className="size-3.5 text-teal-600 dark:text-teal-300" />
@@ -786,6 +816,147 @@ export default function Landing() {
             >
               <HeroVisual />
             </motion.div>
+          </div>
+        </section>
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Meet the Atlas AI Workforce */}
+        {/* ------------------------------------------------------------------ */}
+        <section id="workforce" className="relative z-10 mx-auto w-full max-w-6xl px-5 py-20">
+          <div className="mx-auto w-full max-w-6xl">
+            <SectionHead
+              eyebrow="The Atlas workforce"
+              title="Meet your AI workforce."
+              lead="Atlas is not one general-purpose assistant. It is a team of six specialized AI workers — each with a defined job, sharing the same Atlas intelligence and the same company data. They do not replace your software. They perform the operational work that revenue recovery requires."
+              center={false}
+            />
+
+            {/* workforce system strip */}
+            <div className="mt-14 rounded-2xl border border-border/70 bg-card/60 p-5 sm:p-6">
+              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                How the system works: company data → Atlas intelligence → six AI workers → decisions & actions → revenue recovery
+              </p>
+              <div className="mt-5 flex flex-wrap items-center gap-3">
+                {[
+                  ["Observe", "claims · documents · evidence · communications · events"],
+                  ["Understand", "reconstruct · reconcile · compare against policy & standards"],
+                  ["Find", "scope gaps · missing evidence · supplement opportunities · deadlines"],
+                  ["Reason", "governance-gated · evidence-backed · contradiction-aware"],
+                  ["Act", "draft · prepare · schedule · recommend — human-approved"],
+                  ["Learn", "every claim strengthens the company intelligence"],
+                ].map(([k, v], i) => (
+                  <div key={k} className="flex items-center gap-3">
+                    {i > 0 && (
+                      <span className="flex size-5 items-center justify-center rounded-full border border-teal-400/30 bg-teal-400/8 text-teal-600 dark:text-teal-300">
+                        <ArrowRight className="size-3" />
+                      </span>
+                    )}
+                    <div>
+                      <p className="text-sm font-medium text-foreground">{k}</p>
+                      <p className="text-xs text-muted-foreground">{v}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* six worker cards */}
+            <div className="mt-12 overflow-hidden rounded-2xl border border-border/70 bg-card/40">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                {WORKERS.map((worker, i) => {
+                  const Icon = worker.icon;
+                  const rank = WORKERS.indexOf(worker) + 1;
+                  return (
+                    <Reveal key={worker.slug} delay={i * 0.05}>
+                      <div
+                        className={cn(
+                          "group flex flex-col rounded-xl border p-5 transition-colors",
+                          "hover:border-teal-400/30",
+                        )}
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className={cn(
+                            "flex size-11 items-center justify-center rounded-lg ring-1",
+                            worker.accent,
+                          )}>
+                            <Icon className="size-5" />
+                          </div>
+                          <span className={cn(
+                            "flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em]",
+                            "border-teal-400/30 bg-teal-400/8 text-teal-600 dark:text-teal-300",
+                          )}>
+                            <span className="size-1.5 rounded-full bg-teal-400" />
+                            active
+                          </span>
+                        </div>
+
+                        <p className="mt-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                          {worker.role}
+                        </p>
+                        <h3 className="mt-1 text-lg font-semibold tracking-tight text-foreground">
+                          {worker.name}
+                        </h3>
+                        <p className="mt-1 text-sm font-medium text-teal-700 dark:text-teal-200">
+                          {worker.tagline}
+                        </p>
+                        <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                          {worker.description}
+                        </p>
+
+                        <div className="mt-4 flex flex-wrap gap-1.5">
+                          {worker.responsibilities.map((r) => (
+                            <span key={r} className="flex items-center gap-1 rounded-md border border-border/70 bg-background/50 px-2 py-0.5 text-[11px] text-foreground/85">
+                              <Check className="size-3 text-teal-600 dark:text-teal-300" />
+                              {r}
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="mt-4 flex items-center justify-between border-t border-border/60 pt-3">
+                          <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted-foreground/70">
+                            Outcome
+                          </span>
+                          <span className="text-[11px] leading-4 text-foreground/85">
+                            {worker.outcome}
+                          </span>
+                        </div>
+
+                        <p className="mt-3">
+                          <span className="inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-[0.14em] text-teal-600 dark:text-teal-300">
+                            <span className={cn(
+                              "size-1 rounded-full",
+                              rank <= 2
+                                ? "bg-teal-400 text-teal-950 dark:bg-teal-300 dark:text-teal-950"
+                                : "bg-muted-foreground/20 text-muted-foreground/40",
+                            )}>
+                              {rank}
+                            </span>
+                            {rank <= 2 ? "current worker" : "active worker"}
+                          </span>
+                          <span className="ml-auto font-mono text-[9px] uppercase tracking-[0.12em] text-muted-foreground/60">
+                            {worker.domain.replace(/_/g, " ")}
+                          </span>
+                        </p>
+                      </div>
+                    </Reveal>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-8 flex flex-wrap items-center justify-between gap-4 text-xs text-muted-foreground">
+              <p className="flex items-center gap-2">
+                <ShieldCheck className="size-3.5 text-teal-600 dark:text-teal-300" />
+                All six workers operate under the same governance, permissions, and audit trail.
+              </p>
+              <a
+                href="/dashboard/workers"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 px-3 py-1.5 text-sm font-medium text-teal-700 transition-colors hover:border-teal-400/40 dark:text-teal-200 dark:hover:text-teal-100"
+              >
+                Open the workforce hub
+                <ArrowRight className="size-3.5" />
+              </a>
+            </div>
           </div>
         </section>
 

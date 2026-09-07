@@ -44,6 +44,8 @@ export interface WorkerDefinition {
   attentionCategories: WorkCategory[];
   /** Backend services this worker composes (for the audit trail). */
   services: string[];
+  /** Business result this worker produces for the company. */
+  outcome: string;
 }
 
 export const WORKERS: WorkerDefinition[] = [
@@ -71,6 +73,7 @@ export const WORKERS: WorkerDefinition[] = [
       "insurance_list_claim_candidates",
       "work-queue service (buildWorkQueue)",
     ],
+    outcome: "Fewer missed claims, clearer claim status, and faster follow-through on the work that is already in the system.",
   },
   {
     slug: "supplements",
@@ -96,6 +99,7 @@ export const WORKERS: WorkerDefinition[] = [
       "orchestrator prepareSupplement (governance-gated)",
       "governance persistence (supplement_preparation)",
     ],
+    outcome: "Stronger claim documentation and better-prepared supplements — so recoverable revenue is identified, documented, and routed for review instead of left unclaimed.",
   },
   {
     slug: "recovery",
@@ -127,6 +131,7 @@ export const WORKERS: WorkerDefinition[] = [
       "work-queue service",
       "follow-up scheduler",
     ],
+    outcome: "Clearer recovery position per claim — outstanding balances, discrepancies, and follow-ups visible so recoverable revenue does not go quiet.",
   },
   {
     slug: "projects",
@@ -152,6 +157,7 @@ export const WORKERS: WorkerDefinition[] = [
       "workflows_list_instances",
       "workflows_list_approvals",
     ],
+    outcome: "Faster identification of what must happen next on every claim — deadlines, blockers, overdue items, and the next action are always visible.",
   },
   {
     slug: "estimator",
@@ -176,6 +182,7 @@ export const WORKERS: WorkerDefinition[] = [
       "insurance_list_claims",
       "insurance_get_claim_package",
     ],
+    outcome: "Review-ready estimate intelligence for the human estimator — scope rebuilt from evidence, omissions flagged, line items recommended with support.",
   },
   {
     slug: "customers",
@@ -201,6 +208,7 @@ export const WORKERS: WorkerDefinition[] = [
       "deadline tracker",
       "insurance_list_claims",
     ],
+    outcome: "Customers kept informed and fewer silent claims — overdue updates and pending messages surface before they become the reason a customer calls and a recovery is lost.",
   },
 ];
 

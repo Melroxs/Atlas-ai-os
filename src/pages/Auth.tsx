@@ -598,6 +598,24 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
                         </p>
                       </div>
                     )}
+
+                    {mode === "signUp" && (
+                      <p className="text-center text-[11px] leading-5 text-muted-foreground">
+                        By subscribing, you agree to the{" "}
+                        <a href="/terms" className="underline underline-offset-2 hover:text-primary transition-colors">
+                          Atlas Terms of Service
+                        </a>{" "}
+                        and acknowledge the{" "}
+                        <a href="/privacy" className="underline underline-offset-2 hover:text-primary transition-colors">
+                          Privacy Policy
+                        </a>{" "}
+                        and{" "}
+                        <a href="/refunds" className="underline underline-offset-2 hover:text-primary transition-colors">
+                          Refund Policy
+                        </a>
+                        .
+                      </p>
+                    )}
                   </CardContent>
                   <CardFooter>
                     <Button

@@ -5,18 +5,26 @@
 //   1. raw HTTP body + signature header
 //   2. signature verification (throws → 400/401)
 //   3. idempotency check (did we already process this event?)
-//   4. organization resolution (from custom data or provider lookup)
+//   4. organization resolution (custom data → provider customer → provider
+//      subscription, in that order)
 //   5. state transition (create / update / cancel / fail / reactivate)
 //   6. audit record + structured log
 //
 // Never trust the event without signature verification.
 // Never process an event twice.
 // Never grant paid access from a browser redirect.
+//
+// Paddle is the billing source of truth: the payload's subscription state is
+// written straight into the Atlas subscription record. Atlas never computes
+// trial expiration, renewal dates or charges on its own.
 // ---------------------------------------------------------------------------
 
 import { getActiveAdapter } from "./provider";
-import type { BillingWebhookEvent, OrganizationSubscription, ProcessedWebhookEvent, SubscriptionStatus } from "./types";
-import type { InternalPlan } from "./types";
+import type {
+  BillingWebhookEvent,
+  OrganizationSubscription,
+  ProcessedWebhookEvent,
+} from "./types";
 
 // ---------------------------------------------------------------------------
 // Webhook processing service
@@ -44,11 +52,9 @@ export interface WebhookProcessingResult {
 /**
  * Access the persistence layer for subscriptions / webhook events.
  *
- * In production this is wired to the Supabase RPC / table layer. For now we
- * define the interface so the webhook processor is testable and provider-UI
- * agnostic. The actual storage calls are filled in against the existing
- * tenants / subscription table / webhook events table when the migration
- * lands.
+ * In production this is wired to the Supabase tables (see
+ * supabase/functions/paddle-webhook and the paddle billing migration). The
+ * interface keeps the processor testable and provider-UI agnostic.
  */
 export interface BillingStorage {
   /** Load the current subscription record for an organization. */
@@ -81,22 +87,35 @@ export interface BillingStorage {
   resolveOrganizationIdFromProviderCustomer(
     provider_customer_id: string,
   ): Promise<string | null>;
+
+  /** Resolve an organization id from provider subscription id (best-effort). */
+  resolveOrganizationIdFromProviderSubscription(
+    provider_subscription_id: string,
+  ): Promise<string | null>;
 }
 
-/** Map provider event types to allowed transitions. */
-const ALLOWED_EVENT_TYPES = new Set([
+/**
+ * Paddle Billing event types Atlas consumes.
+ *
+ * Only events Paddle actually emits are listed. `transaction.completed`
+ * confirms the initial charge (including the $10 / 1-day trial) but the
+ * subscription lifecycle events carry the state Atlas synchronizes;
+ * transaction events are audited and otherwise informational.
+ */
+const SUBSCRIPTION_EVENT_TYPES = new Set([
   "subscription.created",
+  "subscription.trialing",
+  "subscription.activated",
   "subscription.updated",
-  "subscription.canceled",
+  "subscription.resumed",
+  "subscription.past_due",
   "subscription.paused",
-  "subscription.unpaused",
-  "subscription.failed",
-  "subscription.reactivated",
+  "subscription.canceled",
+]);
+
+const TRANSACTION_EVENT_TYPES = new Set([
   "transaction.completed",
-  "transaction.paid",
-  "payment.method.updated",
-  "customer.created",
-  "customer.updated",
+  "transaction.payment_failed",
 ]);
 
 /**
@@ -113,13 +132,11 @@ const ALLOWED_EVENT_TYPES = new Set([
  *   - applies the lifecycle transition
  *   - persists the subscription + audit record
  */
-
 export async function processPaddleWebhook(
   storage: BillingStorage,
   verifiedPayload: Record<string, unknown>,
   provider: "paddle",
 ): Promise<WebhookProcessingResult> {
-
   let event: BillingWebhookEvent;
 
   try {
@@ -132,14 +149,18 @@ export async function processPaddleWebhook(
   // ---- Idempotency ----
   const existingEvent = await storage.loadWebhookEvent(event.providerEventId);
   if (existingEvent) {
-    await storage.appendAuditEntry(event.providerCustomerId ?? null, {
-      providerEventId: event.providerEventId,
-      eventType: event.eventType,
-      providerCustomerId: event.providerCustomerId,
-      providerSubscriptionId: event.providerSubscriptionId,
-      result: "duplicate",
-      note: `Duplicate webhook event; previously ${existingEvent.result}`,
-    }, event.providerEventAt ?? null);
+    await storage.appendAuditEntry(
+      event.organizationIdHint ?? null,
+      {
+        providerEventId: event.providerEventId,
+        eventType: event.eventType,
+        providerCustomerId: event.providerCustomerId,
+        providerSubscriptionId: event.providerSubscriptionId,
+        result: "duplicate",
+        note: `Duplicate webhook event; previously ${existingEvent.result}`,
+      },
+      event.providerEventAt ?? null,
+    );
     return {
       accepted: true,
       changed: false,
@@ -153,20 +174,77 @@ export async function processPaddleWebhook(
   }
 
   // ---- Unknown events ----
-  if (!ALLOWED_EVENT_TYPES.has(event.eventType)) {
-    await storage.appendAuditEntry(event.providerCustomerId ?? null, {
-      providerEventId: event.providerEventId,
-      eventType: event.eventType,
-      providerCustomerId: event.providerCustomerId,
-      providerSubscriptionId: event.providerSubscriptionId,
+  if (
+    !SUBSCRIPTION_EVENT_TYPES.has(event.eventType) &&
+    !TRANSACTION_EVENT_TYPES.has(event.eventType)
+  ) {
+    await storage.appendAuditEntry(
+      event.organizationIdHint ?? null,
+      {
+        providerEventId: event.providerEventId,
+        eventType: event.eventType,
+        providerCustomerId: event.providerCustomerId,
+        providerSubscriptionId: event.providerSubscriptionId,
+        result: "ignored",
+        note: "Unknown Paddle event type; safely ignored.",
+      },
+      event.providerEventAt ?? null,
+    );
+    await storage.saveWebhookEvent({
+      provider_event_id: event.providerEventId,
+      provider: "paddle",
+      event_type: event.eventType,
+      organization_id: event.organizationIdHint ?? null,
+      provider_customer_id: event.providerCustomerId,
+      provider_subscription_id: event.providerSubscriptionId,
       result: "ignored",
-      note: `Unknown Paddle event type; safely ignored.`,
-    }, event.providerEventAt ?? null);
+      provider_event_at: event.providerEventAt ?? null,
+      processed_at: Date.now(),
+    });
     return {
       accepted: true,
       changed: false,
       note: `Unknown event type ${event.eventType}; safely ignored.`,
-      organizationId: event.providerCustomerId,
+      organizationId: event.organizationIdHint ?? null,
+      providerEventId: event.providerEventId,
+      eventType: event.eventType,
+      providerCustomerId: event.providerCustomerId,
+      providerSubscriptionId: event.providerSubscriptionId,
+    };
+  }
+
+  // Transaction events are informational for Atlas (Paddle creates the
+  // subscription; the subscription.* events carry the state to sync). They
+  // still get audited so payment failures are visible.
+  if (TRANSACTION_EVENT_TYPES.has(event.eventType)) {
+    await storage.appendAuditEntry(
+      event.organizationIdHint ?? null,
+      {
+        providerEventId: event.providerEventId,
+        eventType: event.eventType,
+        providerCustomerId: event.providerCustomerId,
+        providerSubscriptionId: event.providerSubscriptionId,
+        result: "informational",
+        note: `Transaction event received; subscription state follows via subscription.* events.`,
+      },
+      event.providerEventAt ?? null,
+    );
+    await storage.saveWebhookEvent({
+      provider_event_id: event.providerEventId,
+      provider: "paddle",
+      event_type: event.eventType,
+      organization_id: event.organizationIdHint ?? null,
+      provider_customer_id: event.providerCustomerId,
+      provider_subscription_id: event.providerSubscriptionId,
+      result: "ignored",
+      provider_event_at: event.providerEventAt ?? null,
+      processed_at: Date.now(),
+    });
+    return {
+      accepted: true,
+      changed: false,
+      note: `Transaction event ${event.eventType} audited (no subscription state change).`,
+      organizationId: event.organizationIdHint ?? null,
       providerEventId: event.providerEventId,
       eventType: event.eventType,
       providerCustomerId: event.providerCustomerId,
@@ -175,33 +253,26 @@ export async function processPaddleWebhook(
   }
 
   // ---- Organization resolution ----
-  let organizationId: string | null = null;
+  // Order of trust: (1) custom data written at checkout, (2) provider
+  // customer id on an existing record, (3) provider subscription id on an
+  // existing record. Custom data is only ever a *hint* — it does not grant
+  // access; the subscription record is written from verified webhook state.
+  let organizationId: string | null = event.organizationIdHint ?? null;
 
-  if (event.providerCustomerId) {
-    organizationId =
-      (await storage.resolveOrganizationIdFromProviderCustomer(
-        event.providerCustomerId,
-      )) ??
-      null;
+  if (!organizationId && event.providerCustomerId) {
+    organizationId = await storage.resolveOrganizationIdFromProviderCustomer(
+      event.providerCustomerId,
+    );
   }
 
   if (!organizationId && event.providerSubscriptionId) {
-    // Fallback: try the subscription record we already have.
-    const existing = await storage.loadSubscription(
-      // We cannot load by org without id; so in this path we only update
-      // records that are already linked. A brand-new subscription from a
-      // checkout flow should carry customData with the org id, which the
-      // adapter exposed via BillingWebhookEvent still needs to be mapped
-      // through the adapter's custom data extraction.
-      "",
+    organizationId = await storage.resolveOrganizationIdFromProviderSubscription(
+      event.providerSubscriptionId,
     );
-    if (existing) {
-      organizationId = existing.organization_id;
-    }
   }
 
   if (!organizationId) {
-    await storage.appendAuditEntry(event.providerCustomerId ?? null, {
+    await storage.appendAuditEntry(null, {
       providerEventId: event.providerEventId,
       eventType: event.eventType,
       providerCustomerId: event.providerCustomerId,
@@ -211,7 +282,7 @@ export async function processPaddleWebhook(
     }, event.providerEventAt ?? null);
     throw new Error(
       `Paddle webhook event ${event.eventType} could not be resolved to an organization. ` +
-        "The checkout customData must carry atlas.organization_id.",
+        "The checkout custom_data must carry atlas_organization_id.",
     );
   }
 
@@ -219,50 +290,38 @@ export async function processPaddleWebhook(
   const existingSubscription = await storage.loadSubscription(organizationId);
   const adapter = getActiveAdapter();
 
-  let updatedSubscription: OrganizationSubscription;
+  const providerSubscription = {
+    id: event.providerSubscriptionId ?? existingSubscription?.provider_subscription_id ?? "",
+    customerId: event.providerCustomerId ?? existingSubscription?.provider_customer_id ?? "",
+    status: event.status,
+    priceId: event.providerPriceId ?? existingSubscription?.provider_price_id ?? null,
+    billingCycle: event.billingInterval ?? "monthly",
+    trialStartDate: event.trialStart,
+    trialEndDate: event.trialEnd,
+    currentPeriodStart: event.currentPeriodStart,
+    currentPeriodEnd: event.currentPeriodEnd,
+    nextBilledAt: event.nextBilledAt,
+    cancelAt: event.cancelAt,
+    canceledAt: event.canceledAt,
+  };
 
-  if (event.eventType === "subscription.created") {
-    if (existingSubscription) {
-      // Idempotent create: if we already have a subscription for this org,
-      // treat the incoming subscription as the source of truth.
-    }
-    updatedSubscription = adapter.mapSubscriptionToRecord(
-      event.providerCustomerId ?? "",
-      {
-        id: event.providerSubscriptionId ?? "",
-        customerId: event.providerCustomerId ?? "",
-        status: event.status,
-        planId: event.internalPlan ?? undefined,
-        priceId: event.providerSubscriptionId ?? undefined,
-        billingCycle: "monthly",
-        trialStartDate: event.trialStart,
-        trialEndDate: event.trialEnd,
-        currentPeriodStart: event.currentPeriodStart,
-        currentPeriodEnd: event.currentPeriodEnd,
-        cancelAt: event.cancelAt,
-        canceledAt: event.canceledAt,
-      },
-      existingSubscription,
-    );
-  } else {
-    updatedSubscription = adapter.mapSubscriptionToRecord(
-      event.providerCustomerId ?? "",
-      {
-        id: event.providerSubscriptionId ?? "",
-        customerId: event.providerCustomerId ?? "",
-        status: event.status,
-        planId: event.internalPlan ?? undefined,
-        priceId: event.providerSubscriptionId ?? undefined,
-        billingCycle: "monthly",
-        trialStartDate: event.trialStart,
-        trialEndDate: event.trialEnd,
-        currentPeriodStart: event.currentPeriodStart,
-        currentPeriodEnd: event.currentPeriodEnd,
-        cancelAt: event.cancelAt,
-        canceledAt: event.canceledAt,
-      },
-      existingSubscription,
-    );
+  const updatedSubscription = adapter.mapSubscriptionToRecord(
+    event.providerCustomerId ?? existingSubscription?.provider_customer_id ?? "",
+    providerSubscription,
+    existingSubscription,
+  );
+  // The adapter does not know the Atlas organization id — attach it here.
+  updatedSubscription.organization_id = organizationId;
+
+  // Preserve plan/interval from the existing record when the event does not
+  // carry them (e.g. status-only events).
+  if (!updatedSubscription.internal_plan) {
+    updatedSubscription.internal_plan =
+      existingSubscription?.internal_plan ?? null;
+  }
+  if (!updatedSubscription.billing_interval) {
+    updatedSubscription.billing_interval =
+      existingSubscription?.billing_interval ?? null;
   }
 
   await storage.saveSubscription(updatedSubscription);
@@ -281,7 +340,8 @@ export async function processPaddleWebhook(
   const changed =
     !existingSubscription ||
     existingSubscription.status !== updatedSubscription.status ||
-    existingSubscription.internal_plan !== updatedSubscription.internal_plan;
+    existingSubscription.internal_plan !== updatedSubscription.internal_plan ||
+    existingSubscription.billing_interval !== updatedSubscription.billing_interval;
 
   await storage.appendAuditEntry(organizationId, {
     providerEventId: event.providerEventId,
@@ -289,7 +349,7 @@ export async function processPaddleWebhook(
     providerCustomerId: event.providerCustomerId,
     providerSubscriptionId: event.providerSubscriptionId,
     result: "processed",
-    note: `Subscription state synchronized: ${updatedSubscription.status} | plan=${updatedSubscription.internal_plan ?? "none"}`,
+    note: `Subscription state synchronized: ${updatedSubscription.status} | plan=${updatedSubscription.internal_plan ?? "none"} | interval=${updatedSubscription.billing_interval ?? "none"}`,
   }, event.providerEventAt ?? null);
 
   return {

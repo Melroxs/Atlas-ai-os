@@ -1,14 +1,19 @@
 /**
  * Checkout page — ensures the Atlas organization exists, then creates a
- * Stripe Checkout Session via the server-side Edge Function.
+ * Paddle checkout via the paddle-checkout Edge Function.
  *
  * Flow:
  *   1. User arrives from /auth with ?plan=starter&billing=monthly&company=Name
  *   2. Page ensures a tenant exists via tenants_init_for_checkout (idempotent)
- *   3. Calls stripe-checkout Edge Function with plan + billing + tenant_id
- *   4. Redirects to Stripe Checkout URL
- *   5. After payment, Stripe webhook activates subscription + tenant
- *   6. User is redirected back to /pricing-success
+ *   3. Calls paddle-checkout Edge Function with plan + billing + tenant_id
+ *   4. Redirects to the Paddle hosted checkout URL
+ *   5. After payment, the paddle-webhook synchronizes the subscription state
+ *      (the $10 / 1-day trial is configured on the Paddle catalog price —
+ *      Atlas never charges the trial itself)
+ *   6. User is redirected back to /pricing-success, which confirms the state
+ *
+ * The browser never holds Paddle secrets: checkout URLs are created
+ * server-side by the Edge Function.
  */
 
 import { useEffect, useState } from "react";
@@ -18,7 +23,7 @@ import { api } from "@/lib/api";
 import { useMutation } from "@/hooks/use-supabase";
 import { Loader2 } from "lucide-react";
 import { getSupabaseClient, resolvedSupabaseUrl } from "@/lib/supabase";
-import type { PlanName, BillingInterval } from "@/lib/stripe";
+import type { BillingInterval } from "@/lib/stripe";
 
 export default function Checkout() {
   const navigate = useNavigate();
@@ -26,7 +31,7 @@ export default function Checkout() {
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const initForCheckout = useMutation(api.tenants.initForCheckout);
 
-  const plan = (searchParams.get("plan") || "starter") as PlanName;
+  const plan = searchParams.get("plan") || "starter";
   const billing = (searchParams.get("billing") || "monthly") as BillingInterval;
   const companyName = searchParams.get("company") || "";
 
@@ -58,7 +63,7 @@ export default function Checkout() {
 
         console.info("[checkout] Organization ready:", tenantId, initResult?.alreadyExisted ? "(existing)" : "(new)");
 
-        // --- Phase 2: Create Stripe Checkout Session ---
+        // --- Phase 2: Create Paddle checkout (server-side) ---
         setPhase("checkout");
 
         const supabase = getSupabaseClient();
@@ -74,8 +79,7 @@ export default function Checkout() {
           return;
         }
 
-        // Call the stripe-checkout Edge Function with tenant_id
-        const response = await fetch(`${resolvedSupabaseUrl}/functions/v1/stripe-checkout`, {
+        const response = await fetch(`${resolvedSupabaseUrl}/functions/v1/paddle-checkout`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${session.access_token}`,
@@ -83,17 +87,30 @@ export default function Checkout() {
             apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
           },
           body: JSON.stringify({
+            tenantId,
             plan,
             billing,
-            tenantId,  // Pass tenant_id so Stripe metadata includes it
+            companyName: orgName,
           }),
         });
 
         const result = await response.json().catch(() => null);
 
         if (!response.ok) {
-          const msg = result?.error || `HTTP ${response.status}`;
-          setError(`Could not create checkout session: ${msg}`);
+          const serverMsg =
+            result && typeof result === "object" && typeof result.error === "string"
+              ? result.error
+              : null;
+          let msg: string;
+          if (serverMsg) {
+            msg = serverMsg;
+          } else if (response.status === 404) {
+            msg =
+              "The billing service isn't deployed yet (paddle-checkout Edge Function missing). Contact your administrator.";
+          } else {
+            msg = `Could not create checkout session (HTTP ${response.status}).`;
+          }
+          setError(msg);
           setLoading(false);
           return;
         }
@@ -127,7 +144,7 @@ export default function Checkout() {
             <p className="text-xs text-muted-foreground">
               {phase === "init"
                 ? "Creating your Atlas workspace and team ownership."
-                : "You'll be redirected to Stripe to complete payment."}
+                : "You'll be redirected to Paddle to complete your $10 / 1-day trial."}
             </p>
           </div>
         </div>

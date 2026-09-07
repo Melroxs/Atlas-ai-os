@@ -23,7 +23,7 @@ const PLANS = [
     popular: false,
   },
   {
-    name: "Professional",
+    name: "Growth",
     description: "For growing teams that need full intelligence capabilities.",
     monthlyPrice: 149,
     annualPrice: 1430, // ~$119/mo billed annually
@@ -40,10 +40,10 @@ const PLANS = [
     popular: true,
   },
   {
-    name: "Enterprise",
-    description: "For large organizations with custom requirements.",
-    monthlyPrice: null,
-    annualPrice: null,
+    name: "Scale",
+    description: "For large organizations with heavier claim volume and multi-team workflows.",
+    monthlyPrice: 299,
+    annualPrice: 2870, // ~$239/mo billed annually
     features: [
       "Unlimited team members",
       "Unlimited document storage",
@@ -54,7 +54,7 @@ const PLANS = [
       "SLA guarantee",
       "Custom deployment",
     ],
-    cta: "Contact Sales",
+    cta: "Get Started",
     popular: false,
   },
 ];
@@ -64,12 +64,6 @@ export default function Pricing() {
   const [billing, setBilling] = useState<"monthly" | "annual">("monthly");
 
   const handleGetStarted = (plan: typeof PLANS[0]) => {
-    if (plan.name === "Enterprise") {
-      // Enterprise: open mailto or contact form
-      window.location.href = "mailto:sales@atlas-ai-os.com?subject=Enterprise%20Plan%20Inquiry";
-      return;
-    }
-
     // Navigate to auth with plan info and explicit signup intent.
     // The returnTo carries the plan + billing so Checkout receives them
     // after Auth redirects back (URLSearchParams properly encodes the
@@ -114,7 +108,8 @@ export default function Pricing() {
             Choose your plan
           </h1>
           <p className="mt-4 text-lg text-muted-foreground max-w-2xl mx-auto">
-            Start with a plan that fits your team. Upgrade or downgrade anytime.
+            Start with a plan that fits your team. Every plan starts with a
+            1-day trial for $10 — then your plan's regular price applies.
           </p>
 
           {/* Billing Toggle */}
@@ -164,6 +159,11 @@ export default function Pricing() {
                   Most Popular
                 </div>
               )}
+              {plan.monthlyPrice !== null && (
+                <div className="absolute -top-3 right-4 rounded-full border border-teal-400/40 bg-teal-400/10 px-3 py-1 text-[11px] font-medium text-teal-700 dark:text-teal-300">
+                  $10 · 1-day trial
+                </div>
+              )}
 
               <div className="mb-6">
                 <h3 className="text-xl font-semibold text-foreground">{plan.name}</h3>
@@ -197,6 +197,13 @@ export default function Pricing() {
                 ))}
               </ul>
 
+              {plan.monthlyPrice !== null && (
+                <p className="mb-3 text-center text-xs text-muted-foreground">
+                  Start your 1-day trial for $10. After the trial, you'll be
+                  billed {billing === "monthly" ? `$${plan.monthlyPrice}/month` : `$${plan.annualPrice} annually`}.
+                </p>
+              )}
+
               <Button
                 onClick={() => handleGetStarted(plan)}
                 className={cn(
@@ -213,26 +220,43 @@ export default function Pricing() {
           ))}
         </div>
 
+        {/* Subscription agreement note */}
+        <p className="mt-10 text-center text-xs text-muted-foreground">
+          By subscribing, you agree to the{" "}
+          <a href="/terms" className="underline underline-offset-2 transition-colors hover:text-teal-700 dark:hover:text-teal-200">
+            Atlas Terms of Service
+          </a>{" "}
+          and acknowledge the{" "}
+          <a href="/privacy" className="underline underline-offset-2 transition-colors hover:text-teal-700 dark:hover:text-teal-200">
+            Privacy Policy
+          </a>{" "}
+          and{" "}
+          <a href="/refunds" className="underline underline-offset-2 transition-colors hover:text-teal-700 dark:hover:text-teal-200">
+            Refund Policy
+          </a>
+          .
+        </p>
+
         {/* FAQ */}
         <div className="mt-20 max-w-3xl mx-auto">
           <h2 className="text-2xl font-semibold text-center mb-8">Frequently asked questions</h2>
           <div className="space-y-6">
-            {[
+            {            [
               {
                 q: "Can I switch plans later?",
-                a: "Yes, you can upgrade or downgrade your plan at any time. Changes take effect immediately, and we'll prorate any payments.",
+                a: "Yes, you can upgrade or downgrade your plan at any time through Paddle, and changes are reflected in your subscription automatically.",
               },
               {
                 q: "Is there a free trial?",
-                a: "Yes, all plans come with a 14-day free trial. No credit card required to start.",
+                a: "No — every plan starts with a 1-day trial for $10. You're charged $10 at checkout, and the plan's regular price applies once the trial ends.",
               },
               {
                 q: "What payment methods do you accept?",
-                a: "We accept all major credit cards through Stripe. Enterprise plans can also pay via invoice.",
+                a: "Payments are processed securely by Paddle. All major credit cards are supported, along with other local payment methods Paddle offers in your region.",
               },
               {
                 q: "What happens when my trial ends?",
-                a: "After your trial ends, you'll need to choose a plan to continue using Atlas. Your data is preserved for 30 days.",
+                a: "Your card is charged the plan's regular price on the billing interval you chose, and your subscription continues until you cancel. See the Refund Policy for details.",
               },
             ].map((faq) => (
               <div key={faq.q} className="rounded-xl border border-border/60 bg-card/40 p-6">

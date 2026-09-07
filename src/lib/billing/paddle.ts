@@ -9,56 +9,95 @@
 //   - Paddle API:      https://developer.paddle.com/api-reference
 //   - Paddle webhooks: https://developer.paddle.com/webhooks
 //
-// Where possible we use documented Paddle conventions rather than hard-coding
-// assumptions. Any SDK function names / signature shapes below should be
-// verified against the SDK version installed in package.json; this file pins
-// the contract but must match the installed package.
+// Signature verification follows the documented Paddle scheme:
+//   - header: `Paddle-Signature: ts=<unix-seconds>;h1=<hex>[;h1=<hex>…]`
+//   - signed payload: `${ts}:${rawBody}`
+//   - HMAC-SHA256 with the notification destination's secret key
+//   - replay protection: reject timestamps outside the tolerance window
+//
+// Environment (server-side only — never VITE_/NEXT_PUBLIC_):
+//   PADDLE_ENVIRONMENT        sandbox | live (default sandbox)
+//   PADDLE_API_KEY            server API key (secret)
+//   PADDLE_CLIENT_TOKEN       client-side token (only for Paddle.js overlay)
+//   PADDLE_WEBHOOK_SECRET     notification destination secret (secret)
+//   PADDLE_SELLER_ID          vendor id (secret, kept server-side)
+//   PADDLE_APP_BASEPATH       base path used for redirects (unused in v1 API)
 // ---------------------------------------------------------------------------
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { BillingProviderAdapter, ProviderSubscription } from "./provider";
 import type { BillingWebhookEvent } from "./types";
 import type {
+  BillingInterval,
   BillingProvider,
+  InternalPlan,
   OrganizationSubscription,
   SubscriptionStatus,
-  InternalPlan,
 } from "./types";
-import { paddlePriceId, internalPlanForPaddlePriceId } from "./plans";
-import { INTERNAL_PLANS, SUBSCRIPTION_STATUSES } from "./types";
+import { SUBSCRIPTION_STATUSES } from "./types";
+import {
+  PLAN_METADATA,
+  paddlePriceId,
+  billingIntervalForPaddlePriceId,
+  internalPlanForPaddlePriceId,
+} from "./plans";
 
 // ---------------------------------------------------------------------------
-// Environment gating
+// Environment gating (read lazily so tests can set env vars per-case)
 // ---------------------------------------------------------------------------
 
-/** Paddle environment: sandbox or live. */
 export type PaddleEnvironment = "sandbox" | "live";
 
-const PADDLE_ENV = (process.env.PADDLE_ENVIRONMENT ?? "sandbox") as PaddleEnvironment;
-const PADDLE_API_KEY = process.env.PADDLE_API_KEY ?? "";
-const PADDLE_CLIENT_TOKEN = process.env.PADDLE_CLIENT_TOKEN ?? "";
-const PADDLE_WEBHOOK_SECRET = process.env.PADDLE_WEBHOOK_SECRET ?? "";
-const PADDLE_SELLER_ID = process.env.PADDLE_SELLER_ID ?? "";
-const PADDLE_APP_BASEPATH =
-  process.env.PADDLE_APP_BASEPATH ?? "/api/webhooks/paddle";
+function env(name: string): string {
+  return process.env[name] ?? "";
+}
+
+function paddleEnvironment(): PaddleEnvironment {
+  const v = env("PADDLE_ENVIRONMENT").toLowerCase();
+  return v === "live" || v === "production" ? "live" : "sandbox";
+}
+
+function paddleApiKey(): string {
+  return env("PADDLE_API_KEY");
+}function paddleClientToken(): string {
+  return env("PADDLE_CLIENT_TOKEN");
+}
+
+function paddleWebhookSecret(): string {
+  return env("PADDLE_WEBHOOK_SECRET");
+}
+
+// PADDLE_SELLER_ID and PADDLE_APP_BASEPATH are reserved env names kept for
+// configuration compatibility; the Billing v1 API does not require them.
+// PADDLE_CLIENT_TOKEN is only needed for the Paddle.js overlay checkout.
+
+
+/** Paddle API base for the configured environment. */
+function paddleApiBase(): string {
+  return paddleEnvironment() === "sandbox"
+    ? "https://api.sandbox.paddle.com"
+    : "https://api.paddle.com";
+}
+
+/** Paddle Checkout base for the configured environment. */
+export function paddleCheckoutBase(): string {
+  return paddleEnvironment() === "sandbox"
+    ? "https://checkout.sandbox.paddle.com"
+    : "https://checkout.paddle.com";
+}
 
 // ---------------------------------------------------------------------------
-// HTTP helpers (minimal, no fetch wrapper needed by the adapter)
+// HTTP helpers (minimal fetch wrapper)
 // ---------------------------------------------------------------------------
 
 async function paddleFetch(
   path: string,
   options: { method?: string; body?: unknown; headers?: Record<string, string> },
 ): Promise<Response> {
-  const url =
-    PADDLE_ENV === "sandbox"
-      ? `https://api.sandbox.paddle.com${path}`
-      : `https://api.paddle.com${path}`;
-
-  return fetch(url, {
+  return fetch(`${paddleApiBase()}${path}`, {
     method: options.method ?? "GET",
     headers: {
-      "Authorization": `Bearer ${PADDLE_API_KEY}`,
+      "Authorization": `Bearer ${paddleApiKey()}`,
       "Content-Type": "application/json",
       ...options.headers,
     },
@@ -67,111 +106,277 @@ async function paddleFetch(
 }
 
 // ---------------------------------------------------------------------------
-// Checkout URL construction
+// Checkout — transaction creation
 // ---------------------------------------------------------------------------
 
 /**
- * Build a Paddle checkout URL for a given organization.
+ * Create a Paddle transaction for the given plan/interval and return the
+ * hosted checkout URL.
  *
- * We carry the organization id through Paddle's checkout custom data so the
- * webhook can reconcile the subscription to the right organization later.
- * Custom data is the documented Paddle mechanism for passing application
- * context through checkout ➜ transaction ➜ subscription ➜ webhook.
+ * Paddle is the billing source of truth: the $10 / 1-day trial and the
+ * recurring price are configured on the catalog price, and Paddle creates the
+ * subscription when the transaction completes. Atlas never charges the trial
+ * itself and never starts its own trial timer.
+ *
+ * Custom data (flat string map) survives checkout → transaction →
+ * subscription → webhook, which is how the webhook reconciles the
+ * subscription back to the Atlas organization.
  */
-export function buildPaddleCheckoutUrl(
+export async function createPaddleCheckoutTransaction(
   organizationId: string,
   internalPlan: InternalPlan,
-  interval: "monthly" | "annual",
-  metadata: Record<string, string>,
-): string {
+  interval: BillingInterval,
+): Promise<{ transactionId: string; url: string }> {
   const priceId = paddlePriceId(internalPlan, interval);
   if (!priceId) {
     throw new Error(
-      `No Paddle price ID configured for plan ${internalPlan} + ${interval}. ` +
-        "Set PADDLE_*_PRICE_ID_MONTHLY/ANNUAL in the server environment.",
+      `The selected Atlas plan is not configured for billing. ` +
+        `Set PADDLE_${internalPlan.replace("ATLAS_", "").toUpperCase()}_PRICE_ID_${interval.toUpperCase()} in the server environment.`,
     );
   }
 
-  const customData: Record<string, string> = {
-    ...metadata,
-    "atlas.organization_id": organizationId,
-    "atlas.internal_plan": internalPlan,
-    "atlas.billing_interval": interval,
-    "atlas.checkout_source": "atlas_billing",
+  const customData = {
+    atlas_organization_id: organizationId,
+    atlas_internal_plan: internalPlan,
+    atlas_billing_interval: interval,
   };
 
-  const baseUrl =
-    PADDLE_ENV === "sandbox"
-      ? "https://checkout.sandbox.paddle.com"
-      : "https://checkout.paddle.com";
-  const checkoutPath = "/checkout";
-
-  const params = new URLSearchParams({
-    // Paddle Checkout uses vendor/products/prices identifiers; we pass the
-    // price id for a single-product checkout.
-    items: JSON.stringify([
-      {
-        priceId,
-        quantity: 1,
-      },
-    ]),
-    // Custom data is sent through checkout and returned in the transaction
-    // / subscription webhook payloads, preserving the organization context.
-    customData: JSON.stringify(customData),
-    // Allow the buyer to enter billing details; we create the customer at
-    // checkout time so the webhook can associate the subscription.
-    allowLogin: "false",
-    // Base path to our webhook endpoint (used by the merchant dashboard link
-    // and any redirects back to Atlas).
-    appBasePath: PADDLE_APP_BASEPATH,
+  const response = await paddleFetch("/v1/transactions", {
+    method: "POST",
+    body: {
+      items: [{ price_id: priceId, quantity: 1 }],
+      custom_data: customData,
+      description: `Atlas ${PLAN_METADATA[internalPlan].displayName} subscription`,
+    },
   });
 
-  return `${baseUrl}${checkoutPath}?${params.toString()}`;
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Paddle checkout could not be created (HTTP ${response.status}).`,
+    );
+  }
+
+  const json = (await response.json()) as Record<string, unknown>;
+  const data = (json.data as Record<string, unknown>) ?? json;
+  const checkout = (data.checkout as Record<string, unknown>) ?? {};
+  const url = (checkout.url as string) ?? (data.url as string) ?? "";
+
+  if (!url) {
+    throw new Error(
+      "Paddle did not return a checkout URL for the transaction.",
+    );
+  }
+
+  return {
+    transactionId: (data.id as string) ?? "",
+    url,
+  };
 }
 
 // ---------------------------------------------------------------------------
-// Paddle adapter implementation
+// Webhook signature verification (documented Paddle scheme)
 // ---------------------------------------------------------------------------
 
-export function paddleAdapterInit() {
-  if (!PADDLE_API_KEY) {
+/**
+ * Verify a Paddle webhook signature.
+ *
+ * Paddle signs every webhook with HMAC-SHA256 over `ts:<rawBody>` using the
+ * notification destination's secret key, and sends it in the
+ * `Paddle-Signature` header as `ts=<unix>;h1=<hex>` (multiple `h1=` values
+ * are allowed for key rotation).
+ *
+ * Throws when the signature is missing, malformed, stale, or invalid.
+ * Returns the parsed JSON payload when verified.
+ */
+export function verifyPaddleWebhookSignature(
+  rawBody: string,
+  signatureHeader: string | null,
+  now?: number,
+): Record<string, unknown> {
+  if (!signatureHeader) {
+    throw new Error("Missing Paddle webhook signature header.");
+  }
+  const secret = paddleWebhookSecret();
+  if (!secret) {
     throw new Error(
-      "PADDLE_API_KEY is not configured for the billing provider.",
+      "PADDLE_WEBHOOK_SECRET is not configured; webhook verification is disabled.",
     );
   }
-  if (PADDLE_ENV === "live" && !PADDLE_WEBHOOK_SECRET) {
+
+  // Header: `ts=1671552777;h1=eb4d…[;h1=…]`
+  const parts = signatureHeader.split(";");
+  let timestamp: string | null = null;
+  const signatures: string[] = [];
+  for (const part of parts) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    const key = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (!value) continue;
+    if (key === "ts") timestamp = value;
+    else if (key === "h1") signatures.push(value);
+  }
+
+  if (!timestamp || signatures.length === 0) {
     throw new Error(
-      "PADDLE_WEBHOOK_SECRET must be configured for the live environment.",
+      "Paddle webhook signature header is malformed: expected ts=<unix>;h1=<hex>.",
     );
+  }
+
+  const ts = Number(timestamp);
+  if (!Number.isSafeInteger(ts) || ts <= 0) {
+    throw new Error("Paddle webhook timestamp is not a valid Unix timestamp.");
+  }
+
+  // Replay protection: reject events outside the tolerance window.
+  const nowMs = now ?? Date.now();
+  const eventAgeMs = nowMs - ts * 1000;
+  const toleranceMs = 5 * 60 * 1000;
+  if (Math.abs(eventAgeMs) > toleranceMs) {
+    throw new Error(
+      `Paddle webhook timestamp outside tolerance window (${Math.round(eventAgeMs)} ms).`,
+    );
+  }
+
+  const expected = createHmac("sha256", secret)
+    .update(`${timestamp}:${rawBody}`)
+    .digest("hex");
+
+  const expectedBuf = Buffer.from(expected, "hex");
+  let matched = false;
+  for (const candidate of signatures) {
+    const actualBuf = Buffer.from(candidate.toLowerCase(), "hex");
+    if (
+      actualBuf.length === expectedBuf.length &&
+      timingSafeEqual(expectedBuf, actualBuf)
+    ) {
+      matched = true;
+      break;
+    }
+  }
+  if (!matched) {
+    throw new Error("Paddle webhook signature verification failed.");
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(rawBody) as Record<string, unknown>;
+  } catch {
+    throw new Error("Paddle webhook body is not valid JSON.");
+  }
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Paddle webhook payload is not a JSON object.");
+  }
+  return payload;
+}
+
+// ---------------------------------------------------------------------------
+// Paddle Billing v1 payload helpers
+// ---------------------------------------------------------------------------
+
+/** Parse a Paddle RFC3339 date-time string into Unix ms (null when absent). */
+export function paddleDateToMs(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return null;
+}
+
+function getCustomData(data: Record<string, unknown>): Record<string, unknown> | null {
+  const raw =
+    (data.custom_data as Record<string, unknown>) ??
+    (data.customData as Record<string, unknown>) ??
+    null;
+  return raw && typeof raw === "object" ? raw : null;
+}
+
+function readCustomDataString(
+  customData: Record<string, unknown> | null,
+  dotted: string,
+  flat: string,
+): string | null {
+  if (!customData) return null;
+  const v = customData[dotted] ?? customData[flat];
+  return typeof v === "string" && v ? v : null;
+}
+
+function subscriptionItems(data: Record<string, unknown>): Array<Record<string, unknown>> {
+  const items = data.items;
+  return Array.isArray(items) ? (items as Array<Record<string, unknown>>) : [];
+}
+
+/** Resolve the price id from a Paddle subscription payload. */
+function extractPriceId(data: Record<string, unknown>): string | null {
+  const items = subscriptionItems(data);
+  for (const item of items) {
+    const priceId = (item.price_id as string) ?? (item.priceId as string);
+    if (priceId) return priceId;
+    const price = item.price as Record<string, unknown> | undefined;
+    if (price && typeof price.id === "string") return price.id;
+  }
+  const direct =
+    (data.price_id as string) ?? (data.priceId as string) ?? null;
+  return typeof direct === "string" ? direct : null;
+}
+
+/** Resolve the billing interval from a subscription payload. */
+function extractBillingCycleInterval(data: Record<string, unknown>): BillingInterval | null {
+  const cycle = (data.billing_cycle as Record<string, unknown>) ??
+    (data.billingCycle as Record<string, unknown>) ??
+    null;
+  const interval = cycle && typeof cycle === "object"
+    ? (cycle.interval as string) ?? null
+    : null;
+  if (interval === "month") return "monthly";
+  if (interval === "year") return "annual";
+  return null;
+}
+
+/** Map a Paddle status string into the Atlas status model. */
+export function mapPaddleStatus(status: string | undefined | null): SubscriptionStatus {
+  const s = (status ?? "unknown").toLowerCase().trim();
+  const valid = Object.values(SUBSCRIPTION_STATUSES) as string[];
+  return valid.includes(s) ? (s as SubscriptionStatus) : "unknown";
+}
+
+// ---------------------------------------------------------------------------
+// Adapter implementation
+// ---------------------------------------------------------------------------
+
+export function paddleAdapterInit(): void {
+  if (!paddleApiKey()) {
+    throw new Error("PADDLE_API_KEY is not configured for the billing provider.");
+  }
+  if (paddleEnvironment() === "live" && !paddleWebhookSecret()) {
+    throw new Error("PADDLE_WEBHOOK_SECRET must be configured for the live environment.");
   }
 }
 
 export function canBuildPaddleCheckout(): boolean {
-  return Boolean(PADDLE_API_KEY && PADDLE_CLIENT_TOKEN);
+  return Boolean(paddleApiKey());
 }
 
-/**
- * The Paddle adapter surface, including the internal extraction/mapping
- * helpers used by parseWebhookEvent / mapSubscriptionToRecord.
- */
-interface PaddleAdapter extends BillingProviderAdapter {
+/** The Paddle adapter surface (contract + internal helpers used in tests). */
+export interface PaddleAdapter extends BillingProviderAdapter {
   extractProviderCustomerId(data: Record<string, unknown>): string | null;
   extractProviderSubscriptionId(data: Record<string, unknown>): string | null;
   mapStatus(data: Record<string, unknown>): SubscriptionStatus;
   extractInternalPlan(data: Record<string, unknown>): InternalPlan | null;
+  extractBillingInterval(data: Record<string, unknown>): BillingInterval | null;
   extractCurrentPeriodStart(data: Record<string, unknown>): number | null;
   extractCurrentPeriodEnd(data: Record<string, unknown>): number | null;
+  extractNextBilledAt(data: Record<string, unknown>): number | null;
   extractCancelAt(data: Record<string, unknown>): number | null;
   extractCanceledAt(data: Record<string, unknown>): number | null;
   extractTrialStart(data: Record<string, unknown>): number | null;
   extractTrialEnd(data: Record<string, unknown>): number | null;
   mapProviderSubscription(json: Record<string, unknown>): ProviderSubscription;
-  mapInternalPlanForSubscription(
-    subscription: ProviderSubscription,
-  ): InternalPlan | null;
-  mapStatusForSubscription(
-    subscription: ProviderSubscription,
-  ): SubscriptionStatus;
+  mapInternalPlanForSubscription(subscription: ProviderSubscription): InternalPlan | null;
+  mapStatusForSubscription(subscription: ProviderSubscription): SubscriptionStatus;
 }
 
 export const PADDLE_ADAPTER: PaddleAdapter = {
@@ -185,172 +390,104 @@ export const PADDLE_ADAPTER: PaddleAdapter = {
     return canBuildPaddleCheckout();
   },
 
-  buildCheckoutUrl(
+  async buildCheckoutUrl(
     organizationId: string,
     internalPlan: InternalPlan,
     interval: "monthly" | "annual",
-    metadata: Record<string, string>,
-  ): string {
-    return buildPaddleCheckoutUrl(organizationId, internalPlan, interval, metadata);
+    _metadata: Record<string, string>,
+  ): Promise<string> {
+    const { url } = await createPaddleCheckoutTransaction(
+      organizationId,
+      internalPlan,
+      interval,
+    );
+    return url;
   },
 
   // ---- Webhook verification ----
 
-  /**
-   * Verify a Paddle webhook signature.
-   *
-   * Paddle signs webhook requests with an HMAC-SHA256 signature sent in the
-   * `Paddle-Signature` header. The signature covers the raw request body and
-   * a timestamp. The documented verification flow:
-   *   1. Parse the header into timestamp + signature.
-   *   2. Reject events with a timestamp too old.
-   *   3. Compute HMAC-SHA256(webhook_secret, timestamp + raw_body).
-   *   4. Compare against the signature using a constant-time comparison.
-   *
-   * This implementation uses Node's built-in crypto. If the installed Paddle
-   * SDK exposes a documented verifyWebhookSignature function, prefer it and
-   * replace this with the SDK's verified implementation.
-   */
   verifyWebhookSignature(
     rawBody: string,
     signatureHeader: string | null,
     now?: number,
   ): Record<string, unknown> {
-    if (!signatureHeader) {
-      throw new Error("Missing Paddle webhook signature header.");
-    }
-    if (!PADDLE_WEBHOOK_SECRET) {
-      throw new Error(
-        "PADDLE_WEBHOOK_SECRET is not configured; webhook verification is disabled.",
-      );
-    }
-
-    const parts = signatureHeader.split(",");
-    const header: Record<string, string> = {};
-    for (const part of parts) {
-      const [key, value] = part.split("=");
-      if (key && value) header[key.trim()] = value.trim();
-    }
-
-    const timestamp = header["t"];
-    const signature = header["v1"] ?? header["v2"] ?? header["signature"];
-    const ts = Number(timestamp);
-
-    if (!timestamp || !signature) {
-      throw new Error(
-        "Paddle webhook signature header is malformed: missing t / signature.",
-      );
-    }
-
-    // Reject events whose timestamp is not a safe integer.
-    if (!Number.isSafeInteger(ts)) {
-      throw new Error(
-        "Paddle webhook timestamp is not a safe integer.",
-      );
-    }
-
-    // Reject events older than 5 minutes.
-    const nowMs = now ?? Date.now();
-    const eventAge = nowMs - ts;
-    if (eventAge > 5 * 60 * 1000) {
-      throw new Error(
-        `Paddle webhook timestamp too old (${Math.round(eventAge)} ms).`,
-      );
-    }
-
-    const expected = createHmac("sha256", PADDLE_WEBHOOK_SECRET)
-      .update(`${timestamp}.${rawBody}`)
-      .digest("hex");
-
-    const actual = signature.toLowerCase();
-
-    // Constant-time comparison on fixed-length buffers.
-    const expectedBuf = Buffer.from(expected, "hex");
-    const actualBuf = Buffer.from(actual, "hex");
-    if (expectedBuf.length !== actualBuf.length) {
-      throw new Error("Paddle webhook signature verification failed.");
-    }
-    if (!timingSafeEqual(expectedBuf, actualBuf)) {
-      throw new Error("Paddle webhook signature verification failed.");
-    }
-
-    let payload: Record<string, unknown>;
-    try {
-      payload = JSON.parse(rawBody) as Record<string, unknown>;
-    } catch {
-      throw new Error("Paddle webhook body is not valid JSON.");
-    }
-
-    if (!payload || typeof payload !== "object") {
-      throw new Error("Paddle webhook payload is not a JSON object.");
-    }
-
-    return payload;
+    return verifyPaddleWebhookSignature(rawBody, signatureHeader, now);
   },
 
-  // ---- Webhook event parsing ----
+  // ---- Webhook event parsing (Paddle Billing v1) ----
 
   parseWebhookEvent(payload: Record<string, unknown>): BillingWebhookEvent {
-    const eventType =
-      (payload.event_type as string) ??
-      (payload.type as string) ??
-      "";
+    const eventType = (payload.event_type as string) ?? "";
+    const eventId = (payload.event_id as string) ?? "";
 
     if (!eventType) {
       throw new Error("Paddle webhook event has no event_type.");
     }
-
-    const data = (payload.data as Record<string, unknown>) ?? {};
-
-    const providerCustomerId = this.extractProviderCustomerId(data);
-    const providerSubscriptionId = this.extractProviderSubscriptionId(data);
-    const status = this.mapStatus(data);
-    const internalPlan = this.extractInternalPlan(data);
-    const currentPeriodStart = this.extractCurrentPeriodStart(data);
-    const currentPeriodEnd = this.extractCurrentPeriodEnd(data);
-    const cancelAt = this.extractCancelAt(data);
-    const canceledAt = this.extractCanceledAt(data);
-    const trialStart = this.extractTrialStart(data);
-    const trialEnd = this.extractTrialEnd(data);
-
-    const active =
-      status === "active" || status === "trialing";
-
-    // Provider event id for idempotency.
-    const providerEventId =
-      (payload.event_id as string) ??
-      (payload.id as string) ??
-      "";
-
-    if (!providerEventId) {
+    if (!eventId) {
       throw new Error("Paddle webhook event has no event_id.");
     }
 
-    const providerEventAt =
-      (payload.event_date as number) ?? null;
+    const data = (payload.data as Record<string, unknown>) ?? {};
+    const customData = getCustomData(data);
+
+    // Subscription id: subscription.* events carry the subscription at
+    // data.id; transaction.* events may reference data.subscription_id.
+    const providerSubscriptionId =
+      this.extractProviderSubscriptionId(data);
+
+    const providerCustomerId = this.extractProviderCustomerId(data);
+
+    const status = this.mapStatus(data);
+    const internalPlan = this.extractInternalPlan(data);
+    const billingInterval = this.extractBillingInterval(data);
+
+    const priceId = extractPriceId(data);
+
+    // The price id is the authoritative mapping: when an event carries a
+    // price id that is not one of Atlas's configured prices, the plan stays
+    // null (never infer from custom data alone). Custom data is only used as
+    // a fallback when the event carries no price id at all.
+    const resolvedPlan = priceId
+      ? internalPlanForPaddlePriceId(priceId) ?? null
+      : internalPlan;
+    const resolvedInterval = priceId
+      ? billingIntervalForPaddlePriceId(priceId) ?? null
+      : billingInterval;
+
+    // Organization id embedded at checkout time survives into the webhook via
+    // custom data — this is how a brand-new subscription is reconciled.
+    const organizationIdHint = readCustomDataString(
+      customData,
+      "atlas.organization_id",
+      "atlas_organization_id",
+    );
 
     return {
-      providerEventId,
+      providerEventId: eventId,
       eventType,
       providerCustomerId,
       providerSubscriptionId,
-      internalPlan,
-      active,
+      providerPriceId: priceId,
+      organizationIdHint,
+      internalPlan: resolvedPlan,
+      billingInterval: resolvedInterval,
+      active: status === "active" || status === "trialing",
       status,
-      currentPeriodStart,
-      currentPeriodEnd,
-      cancelAt,
-      canceledAt,
-      trialStart,
-      trialEnd,
-      providerEventAt,
+      currentPeriodStart: this.extractCurrentPeriodStart(data),
+      currentPeriodEnd: this.extractCurrentPeriodEnd(data),
+      nextBilledAt: this.extractNextBilledAt(data),
+      cancelAt: this.extractCancelAt(data),
+      canceledAt: this.extractCanceledAt(data),
+      trialStart: this.extractTrialStart(data),
+      trialEnd: this.extractTrialEnd(data),
+      providerEventAt: paddleDateToMs(payload.occurred_at),
     };
   },
 
   // ---- Subscription sync ----
 
   async fetchSubscription(
-    providerCustomerId: string,
+    _providerCustomerId: string,
     providerSubscriptionId: string,
   ): Promise<ProviderSubscription | null> {
     try {
@@ -376,21 +513,30 @@ export const PADDLE_ADAPTER: PaddleAdapter = {
     existing: OrganizationSubscription | null,
   ): OrganizationSubscription {
     const now = Date.now();
+    const priceId = providerSubscription.priceId ?? null;
+    const internalPlan =
+      (priceId ? internalPlanForPaddlePriceId(priceId) : null) ??
+      this.mapInternalPlanForSubscription(providerSubscription);
+    const billingInterval =
+      (priceId ? billingIntervalForPaddlePriceId(priceId) : null) ??
+      (providerSubscription.billingCycle === "annual" ? "annual" : "monthly");
 
     return {
       organization_id: existing?.organization_id ?? "",
       billing_provider: "paddle",
       provider_customer_id: providerCustomerId,
       provider_subscription_id: providerSubscription.id,
-      internal_plan: this.mapInternalPlanForSubscription(providerSubscription),
-      provider_price_id: providerSubscription.priceId ?? null,
+      provider_price_id: priceId,
+      internal_plan: internalPlan,
+      billing_interval: billingInterval,
       status: this.mapStatusForSubscription(providerSubscription),
-      current_period_start: providerSubscription.currentPeriodStart ?? null,
-      current_period_end: providerSubscription.currentPeriodEnd ?? null,
-      cancel_at: providerSubscription.cancelAt ?? null,
-      canceled_at: providerSubscription.canceledAt ?? null,
       trial_start: providerSubscription.trialStartDate ?? null,
       trial_end: providerSubscription.trialEndDate ?? null,
+      current_period_start: providerSubscription.currentPeriodStart ?? null,
+      current_period_end: providerSubscription.currentPeriodEnd ?? null,
+      next_billed_at: providerSubscription.nextBilledAt ?? null,
+      cancel_at: providerSubscription.cancelAt ?? null,
+      canceled_at: providerSubscription.canceledAt ?? null,
       created_at: existing?.created_at ?? now,
       updated_at: now,
     };
@@ -401,225 +547,186 @@ export const PADDLE_ADAPTER: PaddleAdapter = {
   extractProviderCustomerId(
     data: Record<string, unknown>,
   ): string | null {
-    // Paddle returns the customer id in different shapes depending on the
-    // event. Try a few documented shapes.
     const customer =
-      (data.customer as Record<string, unknown>) ??
-      (data.customerId as string) ??
       (data.customer_id as string) ??
+      (data.customerId as string) ??
       null;
-    if (customer && typeof customer === "object") {
-      return (customer.id as string) ?? null;
-    }
     if (typeof customer === "string") return customer;
+    const customerObj = data.customer as Record<string, unknown> | undefined;
+    if (customerObj && typeof customerObj === "object") {
+      return (customerObj.id as string) ?? null;
+    }
     return null;
   },
 
   extractProviderSubscriptionId(
     data: Record<string, unknown>,
   ): string | null {
-    const subscription =
-      (data.subscription as Record<string, unknown>) ??
-      (data.subscriptionId as string) ??
+    const direct =
+      (data.id as string) ??
       (data.subscription_id as string) ??
+      (data.subscriptionId as string) ??
       null;
-    if (subscription && typeof subscription === "object") {
-      return (subscription.id as string) ?? null;
+    if (typeof direct === "string") return direct;
+    const sub = data.subscription as Record<string, unknown> | undefined;
+    if (sub && typeof sub === "object") {
+      return (sub.id as string) ?? null;
     }
-    if (typeof subscription === "string") return subscription;
     return null;
   },
 
   mapStatus(data: Record<string, unknown>): SubscriptionStatus {
-    const subs =
-      data.subscription && typeof data.subscription === "object"
-        ? (data.subscription as Record<string, unknown>)
-        : undefined;
     const status =
       (data.status as string) ??
-      (subs?.status as string) ??
       (data.subscriptionStatus as string) ??
       "unknown";
-
-    return (SUBSCRIPTION_STATUSES as Record<string, SubscriptionStatus>)[
-      status
-    ] ?? "unknown";
+    return mapPaddleStatus(status);
   },
 
   mapStatusForSubscription(
     subscription: ProviderSubscription,
   ): SubscriptionStatus {
-    return (SUBSCRIPTION_STATUSES as Record<string, SubscriptionStatus>)[
-      subscription.status
-    ] ?? "unknown";
+    return mapPaddleStatus(subscription.status);
   },
 
   extractInternalPlan(
     data: Record<string, unknown>,
   ): InternalPlan | null {
-    // If the checkout custom data survived into the webhook payload, we can
-    // map the plan directly. Otherwise fall back to the price-id mapping.
-    const customData =
-      (data.customData as Record<string, unknown>) ??
-      (data.custom_data as Record<string, unknown>) ??
-      (data.metadata as Record<string, unknown>) ??
-      null;
-
-    if (customData) {
-      const plan = (customData["atlas.internal_plan"] as string) ?? null;
-      if (plan && Object.values(INTERNAL_PLANS).includes(plan as InternalPlan)) {
-        return plan as InternalPlan;
-      }
+    const customData = getCustomData(data);
+    const plan = readCustomDataString(
+      customData,
+      "atlas.internal_plan",
+      "atlas_internal_plan",
+    );
+    if (
+      plan === "ATLAS_STARTER" ||
+      plan === "ATLAS_GROWTH" ||
+      plan === "ATLAS_SCALE"
+    ) {
+      return plan as InternalPlan;
     }
-
-    const subs =
-      data.subscription && typeof data.subscription === "object"
-        ? (data.subscription as Record<string, unknown>)
-        : undefined;
-    const priceId =
-      (data.priceId as string) ??
-      (data.price_id as string) ??
-      (subs?.priceId as string) ??
-      null;
-
-    if (priceId) {
-      return internalPlanForPaddlePriceId(priceId);
-    }
-
     return null;
+  },
+
+  extractBillingInterval(
+    data: Record<string, unknown>,
+  ): BillingInterval | null {
+    const customData = getCustomData(data);
+    const custom = readCustomDataString(
+      customData,
+      "atlas.billing_interval",
+      "atlas_billing_interval",
+    );
+    if (custom === "monthly" || custom === "annual") return custom;
+    return extractBillingCycleInterval(data);
   },
 
   extractCurrentPeriodStart(
     data: Record<string, unknown>,
   ): number | null {
-    const subs =
-      data.subscription && typeof data.subscription === "object"
-        ? (data.subscription as Record<string, unknown>)
-        : undefined;
-    if (subs) {
-      const v = (subs.currentPeriodStart as number) ??
-        (subs.current_period_start as number);
-      if (typeof v === "number") return v;
+    const period = (data.current_billing_period as Record<string, unknown>) ??
+      (data.currentBillingPeriod as Record<string, unknown>) ??
+      null;
+    if (period && typeof period === "object") {
+      const v = paddleDateToMs(period.starts_at ?? period.startsAt);
+      if (v !== null) return v;
     }
-    const v = (data.currentPeriodStart as number) ??
-      (data.current_period_start as number);
-    return typeof v === "number" ? v : null;
+    return paddleDateToMs(data.current_period_start ?? data.currentPeriodStart);
   },
 
   extractCurrentPeriodEnd(
     data: Record<string, unknown>,
   ): number | null {
-    const subs =
-      data.subscription && typeof data.subscription === "object"
-        ? (data.subscription as Record<string, unknown>)
-        : undefined;
-    if (subs) {
-      const v = (subs.currentPeriodEnd as number) ??
-        (subs.current_period_end as number);
-      if (typeof v === "number") return v;
+    const period = (data.current_billing_period as Record<string, unknown>) ??
+      (data.currentBillingPeriod as Record<string, unknown>) ??
+      null;
+    if (period && typeof period === "object") {
+      const v = paddleDateToMs(period.ends_at ?? period.endsAt);
+      if (v !== null) return v;
     }
-    const v = (data.currentPeriodEnd as number) ??
-      (data.current_period_end as number);
-    return typeof v === "number" ? v : null;
+    return paddleDateToMs(data.current_period_end ?? data.currentPeriodEnd);
+  },
+
+  extractNextBilledAt(
+    data: Record<string, unknown>,
+  ): number | null {
+    return paddleDateToMs(data.next_billed_at ?? data.nextBilledAt);
   },
 
   extractCancelAt(
     data: Record<string, unknown>,
   ): number | null {
-    const subs =
-      data.subscription && typeof data.subscription === "object"
-        ? (data.subscription as Record<string, unknown>)
-        : undefined;
-    if (subs) {
-      const v = (subs.cancelAt as number) ?? (subs.cancel_at as number);
-      if (typeof v === "number") return v;
+    // scheduled_change.action = "cancel" carries the effective cancellation
+    // date; this is the "cancel at period end" signal.
+    const scheduled = (data.scheduled_change as Record<string, unknown>) ??
+      (data.scheduledChange as Record<string, unknown>) ??
+      null;
+    if (scheduled && typeof scheduled === "object") {
+      const action = scheduled.action as string;
+      if (action === "cancel") {
+        const v = paddleDateToMs(scheduled.effective_at ?? scheduled.effectiveAt);
+        if (v !== null) return v;
+      }
     }
-    const v = (data.cancelAt as number) ?? (data.cancel_at as number);
-    return typeof v === "number" ? v : null;
+    return paddleDateToMs(data.cancel_at ?? data.cancelAt);
   },
 
   extractCanceledAt(
     data: Record<string, unknown>,
   ): number | null {
-    const subs =
-      data.subscription && typeof data.subscription === "object"
-        ? (data.subscription as Record<string, unknown>)
-        : undefined;
-    if (subs) {
-      const v = (subs.canceledAt as number) ?? (subs.canceled_at as number);
-      if (typeof v === "number") return v;
-    }
-    const v = (data.canceledAt as number) ?? (data.canceled_at as number);
-    return typeof v === "number" ? v : null;
+    return paddleDateToMs(data.canceled_at ?? data.canceledAt);
   },
 
   extractTrialStart(
     data: Record<string, unknown>,
   ): number | null {
-    const subs =
-      data.subscription && typeof data.subscription === "object"
-        ? (data.subscription as Record<string, unknown>)
-        : undefined;
-    if (subs) {
-      const v = (subs.trialStartDate as number) ?? (subs.trial_start as number);
-      if (typeof v === "number") return v;
+    const trial = (data.trial_dates as Record<string, unknown>) ??
+      (data.trialDates as Record<string, unknown>) ??
+      null;
+    if (trial && typeof trial === "object") {
+      const v = paddleDateToMs(trial.starts_at ?? trial.startsAt);
+      if (v !== null) return v;
     }
-    const v = (data.trialStartDate as number) ?? (data.trial_start as number);
-    return typeof v === "number" ? v : null;
+    return paddleDateToMs(data.trial_start ?? data.trialStart);
   },
 
   extractTrialEnd(
     data: Record<string, unknown>,
   ): number | null {
-    const subs =
-      data.subscription && typeof data.subscription === "object"
-        ? (data.subscription as Record<string, unknown>)
-        : undefined;
-    if (subs) {
-      const v = (subs.trialEndDate as number) ?? (subs.trial_end as number);
-      if (typeof v === "number") return v;
+    const trial = (data.trial_dates as Record<string, unknown>) ??
+      (data.trialDates as Record<string, unknown>) ??
+      null;
+    if (trial && typeof trial === "object") {
+      const v = paddleDateToMs(trial.ends_at ?? trial.endsAt);
+      if (v !== null) return v;
     }
-    const v = (data.trialEndDate as number) ?? (data.trial_end as number);
-    return typeof v === "number" ? v : null;
+    return paddleDateToMs(data.trial_end ?? data.trialEnd);
   },
 
   mapProviderSubscription(
     json: Record<string, unknown>,
   ): ProviderSubscription {
+    const s = ((json.data as Record<string, unknown>) ?? json) as Record<string, unknown>;
+    const items = subscriptionItems(s);
+    const priceId = extractPriceId(s);
     return {
-      id: (json.id as string) ?? "",
-      customerId: (json.customerId as string) ??
-        (json.customer_id as string) ??
-        "",
-      status: (json.status as string) ?? "unknown",
-      planId: (json.planId as string) ?? null,
-      priceId: (json.priceId as string) ?? null,
+      id: (s.id as string) ?? "",
+      customerId: (s.customer_id as string) ?? (s.customerId as string) ?? "",
+      status: (s.status as string) ?? "unknown",
+      planId: (s.plan_id as string) ?? null,
+      priceId: priceId,
       billingCycle:
-        (json.billingCycle as string) ??
-        (json.billing_cycle as string) ??
+        extractBillingCycleInterval(s) ??
         "monthly",
-      trialStartDate: (json.trialStartDate as number) ??
-        (json.trial_start as number) ??
-        null,
-      trialEndDate: (json.trialEndDate as number) ??
-        (json.trial_end as number) ??
-        null,
-      currentPeriodStart: (json.currentPeriodStart as number) ??
-        (json.current_period_start as number) ??
-        null,
-      currentPeriodEnd: (json.currentPeriodEnd as number) ??
-        (json.current_period_end as number) ??
-        null,
-      cancelAt: (json.cancelAt as number) ??
-        (json.cancel_at as number) ??
-        null,
-      canceledAt: (json.canceledAt as number) ??
-        (json.canceled_at as number) ??
-        null,
-      amount: (json.amount as number) ?? null,
-      currency:
-        (json.currency as string) ??
-        null,
+      trialStartDate: this.extractTrialStart(s),
+      trialEndDate: this.extractTrialEnd(s),
+      currentPeriodStart: this.extractCurrentPeriodStart(s),
+      currentPeriodEnd: this.extractCurrentPeriodEnd(s),
+      nextBilledAt: this.extractNextBilledAt(s),
+      cancelAt: this.extractCancelAt(s),
+      canceledAt: this.extractCanceledAt(s),
+      amount: typeof s.amount === "number" ? s.amount : null,
+      currency: (s.currency_code as string) ?? (s.currency as string) ?? null,
     };
   },
 
@@ -628,11 +735,6 @@ export const PADDLE_ADAPTER: PaddleAdapter = {
   ): InternalPlan | null {
     if (subscription.priceId) {
       return internalPlanForPaddlePriceId(subscription.priceId);
-    }
-    if (subscription.planId) {
-      // If Paddle plan ids align with our internal plan naming, map here.
-      const plan = internalPlanForPaddlePriceId(subscription.planId);
-      if (plan) return plan;
     }
     return null;
   },

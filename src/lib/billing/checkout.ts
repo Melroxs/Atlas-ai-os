@@ -4,13 +4,16 @@
 // The checkout path is the one place where the browser talks to the billing
 // provider. It must:
 //   - preserve the organization context across checkout ➜ transaction ➜
-//     subscription ➜ webhook
+//     subscription ➜ webhook (custom data)
 //   - map internal plan ➜ provider price id server-side
 //   - never expose provider API keys or secrets
 //   - never grant paid access from the browser redirect
 //
 // The browser only ever receives a checkout URL it should open. Everything
-// that grants access happens in the webhook processor.
+// that grants access happens in the webhook processor. Paddle is the billing
+// source of truth: the $10 / 1-day trial and the recurring price are
+// configured on the catalog price — Atlas never charges the trial itself and
+// never runs its own trial timer.
 // ---------------------------------------------------------------------------
 
 import {
@@ -18,6 +21,7 @@ import {
   ALL_INTERNAL_PLANS,
   paddlePriceId,
 } from "./plans";
+import { createPaddleCheckoutTransaction } from "./paddle";
 import type { InternalPlan, BillingInterval, BillingState } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -47,16 +51,16 @@ export interface CheckoutResponse {
 }
 
 /**
- * Build a Paddle checkout URL for an organization.
+ * Create a Paddle checkout for an organization.
  *
- * Throws when:
- *   - the provider is not configured
- *   - the price id for the plan/interval is missing
- *   - the adapter cannot build a checkout URL
+ * Returns a CheckoutResponse. When the provider/price is not configured or
+ * Paddle is unavailable, returns `canCheckout: false` with a clear
+ * `serverNote` instead of throwing, so callers can surface the real reason
+ * without leaking provider internals.
  */
-export function initiateCheckout(
+export async function initiateCheckout(
   request: CheckoutRequest,
-): CheckoutResponse {
+): Promise<CheckoutResponse> {
   const priceId = paddlePriceId(request.plan, request.billingInterval);
 
   if (!priceId) {
@@ -69,21 +73,40 @@ export function initiateCheckout(
       providerConfigured: false,
       providerType: "paddle",
       canCheckout: false,
-      serverNote: "No Paddle price ID configured for this plan/interval.",
+      serverNote: "The selected Atlas plan is not configured for billing.",
     };
   }
 
-  return {
-    checkoutUrl: "",
-    successUrl: "/pricing-success",
-    cancelUrl: "/pricing",
-    plan: request.plan,
-    billingInterval: request.billingInterval,
-    providerConfigured: false,
-    providerType: "paddle",
-    canCheckout: false,
-    serverNote: "Paddle billing is not configured for this environment.",
-  };
+  try {
+    const { url } = await createPaddleCheckoutTransaction(
+      request.organizationId,
+      request.plan,
+      request.billingInterval,
+    );
+    return {
+      checkoutUrl: url,
+      successUrl: "/pricing-success",
+      cancelUrl: "/pricing",
+      plan: request.plan,
+      billingInterval: request.billingInterval,
+      providerConfigured: true,
+      providerType: "paddle",
+      canCheckout: true,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      checkoutUrl: "",
+      successUrl: "/pricing-success",
+      cancelUrl: "/pricing",
+      plan: request.plan,
+      billingInterval: request.billingInterval,
+      providerConfigured: true,
+      providerType: "paddle",
+      canCheckout: false,
+      serverNote: msg,
+    };
+  }
 }
 
 /**
@@ -99,16 +122,17 @@ export function buildCheckoutResponse(
   cancelUrl?: string,
   serverNote?: string,
 ): CheckoutResponse {
+  const providerConfigured = Boolean(checkoutUrl);
   return {
     checkoutUrl,
     successUrl: successUrl ?? "/pricing-success",
     cancelUrl: cancelUrl ?? "/pricing",
     plan: request.plan,
     billingInterval: request.billingInterval,
-    providerConfigured: false,
+    providerConfigured,
     providerType: "paddle",
-    canCheckout: false,
-    serverNote: serverNote ?? "Paddle billing is not configured for this environment.",
+    canCheckout: providerConfigured,
+    serverNote,
   };
 }
 
@@ -223,4 +247,3 @@ export function purchasablePlans(): InternalPlan[] {
 export function isActiveBillingState(state: BillingState): boolean {
   return state.isActive;
 }
-

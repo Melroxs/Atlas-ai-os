@@ -33,16 +33,19 @@ export const BILLING_PROVIDERS = {
 
 export type BillingProvider = (typeof BILLING_PROVIDERS)[keyof typeof BILLING_PROVIDERS];
 
-/** Subscription statuses we synchronize from the provider. */
+/**
+ * Subscription statuses we synchronize from the provider.
+ *
+ * These mirror Paddle Billing subscription statuses (active, trialing,
+ * past_due, paused, canceled) plus the Atlas "unknown" fallback. Atlas never
+ * invents statuses the provider does not report.
+ */
 export const SUBSCRIPTION_STATUSES = {
   ACTIVE: "active",
   TRIALING: "trialing",
   PAUSED: "paused",
   PAST_DUE: "past_due",
   CANCELED: "canceled",
-  UNPAID: "unpaid",
-  INCOMPLETE: "incomplete",
-  INCOMPLETE_EXPIRED: "incomplete_expired",
   UNKNOWN: "unknown",
 } as const;
 
@@ -52,7 +55,13 @@ export type SubscriptionStatus =
 /** Billing period for a subscription. */
 export type BillingInterval = "monthly" | "annual";
 
-/** A subscription record Atlas maintains for an organization. */
+/**
+ * A subscription record Atlas maintains for an organization.
+ *
+ * All timestamps are Unix milliseconds. The record is written exclusively by
+ * the verified billing webhook; client code may only read it (through RLS /
+ * the billing_get_state RPC).
+ */
 export interface OrganizationSubscription {
   /** FK to the owning organization. */
   organization_id: string;
@@ -62,24 +71,28 @@ export interface OrganizationSubscription {
   provider_customer_id: string | null;
   /** Provider subscription identifier. */
   provider_subscription_id: string | null;
-  /** Internal Atlas plan mapped from the provider subscription. */
-  internal_plan: InternalPlan | null;
   /** Provider price identifier that produced this subscription. */
   provider_price_id: string | null;
+  /** Internal Atlas plan mapped from the provider subscription. */
+  internal_plan: InternalPlan | null;
+  /** Billing interval mapped from the provider price (monthly/annual). */
+  billing_interval: BillingInterval | null;
   /** Current subscription status (synchronized from provider). */
   status: SubscriptionStatus;
-  /** Current billing period start (Unix ms, provider time). */
-  current_period_start: number | null;
-  /** Current billing period end (Unix ms, provider time). */
-  current_period_end: number | null;
-  /** When a cancellation was requested (Unix ms). */
-  cancel_at: number | null;
-  /** When the subscription was canceled (Unix ms). */
-  canceled_at: number | null;
   /** Trial start (Unix ms), if applicable. */
   trial_start: number | null;
   /** Trial end (Unix ms), if applicable. */
   trial_end: number | null;
+  /** Current billing period start (Unix ms, provider time). */
+  current_period_start: number | null;
+  /** Current billing period end (Unix ms, provider time). */
+  current_period_end: number | null;
+  /** When the next renewal is scheduled (Unix ms, provider time). */
+  next_billed_at: number | null;
+  /** When a cancellation was requested / will take effect (Unix ms). */
+  cancel_at: number | null;
+  /** When the subscription was canceled (Unix ms). */
+  canceled_at: number | null;
   /** When this record was created (Unix ms). */
   created_at: number;
   /** When this record was last updated (Unix ms). */
@@ -108,7 +121,12 @@ export interface ProcessedWebhookEvent {
   processed_at: number;
 }
 
-/** What the billing subsystem exposes to the rest of Atlas. */
+/**
+ * What the billing subsystem exposes to the rest of Atlas.
+ *
+ * Resolved server-side from the organization subscription record; the browser
+ * never supplies plan/status values.
+ */
 export interface BillingState {
   /** True when the organization has an active paid or trialing subscription. */
   isActive: boolean;
@@ -118,14 +136,22 @@ export interface BillingState {
   status: SubscriptionStatus;
   /** Billing provider. */
   provider: BillingProvider;
+  /** Billing interval (monthly/annual), when known. */
+  billingInterval: BillingInterval | null;
   /** Provider customer id. */
   providerCustomerId: string | null;
   /** Provider subscription id. */
   providerSubscriptionId: string | null;
+  /** Trial start. */
+  trialStart: number | null;
+  /** Trial end. */
+  trialEnd: number | null;
   /** Current period start. */
   currentPeriodStart: number | null;
   /** Current period end. */
   currentPeriodEnd: number | null;
+  /** Next scheduled renewal. */
+  nextBilledAt: number | null;
   /** Cancel-at timestamp. */
   cancelAt: number | null;
   /** Canceled-at timestamp. */
@@ -144,11 +170,17 @@ export interface BillingWebhookEvent {
   eventType: string;
   providerCustomerId: string | null;
   providerSubscriptionId: string | null;
+  /** Provider price id carried by the event (null when unknown). */
+  providerPriceId: string | null;
+  /** Organization id embedded in provider custom data, if any. */
+  organizationIdHint: string | null;
   internalPlan: InternalPlan | null;
+  billingInterval: BillingInterval | null;
   active: boolean;
   status: SubscriptionStatus;
   currentPeriodStart: number | null;
   currentPeriodEnd: number | null;
+  nextBilledAt: number | null;
   cancelAt: number | null;
   canceledAt: number | null;
   trialStart: number | null;

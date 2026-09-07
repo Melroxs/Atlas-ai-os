@@ -50,9 +50,46 @@ Same set, plus locally:
 - `.env.local` with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` from
   `supabase start` (or your project's API keys).
 
+## Paddle billing variables
+
+Atlas uses **Paddle Billing** as the payment provider. Checkout is created
+server-side by the `paddle-checkout` Edge Function; subscription state is
+synchronized by the `paddle-webhook` Edge Function. All Paddle values are
+**server-only** (Edge Function secrets / production environment) — never
+`VITE_` prefixed, never in the browser bundle.
+
+| Variable | Environment | Required | Secret | Purpose |
+|---|---|---|---|---|
+| `PADDLE_ENVIRONMENT` | Supabase edge secrets + prod | ✅ | No | `sandbox` or `live` (production MUST be `live`) |
+| `PADDLE_API_KEY` | Supabase edge secrets | ✅ | **Yes** | Server API key for creating transactions |
+| `PADDLE_CLIENT_TOKEN` | Supabase edge secrets | Optional | No | Client token; only needed for the Paddle.js overlay checkout |
+| `PADDLE_SELLER_ID` | Supabase edge secrets | Optional | **Yes** | Vendor id (kept for configuration compatibility) |
+| `PADDLE_WEBHOOK_SECRET` | Supabase edge secrets | ✅ | **Yes** | Verifies webhook signatures (`Paddle-Signature` header) |
+| `ATLAS_APP_URL` | Supabase edge secrets | Optional | No | Public Atlas base URL for checkout success/cancel redirects (default `https://atlas-ai-os.com`) |
+| `PADDLE_STARTER_PRICE_ID_MONTHLY` | Supabase edge secrets | ✅ prod | No | Price id for Starter monthly (1-day/$10 trial configured on the price) |
+| `PADDLE_STARTER_PRICE_ID_ANNUAL` | Supabase edge secrets | ✅ prod | No | Price id for Starter annual |
+| `PADDLE_GROWTH_PRICE_ID_MONTHLY` | Supabase edge secrets | ✅ prod | No | Price id for Growth monthly |
+| `PADDLE_GROWTH_PRICE_ID_ANNUAL` | Supabase edge secrets | ✅ prod | No | Price id for Growth annual |
+| `PADDLE_SCALE_PRICE_ID_MONTHLY` | Supabase edge secrets | ✅ prod | No | Price id for Scale monthly |
+| `PADDLE_SCALE_PRICE_ID_ANNUAL` | Supabase edge secrets | ✅ prod | No | Price id for Scale annual |
+
+Price ids are **not** secrets (they are catalog identifiers), but they are
+kept server-side so the plan → price mapping stays authoritative and the six
+price ids are not scattered through the frontend bundle.
+
+Deployment notes:
+- `paddle-checkout` deploys with default JWT verification (caller must be
+  authenticated).
+- `paddle-webhook` deploys with `--no-verify-jwt` (Paddle does not send a
+  Supabase JWT); the signature header is verified inside the function.
+- Point the Paddle notification destination at
+  `https://<ref>.supabase.co/functions/v1/paddle-webhook`.
+
 ## Notes
 
 - **Never** put secrets in `.env.example` (it is committed to GitHub).
+- The committed `.env.example` template is managed by the platform guard;
+  the Paddle variable list above is the canonical reference.
 - All database access is via RLS-gated Postgres RPCs — there are no backend
   database credentials in the frontend.
 - Storage (file uploads) uses Supabase Storage buckets with tenant-scoped

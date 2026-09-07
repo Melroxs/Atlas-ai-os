@@ -537,6 +537,10 @@ export const api = {
     updateMemberRole: def<{ ok: boolean }>("tenants_update_member_role", "mutation"),
     removeMember: def<{ ok: boolean }>("tenants_remove_member", "mutation"),
   },
+  billing: {
+    // Resolved server-side from organization_subscriptions (RLS-checked).
+    getState: def<Obj | null>("billing_get_state", "query"),
+  },
   onboarding: {
     updateCompanyProfile: def<{ ok: boolean }>("onboarding_update_company_profile", "mutation"),
     saveCompanySystem: def<{ ok: boolean }>("onboarding_save_company_system", "mutation"),

@@ -115,8 +115,9 @@ describe("billing/checkout request/response contract", () => {
     expect(response.cancelUrl).toBe("/pricing");
     expect(response.plan).toBe("ATLAS_STARTER");
     expect(response.providerType).toBe("paddle");
-    expect(response.providerConfigured).toBe(false);
-    expect(response.canCheckout).toBe(false);
+    // A response carrying a real checkout URL is a configured checkout.
+    expect(response.providerConfigured).toBe(true);
+    expect(response.canCheckout).toBe(true);
   });
 
   it("exposes links derived from the checkout response", () => {
@@ -150,8 +151,9 @@ describe("billing/checkout request/response contract", () => {
     expect(quartet.interval).toBe("annual");
   });
 
-  it("returns a gated checkout response when no price id is configured", () => {
-    const response = initiateCheckout({
+  it("returns a gated checkout response when no price id is configured", async () => {
+    // PADDLE_*_PRICE_ID_* env vars are not set in tests → no checkout.
+    const response = await initiateCheckout({
       organizationId: "org-1",
       plan: "ATLAS_STARTER",
       billingInterval: "monthly",
@@ -159,7 +161,9 @@ describe("billing/checkout request/response contract", () => {
 
     expect(response.providerConfigured).toBe(false);
     expect(response.canCheckout).toBe(false);
-    expect(response.serverNote).toBeTruthy();
+    expect(response.serverNote).toBe(
+      "The selected Atlas plan is not configured for billing.",
+    );
     expect(response.checkoutUrl).toBe("");
   });
 });

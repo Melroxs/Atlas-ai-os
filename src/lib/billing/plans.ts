@@ -83,7 +83,7 @@ function envPriceId(
 ): string | undefined {
   const key =
     "PADDLE_" +
-    plan.replace("ATLAS_", "").toLowerCase() +
+    plan.replace("ATLAS_", "").toUpperCase() +
     "_PRICE_ID_" +
     interval.toUpperCase();
 
@@ -110,4 +110,105 @@ export function internalPlanForPaddlePriceId(
     }
   }
   return null;
+}
+
+/**
+ * Resolve the billing interval for a Paddle price id (monthly/annual).
+ *
+ * The price id is the authoritative key for plan + interval — we never infer
+ * the interval from user-supplied values or displayed prices.
+ */
+export function billingIntervalForPaddlePriceId(
+  priceId: string,
+): BillingInterval | null {
+  for (const plan of ALL_INTERNAL_PLANS) {
+    if (envPriceId(plan, "monthly") === priceId) return "monthly";
+    if (envPriceId(plan, "annual") === priceId) return "annual";
+  }
+  return null;
+}
+
+/**
+ * Resolve plan + interval together from a Paddle price id.
+ *
+ * Returns null when the price id is not one of Atlas's configured prices.
+ */
+export function planAndIntervalForPaddlePriceId(
+  priceId: string,
+): { plan: InternalPlan; interval: BillingInterval } | null {
+  const plan = internalPlanForPaddlePriceId(priceId);
+  if (!plan) return null;
+  const interval = billingIntervalForPaddlePriceId(priceId);
+  if (!interval) return null;
+  return { plan, interval };
+}
+
+// ---------------------------------------------------------------------------
+// Plan entitlements (server-side contract)
+//
+// Mirrors the features listed on the public pricing page — no new limits or
+// pricing are invented here. Access to these entitlements is gated by the
+// organization's subscription state (see resolveBillingState); the browser
+// never supplies plan/status values.
+// ---------------------------------------------------------------------------
+
+export interface PlanEntitlements {
+  internalPlan: InternalPlan;
+  /** null = unlimited. */
+  maxSeats: number | null;
+  /** null = unlimited. */
+  maxStorageGb: number | null;
+  aiTier: "basic" | "advanced" | "enterprise";
+  prioritySupport: boolean;
+  multipleOrganizations: boolean;
+  customWorkflows: boolean;
+  apiAccess: boolean;
+  sso: boolean;
+  sla: boolean;
+}
+
+export const PLAN_ENTITLEMENTS: Record<InternalPlan, PlanEntitlements> = {
+  ATLAS_STARTER: {
+    internalPlan: "ATLAS_STARTER",
+    maxSeats: 5,
+    maxStorageGb: 10,
+    aiTier: "basic",
+    prioritySupport: false,
+    multipleOrganizations: false,
+    customWorkflows: false,
+    apiAccess: false,
+    sso: false,
+    sla: false,
+  },
+  ATLAS_GROWTH: {
+    internalPlan: "ATLAS_GROWTH",
+    maxSeats: 25,
+    maxStorageGb: 100,
+    aiTier: "advanced",
+    prioritySupport: true,
+    multipleOrganizations: true,
+    customWorkflows: true,
+    apiAccess: true,
+    sso: false,
+    sla: false,
+  },
+  ATLAS_SCALE: {
+    internalPlan: "ATLAS_SCALE",
+    maxSeats: null,
+    maxStorageGb: null,
+    aiTier: "enterprise",
+    prioritySupport: true,
+    multipleOrganizations: true,
+    customWorkflows: true,
+    apiAccess: true,
+    sso: true,
+    sla: true,
+  },
+};
+
+/** Resolve the entitlements for an internal plan (null when not on a plan). */
+export function resolvePlanEntitlements(
+  plan: InternalPlan | null,
+): PlanEntitlements | null {
+  return plan ? PLAN_ENTITLEMENTS[plan] : null;
 }

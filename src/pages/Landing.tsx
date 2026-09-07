@@ -2019,10 +2019,27 @@ export default function Landing() {
                 </div>
               ))}
             </div>
-            <div className="mt-10 flex flex-col items-center justify-between gap-3 border-t border-border/60 pt-6 sm:flex-row">
+            <div className="mt-10 flex flex-col items-center justify-between gap-4 border-t border-border/60 pt-6 sm:flex-row">
               <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-muted-foreground/60">
                 industry knowledge · company intelligence · live evidence · reasoning · action
               </p>
+              <nav aria-label="Legal" className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+                {[
+                  ["Terms of Service", "/terms"],
+                  ["Privacy Policy", "/privacy"],
+                  ["Refund Policy", "/refunds"],
+                ].map(([label, href], i) => (
+                  <span key={href} className="flex items-center gap-4">
+                    {i > 0 && <span aria-hidden className="text-xs text-muted-foreground/40">·</span>}
+                    <a
+                      href={href}
+                      className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      {label}
+                    </a>
+                  </span>
+                ))}
+              </nav>
               <p className="text-[11px] text-muted-foreground/60">
                 © {new Date().getFullYear()} Atlas. AI Operating System for Companies. Starting with insurance restoration.
               </p>

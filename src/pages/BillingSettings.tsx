@@ -1,49 +1,77 @@
-import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { useAuth } from "@/hooks/use-auth";
+import { api } from "@/lib/api";
+import { useQuery } from "@/hooks/use-supabase";
 import { Button } from "@/components/ui/button";
 import { Loader2, Smile } from "lucide-react";
-import { isBillingProviderConfigured, type BillingState } from "@/lib/billing";
+import type { Obj } from "@/lib/api";
+
+interface BillingStateShape {
+  isActive: boolean;
+  plan?: string | null;
+  status?: string;
+  billingInterval?: string | null;
+  provider?: string;
+  providerCustomerId?: string | null;
+  providerSubscriptionId?: string | null;
+  trialStart?: number | null;
+  trialEnd?: number | null;
+  currentPeriodEnd?: number | null;
+  nextBilledAt?: number | null;
+  cancelAt?: number | null;
+  canceledAt?: number | null;
+}
+
+function planDisplayName(plan?: string | null): string {
+  if (plan === "ATLAS_STARTER") return "Atlas Starter";
+  if (plan === "ATLAS_GROWTH") return "Atlas Growth";
+  if (plan === "ATLAS_SCALE") return "Atlas Scale";
+  return "Not on a paid plan";
+}
+
+function statusLabel(state?: BillingStateShape | null): string {
+  switch (state?.status) {
+    case "trialing":
+      return state?.isActive ? "Trial" : "Trial ended";
+    case "active":
+      return state?.isActive ? "Active" : "Inactive";
+    case "past_due":
+      return "Past due";
+    case "paused":
+      return "Paused";
+    case "canceled":
+      return "Canceled";
+    default:
+      return "Not active";
+  }
+}
+
+function formatDate(ms: number | null | undefined): string | null {
+  if (!ms) return null;
+  return new Date(ms).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
 
 export default function BillingSettings() {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
-  const [state, setState] = useState<BillingState | null>(null);
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    if (authLoading || !isAuthenticated) {
-      setLoading(false);
-      return;
-    }
+  const workspace = useQuery(api.tenants.getMyWorkspace);
+  const tenantId =
+    (workspace?.tenant as Obj | null | undefined)?.id ??
+    (workspace?.membership as Obj | null | undefined)?.tenant_id ??
+    null;
 
-    // Billing state is resolved server-side. In a fully wired deploy this page
-    // would fetch it from the backend; for now we render an honest placeholder
-    // that reflects the current configuration.
-    //
-    // Once the billing RPC is deployed, replace this with a server-backed fetch
-    // so the page never trusts client-provided plan/status values.
-    const tick = async () => {
-      setLoading(false);
-      setState({
-        isActive: false,
-        plan: null,
-        status: "unknown",
-        provider: "paddle",
-        providerCustomerId: null,
-        providerSubscriptionId: null,
-        currentPeriodStart: null,
-        currentPeriodEnd: null,
-        cancelAt: null,
-        canceledAt: null,
-        canUsePaidFeatures: false,
-      });
-    };
+  const state = useQuery<Obj | null>(
+    api.billing.getState,
+    { tenantId },
+    { enabled: Boolean(isAuthenticated && tenantId) },
+  ) as BillingStateShape | null | undefined;
 
-    tick();
-  }, [authLoading, isAuthenticated]);
-
-  if (authLoading) {
+  if (authLoading || (!isAuthenticated && workspace === undefined)) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background">
         <Loader2 className="size-8 animate-spin text-teal-500" />
@@ -56,40 +84,15 @@ export default function BillingSettings() {
     return null;
   }
 
-  if (loading || !state) {
+  const loading = workspace === undefined || (Boolean(tenantId) && state === undefined);
+
+  if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background">
         <Loader2 className="size-8 animate-spin text-teal-500" />
       </main>
     );
   }
-
-  const planDisplayName =
-    state.plan === "ATLAS_STARTER"
-      ? "Atlas Starter"
-      : state.plan === "ATLAS_GROWTH"
-        ? "Atlas Growth"
-        : state.plan === "ATLAS_SCALE"
-          ? "Atlas Scale"
-          : "Not on a paid plan";
-
-  const statusLabel =
-    state.status === "active" && !state.isActive
-      ? "Inactive"
-      : state.status === "canceled"
-        ? "Canceled"
-        : state.status === "past_due"
-          ? "Past due"
-          : state.status === "trialing"
-            ? "Trialing"
-            : state.status === "active"
-              ? "Active"
-              : "Not active";
-
-  const manageBillingHref =
-    isBillingProviderConfigured()
-      ? "https://my.paddle.com"
-      : "#";
 
   return (
     <main className="min-h-screen bg-background">
@@ -126,11 +129,11 @@ export default function BillingSettings() {
                 Current plan
               </p>
               <p className="mt-1 text-2xl font-semibold text-foreground">
-                {planDisplayName}
+                {planDisplayName(state?.plan)}
               </p>
             </div>
             <div className="rounded-lg border border-border/60 bg-muted/40 px-3 py-1.5 text-sm font-medium text-foreground">
-              {statusLabel}
+              {statusLabel(state)}
             </div>
           </div>
 
@@ -138,20 +141,51 @@ export default function BillingSettings() {
             <div className="flex justify-between text-muted-foreground">
               <span>Provider</span>
               <span className="text-foreground font-medium">
-                {state.provider === "paddle" ? "Paddle" : state.provider}
+                {state?.provider === "paddle" ? "Paddle" : state?.provider ?? "—"}
               </span>
             </div>
 
-            {state.providerCustomerId && (
+            {state?.billingInterval && (
               <div className="flex justify-between text-muted-foreground">
-                <span>Customer ID</span>
-                <span className="text-foreground font-mono text-xs">
-                  {state.providerCustomerId}
+                <span>Billing interval</span>
+                <span className="text-foreground font-medium capitalize">
+                  {state.billingInterval}
                 </span>
               </div>
             )}
 
-            {state.providerSubscriptionId && (
+            {state?.status === "trialing" && state.trialEnd && (
+              <div className="flex justify-between text-muted-foreground">
+                <span>Trial ends</span>
+                <span className="text-foreground">{formatDate(state.trialEnd)}</span>
+              </div>
+            )}
+
+            {state?.isActive && (
+              <>
+                {state.nextBilledAt && (
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Next billing date</span>
+                    <span className="text-foreground">{formatDate(state.nextBilledAt)}</span>
+                  </div>
+                )}
+                {!state.nextBilledAt && state.currentPeriodEnd && (
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Current period ends</span>
+                    <span className="text-foreground">{formatDate(state.currentPeriodEnd)}</span>
+                  </div>
+                )}
+              </>
+            )}
+
+            {state?.cancelAt && (
+              <div className="flex justify-between text-muted-foreground">
+                <span>Cancellation effective</span>
+                <span className="text-foreground">{formatDate(state.cancelAt)}</span>
+              </div>
+            )}
+
+            {state?.providerSubscriptionId && (
               <div className="flex justify-between text-muted-foreground">
                 <span>Subscription ID</span>
                 <span className="text-foreground font-mono text-xs">
@@ -159,53 +193,24 @@ export default function BillingSettings() {
                 </span>
               </div>
             )}
-
-            {state.status === "active" && state.currentPeriodEnd && (
-              <div className="flex justify-between text-muted-foreground">
-                <span>Next billing date</span>
-                <span className="text-foreground">
-                  {new Date(state.currentPeriodEnd).toLocaleDateString(
-                    undefined,
-                    {
-                      year: "numeric",
-                      month: "long",
-                      day: "numeric",
-                    },
-                  )}
-                </span>
-              </div>
-            )}
           </div>
 
-          {isBillingProviderConfigured() && (
-            <div className="mt-6 flex flex-wrap gap-3">
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Button variant="outline" size="sm" asChild>
+              <a href="/dashboard/settings">
+                Back to settings
+              </a>
+            </Button>
+            {!state?.isActive && (
               <Button
-                asChild
-                className="shadow-none"
                 size="sm"
+                onClick={() => navigate("/pricing")}
+                className="shadow-none"
               >
-                <a
-                  href={manageBillingHref}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Manage billing
-                </a>
+                View plans
               </Button>
-
-              <Button variant="outline" size="sm" asChild>
-                <a href="/dashboard/settings">
-                  Back to settings
-                </a>
-              </Button>
-            </div>
-          )}
-
-          {!isBillingProviderConfigured() && (
-            <div className="mt-6 rounded-lg border border-border/60 bg-muted/40 p-4 text-sm text-muted-foreground">
-              Billing is not yet configured for this environment.
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         <div className="mt-10 rounded-xl border border-border/60 bg-card/40 p-6">
@@ -220,6 +225,13 @@ export default function BillingSettings() {
           <p className="mt-2 text-sm text-muted-foreground">
             Atlas stores only the subscription identifiers and billing state
             needed to resolve access. No card details are stored in Atlas.
+          </p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            New subscriptions start with a 1-day trial for $10, then bill at
+            the plan's regular price on the selected billing interval.
+            Cancellations and payment-method updates are handled through
+            Paddle's checkout and the billing emails Paddle sends — a
+            self-service customer portal is not yet wired into Atlas.
           </p>
         </div>
 

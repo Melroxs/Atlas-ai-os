@@ -67,6 +67,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, Navigate, useLocation, useNavigate } from "react-router";
+import { canAccessSuperAdmin } from "@/lib/auth/access-gate";
 
 /**
  * Global ambient voice indicator — a small pill in the bottom-left corner
@@ -204,6 +205,7 @@ const NAV_SECTIONS: Array<{
     label: "Admin",
     items: [
       { to: "/dashboard/users", label: "Users & Access", icon: Users },
+      { to: "/dashboard/orgs", label: "Organizations", icon: Building2 },
       { to: "/dashboard/regulatory", label: "Regulatory Intelligence", icon: ShieldCheck },
     ],
   },
@@ -406,6 +408,11 @@ export function AppShell({ children }: { children: ReactNode }) {
               <SidebarGroupLabel>{section.label}</SidebarGroupLabel>
               <SidebarMenu>
                 {section.items.map((item) => {
+                  // Organizations is strictly Super Admin — hide it for
+                  // atlas_admin even though the Admin section is visible.
+                  if (item.to === "/dashboard/orgs" && !canAccessSuperAdmin(role)) {
+                    return null;
+                  }
                   const Icon = item.icon;
                   return (
                     <SidebarMenuItem key={item.to}>

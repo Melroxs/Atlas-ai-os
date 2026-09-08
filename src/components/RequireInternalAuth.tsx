@@ -4,6 +4,7 @@ import {
   canAccessCRM,
   canAccessMail,
   canAccessUserAdmin,
+  canAccessSuperAdmin,
   type AtlasRole,
 } from "@/lib/auth/access-gate";
 import { Loader2, ShieldAlert } from "lucide-react";
@@ -14,13 +15,14 @@ import { Link, Navigate, useLocation } from "react-router";
  * Which internal section this guard protects.
  * Each section has specific role requirements.
  */
-type InternalSection = "pilot" | "crm" | "mail" | "users";
+type InternalSection = "pilot" | "crm" | "mail" | "users" | "superadmin";
 
 const SECTION_LABELS: Record<InternalSection, string> = {
   pilot: "Pilot Operations",
   crm: "CRM",
   mail: "Atlas Mail",
   users: "Users & Access",
+  superadmin: "Super Admin Organization Administration",
 };
 
 function hasSectionAccess(role: AtlasRole, section: InternalSection): boolean {
@@ -33,6 +35,8 @@ function hasSectionAccess(role: AtlasRole, section: InternalSection): boolean {
       return canAccessMail(role);
     case "users":
       return canAccessUserAdmin(role);
+    case "superadmin":
+      return canAccessSuperAdmin(role);
     default:
       return false;
   }

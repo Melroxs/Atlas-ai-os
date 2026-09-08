@@ -15,6 +15,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "preview": "vite preview",
+    "email:preview": "bun scripts/email-preview.ts",
     "atlas:ai:evaluate": "node scripts/atlas-ai-evaluate.mjs"
   },
   "dependencies": {

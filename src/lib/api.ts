@@ -544,6 +544,11 @@ export const api = {
     // Resolved server-side from organization_subscriptions (RLS-checked).
     getState: def<Obj | null>("billing_get_state", "query"),
   },
+  complimentary: {
+    // Membership-checked read of the caller's organization's active
+    // complimentary grants (server-computed; never client-authoritative).
+    getMyOrg: def<Obj | null>("complimentary_get_my_org", "query"),
+  },
   onboarding: {
     updateCompanyProfile: def<{ ok: boolean }>("onboarding_update_company_profile", "mutation"),
     saveCompanySystem: def<{ ok: boolean }>("onboarding_save_company_system", "mutation"),

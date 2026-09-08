@@ -7,6 +7,9 @@
 node_modules
 dist
 
+# Generated local email template previews (regenerate with bun run email:preview)
+email-preview
+
 # Secrets, keys and credentials (defensive)
 *.pem
 *.key

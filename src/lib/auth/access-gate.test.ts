@@ -8,8 +8,11 @@ import {
   canAccessCRM,
   canAccessMail,
   canAccessUserAdmin,
+  canAccessSuperAdmin,
   canManageUsers,
   canAssignAdminRoles,
+  getEffectiveAccessSource,
+  hasComplimentaryAccess,
   getDefaultLandingPath,
 } from "./access-gate";
 
@@ -279,6 +282,16 @@ describe("canAccessUserAdmin", () => {
   });
 });
 
+describe("canAccessSuperAdmin", () => {
+  it("allows only super_admin", () => {
+    expect(canAccessSuperAdmin("super_admin")).toBe(true);
+    expect(canAccessSuperAdmin("atlas_admin")).toBe(false);
+    expect(canAccessSuperAdmin("customer_admin")).toBe(false);
+    expect(canAccessSuperAdmin("user")).toBe(false);
+    expect(canAccessSuperAdmin("pilot_user")).toBe(false);
+  });
+});
+
 describe("canManageUsers", () => {
   it("allows super_admin and atlas_admin", () => {
     expect(canManageUsers("super_admin")).toBe(true);
@@ -296,6 +309,79 @@ describe("canAssignAdminRoles", () => {
     expect(canAssignAdminRoles("super_admin")).toBe(true);
     expect(canAssignAdminRoles("atlas_admin")).toBe(false);
     expect(canAssignAdminRoles("user")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Effective-access source helpers (server-computed; UI display only)
+// ---------------------------------------------------------------------------
+describe("getEffectiveAccessSource / hasComplimentaryAccess", () => {
+  it("reports paddle / complimentary / null from the server-computed field", () => {
+    expect(
+      getEffectiveAccessSource({ access_source: "paddle" }),
+    ).toBe("paddle");
+    expect(
+      getEffectiveAccessSource({ access_source: "complimentary" }),
+    ).toBe("complimentary");
+    expect(getEffectiveAccessSource({ access_source: null })).toBeNull();
+    expect(getEffectiveAccessSource({})).toBeNull();
+    expect(getEffectiveAccessSource(null)).toBeNull();
+  });
+
+  it("ignores client-supplied unknown sources", () => {
+    expect(getEffectiveAccessSource({ access_source: "hacked" as never })).toBeNull();
+  });
+
+  it("hasComplimentaryAccess is true only for complimentary", () => {
+    expect(hasComplimentaryAccess({ access_source: "complimentary" })).toBe(true);
+    expect(hasComplimentaryAccess({ access_source: "paddle" })).toBe(false);
+    expect(hasComplimentaryAccess({})).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Complimentary integration with the gate: the server hydrates the profile
+// with an EFFECTIVE billing_state, so the gate itself needs no changes — the
+// tests pin that a server-computed complimentary profile passes exactly like
+// an active paid profile, and that a stale/denied state still fails closed.
+// ---------------------------------------------------------------------------
+describe("evaluateAtlasAccess with complimentary access", () => {
+  it("grants a complimentary user whose server-computed billing_state is active", () => {
+    expect(
+      evaluateAtlasAccess({
+        platform_role: "user",
+        account_status: "active",
+        billing_state: "active", // computed by users_current_user from the grant
+        access_source: "complimentary",
+        complimentary: { expires_at: null, reason: "YC demo" },
+      }),
+    ).toEqual({ allowed: true, reason: "active" });
+  });
+
+  it("still denies when the server reports no effective access", () => {
+    expect(
+      evaluateAtlasAccess({
+        platform_role: "user",
+        account_status: "active",
+        billing_state: "cancelled", // Paddle cancelled and no complimentary grant
+        access_source: null,
+        complimentary: null,
+      }).allowed,
+    ).toBe(false);
+  });
+
+  it("never trusts a client-planted complimentary object without the effective state", () => {
+    // A malicious client sending a fake `complimentary` blob changes nothing:
+    // the gate reads the server-computed billing_state.
+    expect(
+      evaluateAtlasAccess({
+        platform_role: "user",
+        account_status: "active",
+        billing_state: "pending_checkout",
+        access_source: "complimentary",
+        complimentary: { expires_at: null, reason: "fake" },
+      }).allowed,
+    ).toBe(false);
   });
 });
 

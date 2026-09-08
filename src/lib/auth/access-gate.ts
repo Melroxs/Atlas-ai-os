@@ -77,6 +77,25 @@ export interface AccessProfileLike {
   account_status?: string | null;
   platform_role?: string | null;
   billing_state?: string | null;
+  /**
+   * Server-computed source of the effective access decision:
+   *   'paddle'         — active Paddle subscription (active/trialing)
+   *   'complimentary'  — active complimentary grant
+   *   null             — no active entitlement
+   * Never supplied by the client; comes from users_current_user (definer).
+   */
+  access_source?: "paddle" | "complimentary" | null;
+  /**
+   * The active complimentary grant (server-computed) when access_source is
+   * 'complimentary'. Exposed only for display (expiration, reason).
+   */
+  complimentary?: {
+    id?: string;
+    expires_at?: number | null;
+    granted_at?: number;
+    reason?: string;
+    user_id?: string | null;
+  } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +169,30 @@ export function evaluateAtlasAccess(
       // Unknown values = fail-closed = deny.
       return { allowed: false, reason: billingState === null ? "missing_tenant" : "unknown_billing_state" };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Access source helpers (display only — the decision itself is made by
+// evaluateAtlasAccess over the server-computed billing_state)
+// ---------------------------------------------------------------------------
+
+/**
+ * The server-computed source of effective access:
+ * 'paddle' | 'complimentary' | null. UI-only — authorization comes from
+ * evaluateAtlasAccess, never from this value.
+ */
+export function getEffectiveAccessSource(
+  profile: AccessProfileLike | null | undefined,
+): "paddle" | "complimentary" | null {
+  const s = profile?.access_source;
+  return s === "paddle" || s === "complimentary" ? s : null;
+}
+
+/** True when the caller's effective access comes from a complimentary grant. */
+export function hasComplimentaryAccess(
+  profile: AccessProfileLike | null | undefined,
+): boolean {
+  return getEffectiveAccessSource(profile) === "complimentary";
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +297,15 @@ export function canAccessMail(role: AtlasRole): boolean {
  */
 export function canAccessUserAdmin(role: AtlasRole): boolean {
   return role === "super_admin" || role === "atlas_admin";
+}
+
+/**
+ * Can this role access the Super Admin organization administration section?
+ * super_admin only — every operation in that section is also re-authorized
+ * server-side by the Edge Function and the admin_* RPCs.
+ */
+export function canAccessSuperAdmin(role: AtlasRole): boolean {
+  return role === "super_admin";
 }
 
 /**

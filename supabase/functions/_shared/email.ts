@@ -27,8 +27,18 @@
 // 1. Configuration
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Canonical Atlas correspondence address — every Atlas email (transactional,
+// auth, billing, complimentary access, support, administration) sends from
+// and replies to this single address. Configurable via env vars for
+// non-production overrides; defaults must never point anywhere else.
+const DEFAULT_ADMIN_EMAIL = "admin@atlas-ai-os.com";
+const DEFAULT_SENDER_NAME = "Atlas AI OS";
+
+/** Full sender identity: "Atlas AI OS <admin@atlas-ai-os.com>" */
+export const DEFAULT_FROM = `${DEFAULT_SENDER_NAME} <${DEFAULT_ADMIN_EMAIL}>`;
+
 export interface AtlasEmailConfig {
-  /** Full sender identity: "Atlas <notifications@atlas-ai-os.com>" */
+  /** Full sender identity: "Atlas AI OS <admin@atlas-ai-os.com>" */
   from: string;
   /** Reply-to address (or null to omit). */
   replyTo: string | null;
@@ -39,27 +49,32 @@ export interface AtlasEmailConfig {
 }
 
 const DEFAULT_SITE_URL = "https://atlas-ai-os.com";
-const DEFAULT_SUPPORT = "support@atlas-ai-os.com";
 
 /**
  * Load email configuration from the Edge Function environment.
  * Env vars: ATLAS_EMAIL_FROM, ATLAS_EMAIL_REPLY_TO, ATLAS_APP_URL,
  * SITE_URL (legacy), ATLAS_SUPPORT_EMAIL, RESEND_SENDER_NAME/EMAIL (legacy).
+ *
+ * Production defaults (used when no env override is present):
+ *   From      "Atlas AI OS <admin@atlas-ai-os.com>"
+ *   Reply-To  admin@atlas-ai-os.com
+ *   Support   admin@atlas-ai-os.com
+ *   App URL   https://atlas-ai-os.com
  */
 export function loadEmailConfig(
   env: { get(key: string): string | null } = Deno.env,
 ): AtlasEmailConfig {
   const configuredFrom = env.get("ATLAS_EMAIL_FROM") ?? "";
   const from = configuredFrom.trim() ||
-    `${env.get("RESEND_SENDER_NAME") ?? "Atlas"} <${env.get("RESEND_SENDER_EMAIL") ?? "notifications@atlas-ai-os.com"}>`;
+    `${env.get("RESEND_SENDER_NAME") ?? DEFAULT_SENDER_NAME} <${env.get("RESEND_SENDER_EMAIL") ?? DEFAULT_ADMIN_EMAIL}>`;
 
   const replyToRaw = env.get("ATLAS_EMAIL_REPLY_TO") ?? "";
-  const replyTo = replyToRaw.trim() || null;
+  const replyTo = replyToRaw.trim() || DEFAULT_ADMIN_EMAIL;
 
   const siteUrl = (env.get("ATLAS_APP_URL") ?? env.get("SITE_URL") ?? DEFAULT_SITE_URL)
     .replace(/\/+$/, "");
 
-  const supportEmail = (env.get("ATLAS_SUPPORT_EMAIL") ?? DEFAULT_SUPPORT).trim();
+  const supportEmail = (env.get("ATLAS_SUPPORT_EMAIL") ?? DEFAULT_ADMIN_EMAIL).trim();
 
   return { from, replyTo, siteUrl, supportEmail };
 }

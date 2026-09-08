@@ -135,10 +135,10 @@ export default function Refunds() {
         <P>
           For questions about billing, cancellation, or refunds, contact us at{" "}
           <a
-            href="mailto:sales@atlas-ai-os.com"
+            href="mailto:admin@atlas-ai-os.com"
             className="text-teal-700 underline underline-offset-2 transition-colors hover:text-teal-600 dark:text-teal-300"
           >
-            sales@atlas-ai-os.com
+            admin@atlas-ai-os.com
           </a>
           , the public Atlas contact address.
         </P>

@@ -313,10 +313,10 @@ export default function Terms() {
         <P>
           If you have questions about these Terms or the Service, you may contact us at{" "}
           <a
-            href="mailto:sales@atlas-ai-os.com"
+            href="mailto:admin@atlas-ai-os.com"
             className="text-teal-700 underline underline-offset-2 transition-colors hover:text-teal-600 dark:text-teal-300"
           >
-            sales@atlas-ai-os.com
+            admin@atlas-ai-os.com
           </a>
           , the public Atlas contact address. If that address is not yet confirmed for legal
           correspondence, please reach out through the contact information displayed on the Atlas

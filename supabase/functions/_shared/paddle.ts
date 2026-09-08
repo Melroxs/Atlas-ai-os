@@ -332,7 +332,10 @@ export async function createPaddleTransaction(
     throw new Error("The selected Atlas plan is not configured for billing.");
   }
 
-  const response = await fetch(`${paddleApiBase()}/v1/transactions`, {
+  // Paddle Billing API endpoints carry no version prefix: the base URL is
+  // already versioned (api.paddle.com / api.sandbox.paddle.com). A `/v1`
+  // prefix yields HTTP 404 from Paddle.
+  const response = await fetch(`${paddleApiBase()}/transactions`, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
@@ -352,7 +355,16 @@ export async function createPaddleTransaction(
   });
 
   if (!response.ok) {
-    throw new Error(`Paddle checkout could not be created (HTTP ${response.status}).`);
+    // Include the sanitized Paddle error detail in the thrown message so the
+    // Edge Function log identifies the real failure; the client never sees
+    // this message (paddle-checkout maps it to a generic 502 response).
+    const detail = await response
+      .text()
+      .then((t) => t.slice(0, 300))
+      .catch(() => "");
+    throw new Error(
+      `Paddle checkout could not be created (HTTP ${response.status}${detail ? `: ${detail}` : ""}).`,
+    );
   }
 
   const json = (await response.json()) as Record<string, unknown>;

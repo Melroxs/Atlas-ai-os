@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import {
   PADDLE_ADAPTER,
   verifyPaddleWebhookSignature,
   mapPaddleStatus,
   paddleDateToMs,
+  createPaddleCheckoutTransaction,
 } from "./paddle";
 
 const SECRET = "pdl_ntfset_test_secret_key_1234567890";
@@ -247,6 +248,85 @@ describe("Paddle Billing v1 webhook parsing", () => {
     expect(() =>
       PADDLE_ADAPTER.parseWebhookEvent({ event_id: "evt_5" }),
     ).toThrow("no event_type");
+  });
+});
+
+describe("Paddle transaction creation (checkout)", () => {
+  beforeEach(setEnv);
+  afterEach(clearEnv);
+
+  it("posts to the Billing API transactions endpoint without a version prefix", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return new Response(
+        JSON.stringify({
+          data: {
+            id: "txn_1",
+            checkout: { url: "https://checkout.sandbox.paddle.com/pay/txn_1" },
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { transactionId, url } = await createPaddleCheckoutTransaction(
+        "11111111-1111-1111-1111-111111111111",
+        "ATLAS_GROWTH",
+        "monthly",
+      );
+      expect(transactionId).toBe("txn_1");
+      expect(url).toBe("https://checkout.sandbox.paddle.com/pay/txn_1");
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe("https://api.sandbox.paddle.com/transactions");
+      expect(calls[0].url).not.toContain("/v1/");
+      const body = JSON.parse(String(calls[0].init.body)) as Record<string, unknown>;
+      expect(body.items).toEqual([{ price_id: PRICE_IDS.growthMonthly, quantity: 1 }]);
+      expect(body.custom_data).toEqual({
+        atlas_organization_id: "11111111-1111-1111-1111-111111111111",
+        atlas_internal_plan: "ATLAS_GROWTH",
+        atlas_billing_interval: "monthly",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("uses the production Paddle host when PADDLE_ENVIRONMENT=production", async () => {
+    process.env.PADDLE_ENVIRONMENT = "production";
+    const calls: Array<{ url: string }> = [];
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url) });
+      return new Response(
+        JSON.stringify({
+          data: { id: "txn_2", checkout: { url: "https://checkout.paddle.com/pay/txn_2" } },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await createPaddleCheckoutTransaction("org-2", "ATLAS_STARTER", "annual");
+      expect(calls[0].url).toBe("https://api.paddle.com/transactions");
+      expect(calls[0].url).not.toContain("/v1/");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("throws when the price id is not configured instead of calling Paddle", async () => {
+    delete process.env.PADDLE_SCALE_PRICE_ID_ANNUAL;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await expect(
+        createPaddleCheckoutTransaction("org-3", "ATLAS_SCALE", "annual"),
+      ).rejects.toThrow("not configured for billing");
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

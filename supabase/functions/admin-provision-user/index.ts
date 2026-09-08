@@ -1,22 +1,51 @@
 // supabase/functions/admin-provision-user/index.ts
 //
-// Server-side user provisioning using the Supabase Auth Admin API.
-// This function:
-//   1. Authenticates the caller (must be super_admin or atlas_admin)
-//   2. Creates/invites a Supabase Auth user via admin API
-//   3. Provisions the Atlas profile via admin_invite_user RPC
-//   4. Sends a branded invitation email via Resend
+// Server-side Super Admin user + organization management.
 //
-// Uses SUPABASE_SECRET_KEYS (modern built-in env var) for service-role access.
-// No manual secret setup required.
+// SECURITY MODEL:
+//   - The caller's Supabase JWT is verified (function is deployed with JWT
+//     verification ON).
+//   - EVERY action re-verifies the caller inside the function boundary:
+//     platform_role = 'super_admin' AND account_status = 'active'. This is
+//     enforced here, in the admin_* RPCs (is_super_admin()), and by RLS —
+//     never by hidden UI buttons.
+//   - Service-role writes happen ONLY server-side (this Edge Function).
+//     Resend / Supabase / Paddle secrets are never exposed to the browser.
+//   - The legacy `provision` action is preserved (Users & Access page), now
+//     gated to super_admin like everything else.
+//   - New-user invitations NEVER assign platform admin roles; the
+//     organization role is restricted to owner/admin/manager/analyst/viewer.
+//
+// Actions (body.action):
+//   provision             legacy single-user provisioning (email, name, role, status, companyName)
+//   create_org            { name }
+//   list_orgs             {}
+//   list_org_members      { tenantId }
+//   list_complimentary    { tenantId }
+//   invite                { firstName?, lastName?, email, tenantId, orgRole }
+//   remove_member         { tenantId, userId }   — membership only, Auth account stays
+//   delete_user           { userId }              — permanent Auth deletion (confirm in UI)
+//   grant_complimentary   { tenantId, userId?, duration, reason }
+//   revoke_complimentary  { grantId }
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import {
+  sendAtlasEmail,
+  atlasSiteUrl,
+  formatExpiration,
+  formatDate,
+  greetingLine,
+} from "../_shared/email.ts";
 
 const ATLAS_ALLOWED_ORIGINS = [
   "https://atlas-ai-os.com",
   "https://atlasmvp.freebuff.app",
   "https://atlasuniversalos.freebuff.app",
 ];
+
+const ORG_ROLES = new Set(["owner", "admin", "manager", "analyst", "viewer"]);
+const COMPLIMENTARY_DURATIONS = new Set(["7d", "30d", "90d", "1y", "lifetime"]);
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function corsHeaders(req: Request): Record<string, string> {
   const origin = req.headers.get("origin") ?? "";
@@ -40,293 +69,640 @@ function respond(corsH: Record<string, string>, status: number, body: unknown) {
   });
 }
 
+function fail(message: string, detail?: string) {
+  if (detail) console.error(`[admin-provision-user] ${message}: ${detail}`);
+  return { ok: false, error: message };
+}
+
+// ── Environment helpers (never expose values) ──────────────────────────────
+
+interface Clients {
+  serviceKey: string;
+  anonKey: string;
+  supabaseUrl: string;
+}
+
+function resolveClients(): Clients | null {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const secretKeysRaw = Deno.env.get("SUPABASE_SECRET_KEYS") ?? "";
+  let serviceKey = "";
+  if (secretKeysRaw) {
+    try {
+      serviceKey = JSON.parse(secretKeysRaw)["default"] ?? "";
+    } catch {
+      serviceKey = "";
+    }
+  }
+  if (!serviceKey) serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+
+  let anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+  const publishableRaw = Deno.env.get("SUPABASE_PUBLISHABLE_KEYS") ?? "";
+  if (publishableRaw) {
+    try {
+      anonKey = JSON.parse(publishableRaw)["default"] ?? anonKey;
+    } catch {
+      /* keep fallback */
+    }
+  }
+
+  if (!supabaseUrl || !serviceKey || !anonKey) return null;
+  return { serviceKey, anonKey, supabaseUrl };
+}
+
+async function makeClients(callerJwt: string): Promise<{
+  user: any;
+  admin: any;
+} | null> {
+  const c = resolveClients();
+  if (!c) return null;
+  const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
+  const user = createClient(c.supabaseUrl, c.anonKey, {
+    global: { headers: { Authorization: `Bearer ${callerJwt}` } },
+  });
+  const admin = createClient(c.supabaseUrl, c.serviceKey, {
+    auth: { persistSession: false },
+  });
+  return { user, admin };
+}
+
+// ── Audit helper (service-role write; actor captured server-side) ──────────
+
+async function audit(
+  admin: any,
+  entry: {
+    actorId: string;
+    actorEmail: string | null;
+    action: string;
+    targetType: string;
+    targetId?: string | null;
+    details: Record<string, unknown>;
+  },
+): Promise<void> {
+  const { error } = await admin.from("atlas_audit_log").insert({
+    actor_id: entry.actorId,
+    actor_email: entry.actorEmail,
+    action: entry.action,
+    target_type: entry.targetType,
+    target_id: entry.targetId ?? null,
+    details: entry.details,
+  });
+  if (error) {
+    console.error(`[admin-provision-user] audit insert failed (${entry.action}):`, error.message.slice(0, 200));
+  }
+}
+
+// ── Action handlers ─────────────────────────────────────────────────────────
+
+interface AdminContext {
+  user: any;
+  admin: any;
+  callerId: string;
+  callerEmail: string | null;
+}
+
+async function handleProvision(ctx: AdminContext, body: Record<string, unknown>) {
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const name = typeof body.name === "string" ? body.name : undefined;
+  const role = typeof body.role === "string" ? body.role : "customer_user";
+  const status = typeof body.status === "string" ? body.status : "active";
+  const companyName = typeof body.companyName === "string" ? body.companyName : undefined;
+
+  if (!email || !EMAIL_RE.test(email)) {
+    return { ok: false, error: "A valid email is required." };
+  }
+
+  // Only super_admin can assign admin roles
+  if (role === "super_admin" || role === "atlas_admin") {
+    return { ok: false, error: "Only super_admin can assign admin roles." };
+  }
+
+  // 1. Resolve or create the Auth user
+  const { data: existingUsers, error: listError } =
+    await ctx.admin.auth.admin.listUsers({ filter: `email = "${email}"` });
+  if (listError) {
+    return fail("Failed to check existing users.", listError.message);
+  }
+  const existing = existingUsers?.users?.find(
+    (u: { email?: string }) => u.email?.toLowerCase() === email,
+  );
+  let authUserId: string;
+  let action: string;
+  if (existing) {
+    authUserId = existing.id;
+    action = "existing_user_provisioned";
+  } else {
+    const { data: inviteData, error: inviteError } =
+      await ctx.admin.auth.admin.inviteUserByEmail(email, {
+        data: { full_name: name || email.split("@")[0] },
+        redirectTo: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+      });
+    if (inviteError || !inviteData?.id) {
+      return fail("Failed to create/invite user.", inviteError?.message ?? "no id returned");
+    }
+    authUserId = inviteData.id;
+    action = "new_user_invited";
+  }
+
+  // 2. Provision the Atlas profile (existing RPC, called with the caller's JWT)
+  const { error: rpcError } = await ctx.user.rpc("admin_invite_user", {
+    p_email: email,
+    p_name: name || null,
+    p_role: role,
+    p_status: status,
+    p_company_name: companyName || null,
+  });
+  if (rpcError) {
+    console.error("[admin-provision-user] profile provisioning warning:", rpcError.message.slice(0, 200));
+  }
+
+  await audit(ctx, {
+    actorId: ctx.callerId,
+    actorEmail: ctx.callerEmail,
+    action: "user_invited",
+    targetType: "user",
+    targetId: authUserId,
+    details: { email, role, status, action },
+  });
+
+  // 3. Branded invitation email (best-effort; the Auth invite link is authoritative)
+  let emailResult: { ok: boolean; error?: string } = { ok: true };
+  if (action === "new_user_invited") {
+    emailResult = await sendAtlasEmail({
+      to: email,
+      template: "invitation",
+      vars: {
+        full_name: name || email.split("@")[0],
+        inviter_name: ctx.callerEmail?.split("@")[0] || "the Atlas team",
+        organization_name: "your team",
+        invite_url: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+      },
+    });
+  }
+
+  return {
+    ok: true,
+    user_id: authUserId,
+    action,
+    message:
+      action === "new_user_invited"
+        ? emailResult.ok
+          ? `Invitation email sent to ${email}`
+          : `Invitation created for ${email}.`
+        : `Existing user ${email} has been provisioned.`,
+    invitation_sent: emailResult.ok,
+    warning: emailResult.ok ? null : `Invitation created but email could not be sent (${emailResult.error}). The user can still sign in normally.`,
+  };
+}
+
+async function handleCreateOrg(ctx: AdminContext, body: Record<string, unknown>) {
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) return fail("Organization name is required.");
+  const { data, error } = await ctx.user.rpc("admin_create_tenant", { p_name: name });
+  if (error) return fail("Could not create organization.", error.message);
+  return { ok: true, ...(data ?? {}) };
+}
+
+async function handleListOrgs(ctx: AdminContext) {
+  const { data, error } = await ctx.user.rpc("admin_list_tenants", { p_limit: 500 });
+  if (error) return fail("Could not list organizations.", error.message);
+  return { ok: true, organizations: data ?? [] };
+}
+
+async function handleListOrgMembers(ctx: AdminContext, body: Record<string, unknown>) {
+  const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+  if (!tenantId) return fail("Organization id is required.");
+
+  // Two deterministic queries (no reliance on the generated FK constraint
+  // name): memberships for the org, then profiles for those user ids.
+  const { data: members, error } = await ctx.admin
+    .from("memberships")
+    .select('"userId", role, status, "joinedAt"')
+    .eq("tenantId", tenantId)
+    .order("_creationTime", { ascending: true });
+
+  if (error) return fail("Could not list organization members.", error.message);
+
+  const userIds = (members ?? []).map((m: { userId?: string }) => m.userId).filter(Boolean);
+  const profiles = new Map<string, Record<string, unknown>>();
+  if (userIds.length > 0) {
+    const { data: rows, error: pErr } = await ctx.admin
+      .from("profiles")
+      .select("_id, name, email, platform_role, account_status")
+      .in("_id", userIds);
+    if (pErr) return fail("Could not list organization member profiles.", pErr.message);
+    for (const row of rows ?? []) profiles.set(row._id, row);
+  }
+
+  const normalized = (members ?? []).map((m: Record<string, any>) => ({
+    userId: m.userId,
+    role: m.role,
+    status: m.status,
+    joinedAt: m.joinedAt,
+    profile: profiles.get(m.userId) ?? null,
+  }));
+
+  return { ok: true, members: normalized };
+}
+
+async function handleInvite(ctx: AdminContext, body: Record<string, unknown>) {
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const firstName = typeof body.firstName === "string" ? body.firstName.trim() : "";
+  const lastName = typeof body.lastName === "string" ? body.lastName.trim() : "";
+  const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+  const orgRole = typeof body.orgRole === "string" ? body.orgRole : "";
+
+  if (!email || !EMAIL_RE.test(email)) return fail("A valid email is required.");
+  if (!tenantId) return fail("Organization is required.");
+  if (!ORG_ROLES.has(orgRole)) {
+    return fail("Organization role must be one of owner, admin, manager, analyst, viewer.");
+  }
+
+  // Organization must exist
+  const { data: org, error: orgError } = await ctx.admin
+    .from("tenants")
+    .select("_id, name")
+    .eq("_id", tenantId)
+    .maybeSingle();
+  if (orgError || !org) return fail("Organization not found.", orgError?.message);
+
+  // Resolve or create the Auth user
+  const { data: existingUsers, error: listError } =
+    await ctx.admin.auth.admin.listUsers({ filter: `email = "${email}"` });
+  if (listError) return fail("Failed to check existing users.", listError.message);
+  const existing = existingUsers?.users?.find(
+    (u: { email?: string }) => u.email?.toLowerCase() === email,
+  );
+
+  let authUserId: string;
+  let created = false;
+  if (existing) {
+    authUserId = existing.id;
+  } else {
+    const fullName = [firstName, lastName].filter(Boolean).join(" ") || email.split("@")[0];
+    const { data: inviteData, error: inviteError } =
+      await ctx.admin.auth.admin.inviteUserByEmail(email, {
+        data: { full_name: fullName },
+        redirectTo: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+      });
+    if (inviteError || !inviteData?.id) {
+      return fail("Failed to create/invite user.", inviteError?.message ?? "no id returned");
+    }
+    authUserId = inviteData.id;
+    created = true;
+  }
+
+  // Upsert the Atlas profile (name + active status)
+  const displayName = [firstName, lastName].filter(Boolean).join(" ") || email.split("@")[0];
+  const { data: profile } = await ctx.admin
+    .from("profiles")
+    .select("_id")
+    .eq("_id", authUserId)
+    .maybeSingle();
+  if (profile) {
+    const { error: uErr } = await ctx.admin
+      .from("profiles")
+      .update({ name: displayName, account_status: "active", email, _updated_at: new Date().toISOString() })
+      .eq("_id", authUserId);
+    if (uErr) console.error("[admin-provision-user] profile update failed:", uErr.message.slice(0, 200));
+  } else {
+    const { error: iErr } = await ctx.admin.from("profiles").insert({
+      _id: authUserId,
+      name: displayName,
+      email,
+      platform_role: "user",
+      account_status: "active",
+      role: "user",
+      _creationTime: Date.now(),
+    });
+    if (iErr) console.error("[admin-provision-user] profile insert failed:", iErr.message.slice(0, 200));
+  }
+
+  // Upsert the organization membership (never a platform role)
+  const { data: membership } = await ctx.admin
+    .from("memberships")
+    .select("_id")
+    .eq("tenantId", tenantId)
+    .eq("userId", authUserId)
+    .maybeSingle();
+  if (membership) {
+    const { error: mErr } = await ctx.admin
+      .from("memberships")
+      .update({ role: orgRole, status: "active" })
+      .eq("_id", membership._id);
+    if (mErr) return fail("Could not update membership.", mErr.message);
+  } else {
+    const { error: mErr } = await ctx.admin.from("memberships").insert({
+      tenantId,
+      userId: authUserId,
+      role: orgRole,
+      status: "active",
+      joinedAt: Date.now(),
+      _creationTime: Date.now(),
+    });
+    if (mErr) return fail("Could not create membership.", mErr.message);
+  }
+
+  await audit(ctx, {
+    actorId: ctx.callerId,
+    actorEmail: ctx.callerEmail,
+    action: created ? "user_invited" : "user_added_to_organization",
+    targetType: "user",
+    targetId: authUserId,
+    details: { email, organization_id: tenantId, organization_role: orgRole, created },
+  });
+
+  const emailResult = await sendAtlasEmail({
+    to: email,
+    template: "invitation",
+    vars: {
+      full_name: displayName,
+      inviter_name: ctx.callerEmail?.split("@")[0] || "a teammate",
+      organization_name: org.name,
+      invite_url: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+    },
+  });
+
+  return {
+    ok: true,
+    user_id: authUserId,
+    created,
+    invitation_sent: emailResult.ok,
+    warning: emailResult.ok ? null : `Invitation created but email could not be sent (${emailResult.error}).`,
+  };
+}
+
+async function handleRemoveMember(ctx: AdminContext, body: Record<string, unknown>) {
+  const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+  const userId = typeof body.userId === "string" ? body.userId : "";
+  if (!tenantId || !userId) return fail("Organization and user are required.");
+
+  const { data: member } = await ctx.admin
+    .from("memberships")
+    .select("_id, role")
+    .eq("tenantId", tenantId)
+    .eq("userId", userId)
+    .maybeSingle();
+  if (!member) return fail("The user is not a member of this organization.");
+
+  // Never remove the last owner (would orphan the organization)
+  if (member.role === "owner") {
+    const { count } = await ctx.admin
+      .from("memberships")
+      .select("_id", { count: "exact", head: true })
+      .eq("tenantId", tenantId)
+      .eq("role", "owner")
+      .eq("status", "active");
+    if (count !== null && count <= 1) {
+      return fail("Cannot remove the last active owner of an organization.");
+    }
+  }
+
+  const { error } = await ctx.admin.from("memberships").delete().eq("_id", member._id);
+  if (error) return fail("Could not remove member.", error.message);
+
+  await audit(ctx, {
+    actorId: ctx.callerId,
+    actorEmail: ctx.callerEmail,
+    action: "user_removed_from_organization",
+    targetType: "user",
+    targetId: userId,
+    details: { organization_id: tenantId, membership_id: member._id },
+  });
+
+  return { ok: true };
+}
+
+async function handleDeleteUser(ctx: AdminContext, body: Record<string, unknown>) {
+  const userId = typeof body.userId === "string" ? body.userId : "";
+  if (!userId) return fail("User id is required.");
+  if (userId === ctx.callerId) return fail("You cannot delete your own account through this workflow.");
+
+  // 1. FK-safe cleanup + audit (super_admin-gated RPC, called with the caller's JWT)
+  const { data, error } = await ctx.user.rpc("admin_prepare_user_deletion", {
+    p_user_id: userId,
+  });
+  if (error) return fail("Could not prepare user deletion.", error.message);
+
+  // 2. Permanent Auth deletion via the Admin API (server-side only)
+  const { error: delError } = await ctx.admin.auth.admin.deleteUser(userId);
+  if (delError) return fail("Auth account deletion failed.", delError.message);
+
+  return { ok: true, user_id: userId };
+}
+
+async function handleGrantComplimentary(ctx: AdminContext, body: Record<string, unknown>) {
+  const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+  const userId = typeof body.userId === "string" && body.userId ? body.userId : null;
+  const duration = typeof body.duration === "string" ? body.duration : "";
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+
+  if (!tenantId) return fail("Organization is required.");
+  if (!COMPLIMENTARY_DURATIONS.has(duration)) {
+    return fail("Duration must be one of 7d, 30d, 90d, 1y, lifetime.");
+  }
+  if (!reason) return fail("A reason is required for complimentary access.");
+
+  // Super-admin-gated RPC (called with the caller's JWT; audits internally)
+  const { data: grant, error } = await ctx.user.rpc("admin_grant_complimentary_access", {
+    p_tenant_id: tenantId,
+    p_user_id: userId,
+    p_duration: duration,
+    p_reason: reason,
+  });
+  if (error) return fail("Could not grant complimentary access.", error.message);
+
+  // Notify (best-effort). Specific user → that user; org-wide → active members.
+  let recipients: string[] = [];
+  const orgNameRes = await ctx.admin.from("tenants").select("name").eq("_id", tenantId).maybeSingle();
+  const organizationName = orgNameRes?.data?.name ?? "your organization";
+
+  if (userId) {
+    const { data: p } = await ctx.admin.from("profiles").select("email").eq("_id", userId).maybeSingle();
+    if (p?.email) recipients = [p.email];
+  } else {
+    const { data: rows } = await ctx.admin
+      .from("memberships")
+      .select('"userId"')
+      .eq("tenantId", tenantId)
+      .eq("status", "active")
+      .limit(10);
+    const memberIds = (rows ?? []).map((r: any) => r.userId).filter(Boolean);
+    if (memberIds.length > 0) {
+      const { data: profiles } = await ctx.admin
+        .from("profiles")
+        .select("email")
+        .in("_id", memberIds);
+      recipients = (profiles ?? [])
+        .map((p: any) => p.email)
+        .filter((e: unknown): e is string => typeof e === "string" && EMAIL_RE.test(e));
+    }
+  }
+
+  const emailResult = recipients.length
+    ? await sendAtlasEmail({
+        to: recipients,
+        template: "complimentary_granted",
+        vars: {
+          greeting: greetingLine(""),
+          organization_name: organizationName,
+          organization_name_phrase: ` for ${organizationName}`,
+          reason_phrase: reason ? ` (${reason})` : "",
+          expiration_date: formatExpiration(grant?.expires_at ?? null),
+          login_url: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+        },
+      })
+    : { ok: true as const };
+
+  return {
+    ok: true,
+    grant: grant ?? null,
+    email_sent: emailResult.ok,
+    warning: emailResult.ok ? null : "Access granted but the notification email could not be sent.",
+  };
+}
+
+async function handleRevokeComplimentary(ctx: AdminContext, body: Record<string, unknown>) {
+  const grantId = typeof body.grantId === "string" ? body.grantId : "";
+  if (!grantId) return fail("Grant id is required.");
+
+  const { data: grant, error } = await ctx.user.rpc("admin_revoke_complimentary_access", {
+    p_grant_id: grantId,
+  });
+  if (error) return fail("Could not revoke complimentary access.", error.message);
+
+  // Notify the grant's user (best-effort)
+  let emailResult: { ok: boolean } = { ok: true };
+  if (grant?.user_id) {
+    const { data: p } = await ctx.admin.from("profiles").select("email").eq("_id", grant.user_id).maybeSingle();
+    if (p?.email) {
+      const orgNameRes = await ctx.admin
+        .from("tenants")
+        .select("name")
+        .eq("_id", grant.organization_id)
+        .maybeSingle();
+      emailResult = await sendAtlasEmail({
+        to: p.email,
+        template: "complimentary_revoked",
+        vars: {
+          greeting: greetingLine(""),
+          organization_name: orgNameRes?.data?.name ?? "your organization",
+          effective_date: formatDate(Date.now()),
+        },
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    grant: grant ?? null,
+    email_sent: emailResult.ok,
+    warning: emailResult.ok ? null : "Access revoked but the notification email could not be sent.",
+  };
+}
+
+async function handleListComplimentary(ctx: AdminContext, body: Record<string, unknown>) {
+  const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+  if (!tenantId) return fail("Organization id is required.");
+  const { data, error } = await ctx.user.rpc("admin_list_complimentary_access", {
+    p_tenant_id: tenantId,
+  });
+  if (error) return fail("Could not list complimentary access.", error.message);
+  return { ok: true, grants: data ?? [] };
+}
+
+// ── Main handler ───────────────────────────────────────────────────────────
+
 serve(async (req: Request) => {
   const corsH = corsHeaders(req);
 
-  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { status: 200, headers: corsH });
   }
-
   if (req.method !== "POST") {
-    return respond(corsH, 405, { ok: false, error: "Method not allowed" });
+    return respond(corsH, 405, fail("Method not allowed"));
   }
 
   try {
-    // ── 1. Parse SUPABASE_SECRET_KEYS (modern built-in env var) ──────────
-    const secretKeysRaw = Deno.env.get("SUPABASE_SECRET_KEYS");
-    if (!secretKeysRaw) {
-      console.error("SUPABASE_SECRET_KEYS not available");
-      return respond(corsH, 500, { ok: false, error: "Server configuration error" });
-    }
-
-    let secretKeys: Record<string, string>;
-    try {
-      secretKeys = JSON.parse(secretKeysRaw);
-    } catch {
-      console.error("Failed to parse SUPABASE_SECRET_KEYS");
-      return respond(corsH, 500, { ok: false, error: "Server configuration error" });
-    }
-
-    const serviceRoleKey = secretKeys["default"];
-    if (!serviceRoleKey) {
-      console.error("SUPABASE_SECRET_KEYS['default'] not found");
-      return respond(corsH, 500, { ok: false, error: "Server configuration error" });
-    }
-
-    // ── 2. Parse SUPABASE_PUBLISHABLE_KEYS for the anon key ──────────────
-    const publishableKeysRaw = Deno.env.get("SUPABASE_PUBLISHABLE_KEYS");
-    let anonKey: string;
-
-    if (publishableKeysRaw) {
-      try {
-        const publishableKeys = JSON.parse(publishableKeysRaw);
-        anonKey = publishableKeys["default"] ?? "";
-      } catch {
-        anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-      }
-    } else {
-      anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
-    }
-
-    if (!anonKey) {
-      console.error("No anon/publishable key available");
-      return respond(corsH, 500, { ok: false, error: "Server configuration error" });
-    }
-
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    if (!supabaseUrl) {
-      return respond(corsH, 500, { ok: false, error: "Server configuration error" });
-    }
-
-    // ── 3. Create a client with the caller's JWT (for auth verification) ──
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
-      return respond(corsH, 401, { ok: false, error: "Missing authorization header" });
+      return respond(corsH, 401, fail("Missing authorization header"));
     }
 
-    const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
-
-    // Client with the caller's JWT — used to verify the caller is an admin
-    const supabaseUser = createClient(supabaseUrl, anonKey, {
-      global: { headers: { Authorization: authHeader } },
-    });
-
-    // Verify the caller is authenticated
-    const {
-      data: { user },
-      error: authError,
-    } = await supabaseUser.auth.getUser();
-
-    if (authError || !user) {
-      return respond(corsH, 401, { ok: false, error: "Not authenticated" });
+    const clients = await makeClients(authHeader.replace(/^Bearer\s+/i, ""));
+    if (!clients) {
+      return respond(corsH, 500, fail("Server configuration error"));
     }
 
-    // Verify the caller is an admin via the database
-    const { data: callerProfile, error: profileError } = await supabaseUser
+    // Verify the caller
+    const { data: userData, error: authError } = await clients.user.auth.getUser();
+    if (authError || !userData?.user) {
+      return respond(corsH, 401, fail("Not authenticated"));
+    }
+
+    // Server-side authorization: super_admin with an active account ONLY.
+    // Normal members — and even atlas_admin — cannot perform these operations
+    // by manipulating frontend requests.
+    const { data: callerProfile, error: profileError } = await clients.admin
       .from("profiles")
-      .select("platform_role, account_status")
-      .eq("_id", user.id)
-      .single();
-
+      .select("platform_role, account_status, email, name")
+      .eq("_id", userData.user.id)
+      .maybeSingle();
     if (profileError || !callerProfile) {
-      return respond(corsH, 403, { ok: false, error: "Profile not found" });
+      return respond(corsH, 403, fail("Profile not found"));
+    }
+    if (callerProfile.account_status !== "active" || callerProfile.platform_role !== "super_admin") {
+      return respond(corsH, 403, fail("Access denied: super_admin role required"));
     }
 
-    if (
-      callerProfile.account_status !== "active" ||
-      !["super_admin", "atlas_admin"].includes(callerProfile.platform_role)
-    ) {
-      return respond(corsH, 403, { ok: false, error: "Access denied: admin role required" });
+    const body = await req.json().catch(() => ({}));
+    const action = typeof body.action === "string" ? body.action : "provision";
+
+    const ctx: AdminContext = {
+      user: clients.user,
+      admin: clients.admin,
+      callerId: userData.user.id,
+      callerEmail: callerProfile.email ?? null,
+    };
+
+    let result: unknown;
+    switch (action) {
+      case "provision":
+        result = await handleProvision(ctx, body);
+        break;
+      case "create_org":
+        result = await handleCreateOrg(ctx, body);
+        break;
+      case "list_orgs":
+        result = await handleListOrgs(ctx);
+        break;
+      case "list_org_members":
+        result = await handleListOrgMembers(ctx, body);
+        break;
+      case "invite":
+        result = await handleInvite(ctx, body);
+        break;
+      case "remove_member":
+        result = await handleRemoveMember(ctx, body);
+        break;
+      case "delete_user":
+        result = await handleDeleteUser(ctx, body);
+        break;
+      case "grant_complimentary":
+        result = await handleGrantComplimentary(ctx, body);
+        break;
+      case "revoke_complimentary":
+        result = await handleRevokeComplimentary(ctx, body);
+        break;
+      case "list_complimentary":
+        result = await handleListComplimentary(ctx, body);
+        break;
+      default:
+        return respond(corsH, 400, fail(`Unknown action: ${action}`));
     }
 
-    // ── 4. Parse the request body ────────────────────────────────────────
-    const { email, name, role, status, companyName } = await req.json();
-
-    if (!email || typeof email !== "string") {
-      return respond(corsH, 400, { ok: false, error: "Email is required" });
-    }
-
-    // Only super_admin can assign admin roles
-    if (
-      ["super_admin", "atlas_admin"].includes(role) &&
-      callerProfile.platform_role !== "super_admin"
-    ) {
-      return respond(corsH, 403, { ok: false, error: "Only super_admin can assign admin roles" });
-    }
-
-    // ── 5. Create a service-role client for Auth Admin operations ────────
-    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
-
-    // ── 6. Check if the user already exists in Supabase Auth ─────────────
-    const { data: existingUsers, error: listError } =
-      await supabaseAdmin.auth.admin.listUsers({
-        filter: `email = "${email}"`,
-      });
-
-    if (listError) {
-      console.error("Error listing users:", listError);
-      return respond(corsH, 500, {
-        ok: false,
-        error: `Failed to check existing users: ${listError.message}`,
-      });
-    }
-
-    let authUserId: string;
-    let action: string;
-
-    const existingUser = existingUsers?.users?.find(
-      (u) => u.email?.toLowerCase() === email.toLowerCase(),
-    );
-
-    if (existingUser) {
-      // User already exists in Supabase Auth
-      authUserId = existingUser.id;
-      action = "existing_user_provisioned";
-    } else {
-      // ── 7. Create a new Supabase Auth user with invitation ─────────────
-      const siteUrl = Deno.env.get("SITE_URL") || "https://atlas-ai-os.com";
-      const { data: inviteData, error: inviteError } =
-        await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
-          data: {
-            full_name: name || email.split("@")[0],
-          },
-          redirectTo: `${siteUrl}/auth`,
-        });
-
-      if (inviteError) {
-        console.error("Error inviting user:", inviteError);
-        return respond(corsH, 500, {
-          ok: false,
-          error: `Failed to create/invite user: ${inviteError.message}`,
-        });
-      }
-
-      authUserId = inviteData?.id ?? "";
-      action = "new_user_invited";
-
-      if (!authUserId) {
-        return respond(corsH, 500, {
-          ok: false,
-          error: "User creation succeeded but no ID returned",
-        });
-      }
-    }
-
-    // ── 8. Provision the Atlas profile via RPC ───────────────────────────
-    // The fixed admin_invite_user RPC creates the invite record and handles
-    // the profile/membership setup.
-    const { data: rpcResult, error: rpcError } = await supabaseUser.rpc(
-      "admin_invite_user",
-      {
-        p_email: email,
-        p_name: name || null,
-        p_role: role || "customer_user",
-        p_status: status || "active",
-        p_company_name: companyName || null,
-      },
-    );
-
-    if (rpcError) {
-      console.error("Error provisioning profile:", rpcError);
-      // The Auth user was created but profile provisioning failed.
-      return respond(corsH, 200, {
-        ok: true,
-        user_id: authUserId,
-        action: action,
-        warning: `Auth user created but profile provisioning had an issue: ${rpcError.message}. The user's profile will be created on first login.`,
-      });
-    }
-
-    // ── 9. Send invitation email via Resend ──────────────────────────────
-    let emailSent = false;
-    let emailWarning: string | null = null;
-
-    if (action === "new_user_invited") {
-      const resendApiKey = Deno.env.get("RESEND_API_KEY");
-      if (resendApiKey) {
-        try {
-          const senderEmail = Deno.env.get("RESEND_SENDER_EMAIL") || "pilot@atlas-ai-os.com";
-          const senderName = Deno.env.get("RESEND_SENDER_NAME") || "Atlas";
-          const siteUrl = Deno.env.get("SITE_URL") || "https://atlas-ai-os.com";
-
-          const roleLabel = role || "customer_user";
-          const html = `
-            <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
-              <h2 style="margin:0 0 12px;color:#0f172a;">You're invited to Atlas</h2>
-              <p style="color:#334155;line-height:1.6;margin:0 0 16px;">
-                ${escapeHtml(name || "You")} have been invited to join Atlas as <strong>${escapeHtml(roleLabel)}</strong>.
-              </p>
-              <p style="color:#334155;line-height:1.6;margin:0 0 16px;">
-                Atlas helps companies recover revenue that would otherwise be missed.
-                Your account is ready — click below to set your password and access your workspace.
-              </p>
-              <a href="${siteUrl}/auth?returnTo=%2Fdashboard"
-                 style="display:inline-block;background:#0d9488;color:#ffffff;text-decoration:none;
-                        padding:10px 20px;border-radius:8px;font-weight:600;">Accept My Invitation</a>
-              <p style="color:#94a3b8;font-size:12px;margin-top:24px;">
-                If you weren't expecting this invitation you can safely ignore this email.
-              </p>
-            </div>`;
-
-          const res = await fetch("https://api.resend.com/emails", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${resendApiKey}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              from: `${senderName} <${senderEmail}>`,
-              to: [email],
-              subject: "You're invited to Atlas",
-              html,
-            }),
-          });
-
-          if (res.ok) {
-            emailSent = true;
-            console.info(`[admin-provision-user] invitation email sent to ${email}`);
-          } else {
-            const errBody = await res.text().catch(() => "");
-            console.error(`[admin-provision-user] Resend error ${res.status}: ${errBody.slice(0, 200)}`);
-            emailWarning = "Invitation created but email could not be sent. The user can still sign in normally.";
-          }
-        } catch (e) {
-          console.error("[admin-provision-user] email send error:", e);
-          emailWarning = "Invitation created but email could not be sent. The user can still sign in normally.";
-        }
-      } else {
-        emailWarning = "Invitation created but RESEND_API_KEY is not configured. Email not sent.";
-      }
-    }
-
-    // ── 10. Return success ───────────────────────────────────────────────
-    const message =
-      action === "new_user_invited"
-        ? emailSent
-          ? `Invitation email sent to ${email}. User will receive a link to set their password and access Atlas.`
-          : `Invitation created for ${email}. ${emailWarning || "Email was not sent."}`
-        : `Existing user ${email} has been provisioned with role=${role}, status=${status}.`;
-
-    return respond(corsH, 200, {
-      ok: true,
-      user_id: authUserId,
-      action: action,
-      message: message,
-      invitation_sent: emailSent,
-      warning: emailWarning,
-    });
+    return respond(corsH, 200, result);
   } catch (err) {
-    console.error("Unexpected error:", err);
-    return respond(corsH, 500, {
-      ok: false,
-      error: `Internal error: ${err instanceof Error ? err.message : String(err)}`,
-    });
+    console.error("[admin-provision-user] unexpected error:", err instanceof Error ? err.message : String(err));
+    return respond(corsH, 500, fail("Unexpected server error."));
   }
 });
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c,
-  );
-}

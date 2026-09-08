@@ -58,6 +58,7 @@ const PilotApplications = lazy(() => import("./pages/pilot/PilotApplications.tsx
 const PilotCRM = lazy(() => import("./pages/pilot/PilotCRM.tsx"));
 const PilotOutreach = lazy(() => import("./pages/pilot/PilotOutreach.tsx"));
 const UsersAccess = lazy(() => import("./pages/UsersAccess.tsx"));
+const SuperAdminOrgs = lazy(() => import("./pages/SuperAdminOrgs.tsx"));
 const WorkersHub = lazy(() => import("./pages/workers/WorkersHub.tsx"));
 const ClaimsManager = lazy(() => import("./pages/workers/ClaimsManager.tsx"));
 const SupplementSpecialist = lazy(() => import("./pages/workers/SupplementSpecialist.tsx"));
@@ -561,6 +562,16 @@ createRoot(document.getElementById("root")!).render(
                   <ProtectedLayout>
                     <RequireInternalAuth section="users">
                       <UsersAccess />
+                    </RequireInternalAuth>
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/orgs"
+                element={
+                  <ProtectedLayout>
+                    <RequireInternalAuth section="superadmin">
+                      <SuperAdminOrgs />
                     </RequireInternalAuth>
                   </ProtectedLayout>
                 }

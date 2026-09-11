@@ -21,11 +21,13 @@ import {
   enrichClaimFromEvidence,
   normalizeClaimListResponse,
   normalizeClaimPackageResponse,
+  normalizeSupplementDocumentResponse,
   type ClaimSnapshot,
   type EvidenceDocLike,
 } from "@/lib/insurance/logic";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { rpcCall } from "@/lib/actions/rpc";
+import { normalizeEvidence } from "@/lib/insurance/evidence";
 import { normalizeArchiveDetailResponse } from "@/lib/archive/normalize";
 import {
   normalizeAuthorityMonitorResponse,
@@ -809,9 +811,18 @@ export const api = {
         (d) => normalizeClaimPackageResponse(d) as unknown as ClaimPackageShape | null,
       ),
       getClaimTimeline: def<ObjArray>("insurance_get_claim_timeline", "query"),
-      getSupplementDocument: def<SupplementDocumentShape | null>(
+      // The deployed RPC returns raw { claim, supplement } rows. The dialog
+      // renders the DERIVED document (status, requestedAmount, disclaimer,
+      // sections) — build it at the boundary through the same deterministic
+      // builder the workflows use, so legacy supplement rows (string/jsonb-
+      // literal evidence, malformed lists) can never crash `.sections.map()`
+      // (the production defect on the ClaimDetail supplement document dialog)
+      // and nothing is fabricated.
+      getSupplementDocument: defT<SupplementDocumentShape | null>(
         "insurance_get_supplement_document",
         "query",
+        (d) =>
+          normalizeSupplementDocumentResponse(d) as unknown as SupplementDocumentShape | null,
       ),
       claimCounts: defT<Obj & { recoveryPipeline: string[] }>(
         "insurance_claim_counts",
@@ -1030,10 +1041,14 @@ export const api = {
         Array.isArray(d)
           ? d.map((c) => ({
               ...c,
-              evidence: Array.isArray(c.evidence) ? c.evidence : [],
+              // Canonical evidence decoder: current write path stores arrays;
+              // legacy candidates can hold a JSON-array string, a plain path
+              // string or an object. Values are preserved (never silently
+              // dropped to []), and the page can always iterate the result.
+              evidence: normalizeEvidence(c.evidence),
               documentIds: Array.isArray(c.documentIds) ? c.documentIds : [],
-              documentTitles: Array.isArray(c.documentTitles) ? c.documentTitles : [],
-              archivePaths: Array.isArray(c.archivePaths) ? c.archivePaths : [],
+              documentTitles: normalizeEvidence(c.documentTitles),
+              archivePaths: normalizeEvidence(c.archivePaths),
             }))
           : [],
       ),

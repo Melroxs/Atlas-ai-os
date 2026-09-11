@@ -142,15 +142,18 @@ begin
   from public.claimFindings f where f."claimId" = p_claimId;
 
   -- Only string elements are document ids. Legacy rows written by the old
-  -- attach (nested {"value": …} wrappers) are skipped rather than crashing.
+  -- attach (nested {"value": …} wrappers) are skipped rather than crashing,
+  -- and malformed strings are never cast to uuid.
   select coalesce(jsonb_agg(jsonb_build_object(
     '_id', d._id, 'title', d.title, 'classification', d.classification
   )), '[]'::jsonb) into v_evidence
   from jsonb_array_elements(
     coalesce(nullif(v_claim -> 'evidenceDocumentIds', 'null'::jsonb), '[]'::jsonb)
   ) e
-  join public.documents d on d._id = (e #>> '{}')::uuid and d."tenantId" = v_tenant
-  where jsonb_typeof(e) = 'string';
+  join public.documents d
+    on d._id = e::text
+    and e::text like '________-____-____-____-____________'
+    and d."tenantId" = v_tenant;
 
   return jsonb_build_object(
     'claim', v_claim, 'supplements', v_supplements, 'findings', v_findings, 'evidenceDocs', v_evidence

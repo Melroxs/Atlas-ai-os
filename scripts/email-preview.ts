@@ -29,10 +29,10 @@ import {
 
 // Preview-only config — mirrors the production contract but is not a secret.
 const CONFIG: AtlasEmailConfig = {
-  from: "Atlas <notifications@atlas-ai-os.com>",
-  replyTo: "support@atlas-ai-os.com",
+  from: "Atlas AI OS <admin@atlas-ai-os.com>",
+  replyTo: "admin@atlas-ai-os.com",
   siteUrl: "https://atlas-ai-os.com",
-  supportEmail: "support@atlas-ai-os.com",
+  supportEmail: "admin@atlas-ai-os.com",
 };
 
 const ORG = "Everest Restoration Co.";

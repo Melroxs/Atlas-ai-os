@@ -29,10 +29,10 @@ const API_KEY = "re_secret_test_key_1234567890";
 const envStore = new Map<string, string>();
 
 const CONFIG: AtlasEmailConfig = {
-  from: "Atlas <notifications@atlas-ai-os.com>",
-  replyTo: "support@atlas-ai-os.com",
+  from: "Atlas AI OS <admin@atlas-ai-os.com>",
+  replyTo: "admin@atlas-ai-os.com",
   siteUrl: "https://atlas-ai-os.com",
-  supportEmail: "support@atlas-ai-os.com",
+  supportEmail: "admin@atlas-ai-os.com",
 };
 
 function stubDeno() {
@@ -126,8 +126,8 @@ describe("email module", () => {
   beforeEach(() => {
     envStore.clear();
     envStore.set("RESEND_API_KEY", API_KEY);
-    envStore.set("ATLAS_EMAIL_FROM", "Atlas <notifications@atlas-ai-os.com>");
-    envStore.set("ATLAS_EMAIL_REPLY_TO", "support@atlas-ai-os.com");
+    envStore.set("ATLAS_EMAIL_FROM", "Atlas AI OS <admin@atlas-ai-os.com>");
+    envStore.set("ATLAS_EMAIL_REPLY_TO", "admin@atlas-ai-os.com");
     envStore.set("ATLAS_APP_URL", "https://atlas-ai-os.com");
     stubDeno();
     vi.stubGlobal("fetch", vi.fn());
@@ -141,10 +141,10 @@ describe("email module", () => {
   describe("configuration", () => {
     it("loads sender, reply-to, and site URL from ATLAS_* env vars", () => {
       const cfg = loadEmailConfig();
-      expect(cfg.from).toBe("Atlas <notifications@atlas-ai-os.com>");
-      expect(cfg.replyTo).toBe("support@atlas-ai-os.com");
+      expect(cfg.from).toBe("Atlas AI OS <admin@atlas-ai-os.com>");
+      expect(cfg.replyTo).toBe("admin@atlas-ai-os.com");
       expect(cfg.siteUrl).toBe("https://atlas-ai-os.com");
-      expect(cfg.supportEmail).toBe("support@atlas-ai-os.com");
+      expect(cfg.supportEmail).toBe("admin@atlas-ai-os.com");
     });
 
     it("falls back to RESEND_SENDER_NAME / RESEND_SENDER_EMAIL when ATLAS_EMAIL_FROM is unset", () => {
@@ -154,12 +154,25 @@ describe("email module", () => {
       expect(atlasEmailFrom()).toBe("Atlas Team <team@atlas-ai-os.com>");
     });
 
+    it("defaults to the canonical Atlas sender when nothing is configured", () => {
+      envStore.delete("ATLAS_EMAIL_FROM");
+      envStore.delete("ATLAS_EMAIL_REPLY_TO");
+      envStore.delete("ATLAS_SUPPORT_EMAIL");
+      envStore.delete("ATLAS_APP_URL");
+      envStore.delete("SITE_URL");
+      const cfg = loadEmailConfig();
+      expect(cfg.from).toBe("Atlas AI OS <admin@atlas-ai-os.com>");
+      expect(cfg.replyTo).toBe("admin@atlas-ai-os.com");
+      expect(cfg.supportEmail).toBe("admin@atlas-ai-os.com");
+      expect(cfg.siteUrl).toBe("https://atlas-ai-os.com");
+    });
+
     it("defaults the site URL and support address when not configured", () => {
       envStore.delete("ATLAS_APP_URL");
       envStore.delete("SITE_URL");
       expect(atlasSiteUrl()).toBe("https://atlas-ai-os.com");
       const cfg = loadEmailConfig();
-      expect(cfg.supportEmail).toBe("support@atlas-ai-os.com");
+      expect(cfg.supportEmail).toBe("admin@atlas-ai-os.com");
     });
 
     it("uses SITE_URL as a legacy fallback for the app URL", () => {
@@ -184,7 +197,7 @@ describe("email module", () => {
       expect(t.html).toContain("Terms of Service");
       expect(t.html).toContain("Privacy Policy");
       expect(t.html).toContain(CONFIG.siteUrl);
-      expect(t.html).toContain("support@atlas-ai-os.com");
+      expect(t.html).toContain("admin@atlas-ai-os.com");
       // No raw placeholders survive rendering
       expect(t.html).not.toContain("{{");
       expect(t.html).not.toContain("}}");
@@ -296,7 +309,7 @@ describe("email module", () => {
     it("complimentary revoked is neutral and professional", () => {
       const t = renderEmail("complimentary_revoked", SAMPLE.complimentary_revoked, CONFIG);
       expect(t.html).toContain("revoked, effective September 8, 2026");
-      expect(t.html).toContain("support@atlas-ai-os.com");
+      expect(t.html).toContain("admin@atlas-ai-os.com");
     });
 
     it("subscription activated shows plan, interval, amount, activation date", () => {
@@ -355,8 +368,8 @@ describe("email module", () => {
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toBe("https://api.resend.com/emails");
       const body = JSON.parse(String(init.body));
-      expect(body.from).toBe("Atlas <notifications@atlas-ai-os.com>");
-      expect(body.reply_to).toEqual(["support@atlas-ai-os.com"]);
+      expect(body.from).toBe("Atlas AI OS <admin@atlas-ai-os.com>");
+      expect(body.reply_to).toEqual(["admin@atlas-ai-os.com"]);
       expect(body.to).toEqual(["jane@example.com"]);
       expect(body.subject).toBe("You've been invited to Atlas");
       // The API key travels only in the server-side Authorization header
@@ -365,7 +378,7 @@ describe("email module", () => {
       expect(body.html).not.toContain(API_KEY);
       expect(body.html).not.toContain("re_secret");
       // Auto-injected config vars made it into the message
-      expect(body.html).toContain("support@atlas-ai-os.com");
+      expect(body.html).toContain("admin@atlas-ai-os.com");
     });
 
     it("handles provider errors safely without leaking the API key or provider internals", async () => {

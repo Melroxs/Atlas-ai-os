@@ -22,6 +22,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import {
   CORS_HEADERS,
+  enforcePaddleWebhookIpAllowlist,
   errorResponse,
   jsonResponse,
   parsePaddleEvent,
@@ -68,6 +69,16 @@ Deno.serve(async (req) => {
   }
   if (req.method !== "POST") {
     return errorResponse("Method not allowed.", 405);
+  }
+
+  // ---- 0. Optional sender IP allowlist (opt-in via env) ----
+  // Paddle publishes its webhook-sending IPs at https://api.paddle.com/ips;
+  // when enabled, anything not on that list is rejected before we spend any
+  // work on signature verification. Signature verification remains mandatory.
+  const ipCheck = await enforcePaddleWebhookIpAllowlist(req);
+  if (!ipCheck.allowed) {
+    console.error("[paddle-webhook] sender IP rejected", { reason: ipCheck.reason });
+    return errorResponse("Webhook sender not allowed.", 403);
   }
 
   // Read the RAW body — parsing it first would break signature verification.

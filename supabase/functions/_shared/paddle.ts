@@ -379,6 +379,159 @@ export async function createPaddleTransaction(
 }
 
 // ---------------------------------------------------------------------------
+// Webhook sender IP allowlist
+//
+// Paddle publishes the current webhook-sending IPs at https://api.paddle.com/ips
+// (also api.sandbox.paddle.com for sandbox). The list is fetched and cached
+// rather than hard-coded, because it can change. Enforcement in the webhook
+// function is opt-in via PADDLE_WEBHOOK_ENFORCE_IP_ALLOWLIST=1, so an
+// infrastructure mismatch (e.g. a proxy that rewrites source IPs) cannot
+// silently break live webhook delivery; signature verification remains the
+// mandatory control. All current entries are /32 IPv4.
+// ---------------------------------------------------------------------------
+
+const PADDLE_IPS_URL = "https://api.paddle.com/ips";
+const PADDLE_IPS_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const PADDLE_IPS_CACHE_KEY = "atlas_paddle_ips_cache";
+
+interface PaddleIpsCache {
+  cidrs: string[];
+  fetchedAt: number;
+}
+
+export function ipToBytes(ip: string): Uint8Array | null {
+  if (ip.includes(".")) {
+    const parts = ip.split(".");
+    if (parts.length !== 4) return null;
+    const bytes = new Uint8Array(4);
+    for (let i = 0; i < 4; i++) {
+      const n = Number(parts[i]);
+      if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+      bytes[i] = n;
+    }
+    return bytes;
+  }
+  if (ip.includes(":")) {
+    // Expanded IPv6 only (Paddle currently publishes IPv4 /32s; IPv6 support
+    // is handled as a safety fallback rather than a full parser).
+    const parts = ip.split(":");
+    if (parts.length !== 8) return null;
+    const bytes = new Uint8Array(16);
+    for (let i = 0; i < 8; i++) {
+      if (!/^[0-9a-fA-F]{1,4}$/.test(parts[i])) return null;
+      const n = parseInt(parts[i], 16);
+      bytes[i * 2] = (n >> 8) & 0xff;
+      bytes[i * 2 + 1] = n & 0xff;
+    }
+    return bytes;
+  }
+  return null;
+}
+
+export function ipMatchesCidr(ip: string, cidr: string): boolean {
+  const [network, prefixStr] = cidr.split("/");
+  if (!network || prefixStr === undefined) return false;
+  const prefix = Number(prefixStr);
+  if (!Number.isInteger(prefix) || prefix < 0) return false;
+  const ipBytes = ipToBytes(ip);
+  const netBytes = ipToBytes(network);
+  if (!ipBytes || !netBytes || ipBytes.length !== netBytes.length) return false;
+  const maxBits = ipBytes.length * 8;
+  if (prefix > maxBits) return false;
+  const fullBytes = Math.floor(prefix / 8);
+  for (let i = 0; i < fullBytes; i++) {
+    if (ipBytes[i] !== netBytes[i]) return false;
+  }
+  const remainingBits = prefix % 8;
+  if (remainingBits > 0 && fullBytes < ipBytes.length) {
+    const mask = 0xff << (8 - remainingBits);
+    if ((ipBytes[fullBytes] & mask) !== (netBytes[fullBytes] & mask)) return false;
+  }
+  return true;
+}
+
+async function fetchPaddleWebhookIps(): Promise<string[]> {
+  const globalKey = PADDLE_IPS_CACHE_KEY as unknown as string;
+  const cached = (globalThis as Record<string, unknown>)[globalKey] as
+    | PaddleIpsCache
+    | undefined;
+  if (cached && Date.now() - cached.fetchedAt < PADDLE_IPS_TTL_MS) {
+    return cached.cidrs;
+  }
+  const response = await fetch(PADDLE_IPS_URL, { headers: { Accept: "application/json" } });
+  if (!response.ok) {
+    throw new Error(`Paddle IP list fetch failed (HTTP ${response.status}).`);
+  }
+  const json = (await response.json()) as { data?: { ipv4_cidrs?: string[] } };
+  const cidrs = json.data?.ipv4_cidrs ?? [];
+  if (cidrs.length === 0) {
+    throw new Error("Paddle IP list returned no CIDRs.");
+  }
+  (globalThis as Record<string, unknown>)[globalKey] = {
+    cidrs,
+    fetchedAt: Date.now(),
+  };
+  return cidrs;
+}
+
+/**
+ * Resolve the caller's IP from a Deno edge request. Supabase sets the
+ * x-forwarded-for / x-real-ip headers; falls back to conn.remoteAddr.
+ */
+export function webhookClientIp(req: Request): string | null {
+  const xff = req.headers.get("x-forwarded-for") ?? "";
+  if (xff) {
+    const first = xff.split(",")[0].trim();
+    if (first) return first;
+  }
+  const xri = req.headers.get("x-real-ip") ?? "";
+  if (xri) return xri.trim();
+  const remote = req.headers.get("cf-connecting-ip");
+  if (remote) return remote.trim();
+  return null;
+}
+
+/**
+ * Allowlist check against Paddle's published webhook sender IPs.
+ * Throws if the caller is not in the allowlist (403) or if the list could
+ * not be fetched (fail-open is NOT applied here: the caller decides via
+ * enforce flag; see isPaddleWebhookSource).
+ */
+export async function isPaddleWebhookSource(ip: string | null): Promise<boolean> {
+  if (!ip) return false;
+  const cidrs = await fetchPaddleWebhookIps();
+  return cidrs.some((cidr) => ipMatchesCidr(ip, cidr));
+}
+
+/**
+ * Run the allowlist check when PADDLE_WEBHOOK_ENFORCE_IP_ALLOWLIST=1.
+ * Fails OPEN (returns true, logs a warning) if the IP list cannot be fetched
+ * or the caller IP is unknown, so an infrastructure hiccup cannot brick live
+ * webhook delivery; signature verification remains the mandatory control.
+ */
+export async function enforcePaddleWebhookIpAllowlist(req: Request): Promise<{
+  allowed: boolean;
+  reason?: string;
+}> {
+  if ((Deno.env.get("PADDLE_WEBHOOK_ENFORCE_IP_ALLOWLIST") ?? "") !== "1") {
+    return { allowed: true }; // feature off
+  }
+  const ip = webhookClientIp(req);
+  if (!ip) {
+    console.warn("[paddle-webhook] IP allowlist enabled but caller IP unavailable; allowing (signature still required).");
+    return { allowed: true };
+  }
+  try {
+    const allowed = await isPaddleWebhookSource(ip);
+    return { allowed, reason: allowed ? undefined : `caller IP ${ip} not in Paddle webhook allowlist` };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn("[paddle-webhook] IP allowlist check failed; allowing (signature still required):", msg);
+    return { allowed: true };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Response helpers
 // ---------------------------------------------------------------------------
 

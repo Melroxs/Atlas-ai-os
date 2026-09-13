@@ -2,9 +2,7 @@
 // Atlas — paddle-checkout Edge Function
 //
 // Creates a Paddle transaction for an authenticated user's organization and
-// returns what the browser needs to open Paddle Checkout: the transaction id
-// plus the publishable client-side token for the Paddle.js overlay, with the
-// hosted checkout URL as a fallback when no client token is configured.
+// returns the hosted checkout URL.
 //
 // Security:
 //   - The caller's Supabase JWT is verified by the platform (do NOT deploy
@@ -14,8 +12,8 @@
 //     tenantId is only accepted when it matches the caller's membership.
 //   - PADDLE_API_KEY is read from Deno.env and never leaves this function.
 //
-// Flow: Pricing → Checkout page → this function → Paddle checkout ($10 /
-// 1-day trial is configured on the catalog price) → webhook → Atlas DB.
+// Flow: Pricing → Checkout page → this function → Paddle checkout (no trial;
+// the catalog price is charged immediately) → webhook → Atlas DB.
 // ---------------------------------------------------------------------------
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
@@ -23,11 +21,44 @@ import {
   CORS_HEADERS,
   createPaddleTransaction,
   paddleClientConfig,
+  paddleCustomerExistsInEnvironment,
+  isPaddleCustomerId,
   jsonResponse,
   errorResponse,
   type BillingInterval,
   type InternalPlan,
 } from "../_shared/paddle.ts";
+
+/**
+ * Resolve the organization's real Paddle customer id (`ctm_...`) for Paddle
+ * Retain (`pwCustomer`). The value originates from Paddle itself and is
+ * persisted by the verified paddle-webhook into
+ * organization_subscriptions.provider_customer_id — it is never an Atlas
+ * organization id, a Supabase user id or an email address. Returns null for
+ * a first-time subscriber (no Paddle customer exists yet) or when the stored
+ * id belongs to a different Paddle environment.
+ */
+async function resolvePaddleCustomerId(
+  organizationId: string,
+): Promise<string | null> {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  if (!supabaseUrl || !serviceKey) return null;
+
+  const admin = createClient(supabaseUrl, serviceKey, {
+    auth: { persistSession: false },
+  });
+  const { data } = await admin
+    .from("organization_subscriptions")
+    .select("provider_customer_id")
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+
+  const stored = data?.provider_customer_id ?? null;
+  if (!isPaddleCustomerId(stored)) return null;
+  return (await paddleCustomerExistsInEnvironment(stored)) ? stored : null;
+}
+
 
 const ATLAS_APP_URL = Deno.env.get("ATLAS_APP_URL") ?? "https://atlas-ai-os.com";
 
@@ -170,18 +201,24 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Paddle Retain identification: only a Paddle-issued ctm_ id that exists
+    // in this Paddle environment is ever returned.
+    const paddleCustomerId = await resolvePaddleCustomerId(tenantId);
+
     console.info("[paddle-checkout] transaction created", {
       organization_id: tenantId,
       internal_plan: plan,
       billing_interval: billing,
       transaction_id: transactionId,
       surface: clientToken ? "overlay" : "hosted",
+      retain_customer: paddleCustomerId ? "known" : "none",
       result: "ok",
     });
 
     return jsonResponse({
       transactionId,
       clientToken,
+      paddleCustomerId,
       environment,
       url,
       successUrl,
@@ -206,4 +243,5 @@ Deno.serve(async (req) => {
     }
     return errorResponse("We're unable to start checkout right now. Please try again.", 502);
   }
+
 });

@@ -5,10 +5,7 @@
 // 1. Apply migration 20260826_atlas_knowledge_layer.sql (creates tables)
 // 2. Apply migration 20260827_atlas_knowledge_seed_internal.sql (baseline seed)
 // 3. Apply migration 20260827b_atlas_corpus_ingestion.sql (relationships table + function skeleton)
-// 4. Apply migration 20260827e_complete_corpus_ingest.sql (quoted camelCase identifiers,
-//    replay-safe unique constraints, GRANT EXECUTE to authenticated)
-//    — 20260827d was removed: it contained invalid SQL (`ADD CONSTRAINT IF NOT EXISTS`)
-//    and never applied anywhere; 20260827e performs the same work correctly.
+// 4. Apply migration 20260827d_fix_ingest_corpus_quoted.sql (fixes function with quoted identifiers)
 // 5. Run this script
 
 import { getSupabaseClient } from '../src/lib/supabase';

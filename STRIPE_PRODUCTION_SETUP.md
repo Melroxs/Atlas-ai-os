@@ -1,4 +1,18 @@
 # Atlas Stripe Production Setup Guide
+> **RETIRED — DO NOT FOLLOW THIS GUIDE.**
+>
+> Stripe is **not** Atlas's billing provider. **Paddle is canonical**
+> (`src/lib/billing/provider.ts`, `supabase/functions/paddle-checkout`,
+> `supabase/functions/paddle-webhook`, `organization_subscriptions`,
+> `tenants.billing_state`; the checkout UI posts to `paddle-checkout`).
+>
+> The `stripe-checkout`, `stripe-webhook` and `stripe-portal` edge functions
+> referenced below have been removed from the repository and undeployed from
+> production, and `0021_stripe_billing.sql` was deleted rather than applied
+> because it would reintroduce the legacy `tenants.stripe_*` column model.
+>
+> Kept only as a historical record of the retired integration. Use the Paddle
+> billing setup instead.
 
 ## Overview
 

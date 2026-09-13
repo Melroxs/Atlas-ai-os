@@ -144,10 +144,10 @@ export async function createPaddleCheckoutTransaction(
     atlas_billing_interval: interval,
   };
 
-  // Note: Paddle's create-transaction API has no top-level `description`
-  // field — sending undocumented fields risks a 400. The plan name is carried
-  // by the catalog price itself and custom_data below.
-  const response = await paddleFetch("/v1/transactions", {
+  // Paddle Billing API endpoints carry no version prefix: the base URL is
+  // already versioned (api.paddle.com / api.sandbox.paddle.com). A `/v1`
+  // prefix yields HTTP 404 from Paddle.
+  const response = await paddleFetch("/transactions", {
     method: "POST",
     body: {
       items: [{ price_id: priceId, quantity: 1 }],
@@ -156,9 +156,9 @@ export async function createPaddleCheckoutTransaction(
   });
 
   if (!response.ok) {
-    const detail = await response.text().catch(() => "");
+    const detail = (await response.text().catch(() => "")).slice(0, 300);
     throw new Error(
-      `Paddle checkout could not be created (HTTP ${response.status}).`,
+      `Paddle checkout could not be created (HTTP ${response.status}${detail ? `: ${detail}` : ""}).`,
     );
   }
 
@@ -497,7 +497,7 @@ export const PADDLE_ADAPTER: PaddleAdapter = {
   ): Promise<ProviderSubscription | null> {
     try {
       const response = await paddleFetch(
-        `/v1/subscriptions/${providerSubscriptionId}`,
+        `/subscriptions/${providerSubscriptionId}`,
         {},
       );
       if (!response.ok) {

@@ -36,6 +36,7 @@ import {
   formatDate,
   greetingLine,
 } from "../_shared/email.ts";
+import { cleanupUserData, deleteProfileRow } from "../_shared/user-deletion.ts";
 
 const ATLAS_ALLOWED_ORIGINS = [
   "https://atlas-ai-os.com",
@@ -477,13 +478,65 @@ async function handleDeleteUser(ctx: AdminContext, body: Record<string, unknown>
   if (!userId) return fail("User id is required.");
   if (userId === ctx.callerId) return fail("You cannot delete your own account through this workflow.");
 
-  // 1. FK-safe cleanup + audit (super_admin-gated RPC, called with the caller's JWT)
-  const { data, error } = await ctx.user.rpc("admin_prepare_user_deletion", {
-    p_user_id: userId,
-  });
-  if (error) return fail("Could not prepare user deletion.", error.message);
+  // Resolve the target profile (email is needed for invite cleanup + audit).
+  const { data: targetProfile } = await ctx.admin
+    .from("profiles")
+    .select("email, name")
+    .eq("_id", userId)
+    .maybeSingle();
+  if (!targetProfile) return fail("User not found.");
 
-  // 2. Permanent Auth deletion via the Admin API (server-side only)
+  // Never delete the last active owner of an organization (would orphan it).
+  const { data: ownerRows } = await ctx.admin
+    .from("memberships")
+    .select("tenantId")
+    .eq("userId", userId)
+    .eq("role", "owner")
+    .eq("status", "active");
+  for (const owner of ownerRows ?? []) {
+    const { count } = await ctx.admin
+      .from("memberships")
+      .select("_id", { count: "exact", head: true })
+      .eq("tenantId", owner.tenantId)
+      .eq("role", "owner")
+      .eq("status", "active");
+    if (count !== null && count <= 1) {
+      return fail(
+        "Cannot delete the last active owner of an organization. Transfer ownership or handle the organization first.",
+      );
+    }
+  }
+
+  // 1. FK-safe cleanup (schema-aware, service-role, RLS-bypassing). Preserves
+  //    organization-owned rows (references nulled); removes user-owned
+  //    invitation/provisioning rows; never touches billing/audit tables.
+  try {
+    await cleanupUserData(ctx.admin, userId, targetProfile.email ?? null);
+  } catch (e) {
+    return fail("Could not prepare user deletion.", e instanceof Error ? e.message : String(e));
+  }
+
+  // 2. Audit the deletion (actor is the calling super admin, target is the user)
+  await audit(ctx, {
+    actorId: ctx.callerId,
+    actorEmail: ctx.callerEmail,
+    action: "user_deleted",
+    targetType: "user",
+    targetId: userId,
+    details: { email: targetProfile.email ?? null },
+  });
+
+  // 3. Delete the profile row — cascades memberships.userId, sessions, and
+  //    user-scoped complimentary grants. Production has no FK from profiles to
+  //    auth.users, so this explicit delete is what actually removes the
+  //    user-owned data (organization rows survive with nulled references).
+  try {
+    await deleteProfileRow(ctx.admin, userId);
+  } catch (e) {
+    return fail("User data deletion failed.", e instanceof Error ? e.message : String(e));
+  }
+
+  // 4. Permanent Auth deletion via the Admin API (server-side only)
   const { error: delError } = await ctx.admin.auth.admin.deleteUser(userId);
   if (delError) return fail("Auth account deletion failed.", delError.message);
 

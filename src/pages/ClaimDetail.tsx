@@ -1,6 +1,7 @@
 import { api } from "@/lib/api";
 import type { Id } from "@/lib/data-model";
 import { useAtlasWorkforce } from "@/hooks/use-atlas-workforce";
+import { normalizeEvidence } from "@/lib/insurance/evidence";
 import { AtlasReviewPanel } from "@/components/workforce/atlas-review-panel";
 import type { WorkItem } from "@/lib/work-queue/service";
 import {
@@ -799,7 +800,13 @@ export default function ClaimDetail() {
               </p>
             ) : (
               <div className="space-y-3">
-                {openFindings.map((f) => (
+                {openFindings.map((f) => {
+                  // Canonical evidence decoder — finding evidence may arrive as
+                  // a real array, a JSON-array string (pre-jsonb column), or
+                  // legacy plain text; it must never crash `.map()`. No evidence
+                  // is fabricated or dropped.
+                  const fEvidence = normalizeEvidence(f.evidence);
+                  return (
                   <div key={f._id} className="rounded-xl border border-amber-400/25 bg-amber-400/5 p-3">
                     <div className="flex items-start justify-between gap-2">
                       <p className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
@@ -814,9 +821,9 @@ export default function ClaimDetail() {
                       </Badge>
                     </div>
                     <p className="mt-1.5 text-[11px] leading-5 text-muted-foreground">{f.description}</p>
-                    {(f.evidence ?? []).length > 0 && (
+                    {fEvidence.length > 0 && (
                       <ul className="mt-2 space-y-1">
-                        {(f.evidence ?? []).map((e, i) => (
+                        {fEvidence.map((e, i) => (
                           <li key={i} className="flex items-start gap-1.5 text-[11px] leading-4 text-foreground/80">
                             <Check className="mt-0.5 size-3 shrink-0 text-emerald-500" />
                             {e}
@@ -851,7 +858,8 @@ export default function ClaimDetail() {
                       </span>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </Panel>

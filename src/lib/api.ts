@@ -21,11 +21,13 @@ import {
   enrichClaimFromEvidence,
   normalizeClaimListResponse,
   normalizeClaimPackageResponse,
+  normalizeSupplementDocumentResponse,
   type ClaimSnapshot,
   type EvidenceDocLike,
 } from "@/lib/insurance/logic";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { rpcCall } from "@/lib/actions/rpc";
+import { normalizeEvidence } from "@/lib/insurance/evidence";
 import { normalizeArchiveDetailResponse } from "@/lib/archive/normalize";
 import {
   normalizeAuthorityMonitorResponse,
@@ -809,9 +811,18 @@ export const api = {
         (d) => normalizeClaimPackageResponse(d) as unknown as ClaimPackageShape | null,
       ),
       getClaimTimeline: def<ObjArray>("insurance_get_claim_timeline", "query"),
-      getSupplementDocument: def<SupplementDocumentShape | null>(
+      // The deployed RPC returns raw { claim, supplement } rows. The dialog
+      // renders the DERIVED document (status, requestedAmount, disclaimer,
+      // sections) — build it at the boundary through the same deterministic
+      // builder the workflows use, so legacy supplement rows (string/jsonb-
+      // literal evidence, malformed lists) can never crash `.sections.map()`
+      // (the production defect on the ClaimDetail supplement document dialog)
+      // and nothing is fabricated.
+      getSupplementDocument: defT<SupplementDocumentShape | null>(
         "insurance_get_supplement_document",
         "query",
+        (d) =>
+          normalizeSupplementDocumentResponse(d) as unknown as SupplementDocumentShape | null,
       ),
       claimCounts: defT<Obj & { recoveryPipeline: string[] }>(
         "insurance_claim_counts",
@@ -1030,10 +1041,14 @@ export const api = {
         Array.isArray(d)
           ? d.map((c) => ({
               ...c,
-              evidence: Array.isArray(c.evidence) ? c.evidence : [],
+              // Canonical evidence decoder: current write path stores arrays;
+              // legacy candidates can hold a JSON-array string, a plain path
+              // string or an object. Values are preserved (never silently
+              // dropped to []), and the page can always iterate the result.
+              evidence: normalizeEvidence(c.evidence),
               documentIds: Array.isArray(c.documentIds) ? c.documentIds : [],
-              documentTitles: Array.isArray(c.documentTitles) ? c.documentTitles : [],
-              archivePaths: Array.isArray(c.archivePaths) ? c.archivePaths : [],
+              documentTitles: normalizeEvidence(c.documentTitles),
+              archivePaths: normalizeEvidence(c.archivePaths),
             }))
           : [],
       ),
@@ -1230,26 +1245,47 @@ export const api = {
       serverConfigured: boolean;
       voiceRuntimeAvailable: boolean;
       nvidiaVoiceAvailable: boolean;
+      elevenlabsVoiceAvailable: boolean;
     }>("voice_provider_status", "client", async () => {
-      // Check Voice Runtime availability (Phase 6)
+      // Check Voice Runtime availability (Phase 6) plus which SERVER-backed
+      // speech engine is configured. The ElevenLabs Speech Engine is the
+      // preferred voice layer; its API key stays in the Edge Functions and is
+      // never readable from the browser.
       let voiceRuntimeAvailable = false;
       let nvidiaVoiceAvailable = false;
+      let elevenlabsVoiceAvailable = false;
       try {
-        const { isVoiceRuntimeInitialized, isVoiceProviderAvailable } = await import("@/lib/voice-runtime");
+        const {
+          isVoiceRuntimeInitialized,
+          isVoiceProviderAvailable,
+          isElevenLabsVoiceConfigured,
+        } = await import("@/lib/voice-runtime");
         voiceRuntimeAvailable = isVoiceRuntimeInitialized();
         nvidiaVoiceAvailable = isVoiceProviderAvailable("nvidia-nim-voice");
+        elevenlabsVoiceAvailable = isElevenLabsVoiceConfigured();
       } catch {
         // Voice runtime not yet initialized — fall back to browser voice
       }
 
+      // ElevenLabs (voice-synthesize / voice-transcribe) first, then NVIDIA
+      // NIM, then the browser's Web Speech API. Callers that receive
+      // "server" fall back to browser speech on any provider error.
+      const serverSpeech = elevenlabsVoiceAvailable || nvidiaVoiceAvailable;
+      const provider = elevenlabsVoiceAvailable
+        ? "elevenlabs"
+        : nvidiaVoiceAvailable
+          ? "nvidia-nemotron"
+          : "browser";
+
       return {
-        stt: nvidiaVoiceAvailable ? "server" : "browser",
-        tts: nvidiaVoiceAvailable ? "server" : "browser",
-        sttProvider: nvidiaVoiceAvailable ? "nvidia-nemotron" : "browser",
-        ttsProvider: nvidiaVoiceAvailable ? "nvidia-nemotron" : "browser",
-        serverConfigured: nvidiaVoiceAvailable,
+        stt: serverSpeech ? "server" : "browser",
+        tts: serverSpeech ? "server" : "browser",
+        sttProvider: provider,
+        ttsProvider: provider,
+        serverConfigured: serverSpeech,
         voiceRuntimeAvailable,
         nvidiaVoiceAvailable,
+        elevenlabsVoiceAvailable,
       };
     }),
     synthesizeSpeech: def<Obj>("voice-synthesize", "edge"),
@@ -1582,6 +1618,39 @@ pilotIntelligence: {
     getEvents: def<ObjArray>("jobs_get_events", "query"),
     unlockStuck: def<{ unlocked: number }>("jobs_unlock_stuck", "mutation"),
     stats: def<Obj>("jobs_stats", "query"),
+  },
+  // ---------------------------------------------------------------------
+  // Atlas Platform Infrastructure
+  //   scheduling, source checking, knowledge versioning, content engine.
+  //   Registered read surfaces for the Platform Operations page.
+  // ---------------------------------------------------------------------
+  platform: {
+    // Scheduling
+    listSchedules: def<ObjArray>("schedules_list", "query"),
+    upsertSchedule: def<{ ok: boolean; schedule_id?: string }>("schedules_upsert", "mutation"),
+    setScheduleEnabled: def<{ ok: boolean }>("schedules_set_enabled", "mutation"),
+    fireDueSchedules: def<{ fired: ObjArray; count: number }>("schedules_fire_due", "mutation"),
+    recordScheduleResult: def<{ ok: boolean }>("schedules_record_result", "mutation"),
+    // Source registry / change detection
+    listDueSources: def<ObjArray>("sources_list_due", "query"),
+    getSource: def<Obj | null>("sources_get", "query"),
+    listSourceChecks: def<ObjArray>("sources_list_checks", "query"),
+    recordSourceCheck: def<Obj>("sources_record_check", "mutation"),
+    setSourceCheckFrequency: def<{ ok: boolean }>("sources_set_check_frequency", "mutation"),
+    // Knowledge versioning / provenance
+    listKnowledgeVersions: def<ObjArray>("knowledge_versions", "query"),
+    knowledgeAsOf: def<ObjArray>("knowledge_as_of", "query"),
+    createKnowledgeVersion: def<Obj>("knowledge_create_version", "mutation"),
+    verifyKnowledge: def<{ ok: boolean }>("knowledge_verify", "mutation"),
+    // Content engine
+    createContent: def<Obj>("content_create", "mutation"),
+    transitionContent: def<{ ok: boolean }>("content_transition", "mutation"),
+    listContent: def<ObjArray>("content_list", "query"),
+    getContent: def<Obj | null>("content_get", "query"),
+    listContentProvenance: def<ObjArray>("content_list_provenance", "query"),
+    contentPublicList: def<ObjArray>("content_public_list", "query"),
+    // Failed-job visibility (reuses the existing job queue)
+    failedJobs: def<ObjArray>("jobs_list_jobs", "query"),
   },
 } as const;
 

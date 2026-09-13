@@ -5,6 +5,7 @@ import { RequireAuth } from "@/components/RequireAuth";
 import { RequireInternalAuth } from "@/components/RequireInternalAuth";
 import { AppShell } from "@/components/app-shell";
 import { VoiceSessionProvider } from "@/components/voice-session";
+import { AtlasNavigationBridge } from "@/components/atlas-navigation-bridge";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
@@ -58,17 +59,7 @@ const PilotApplications = lazy(() => import("./pages/pilot/PilotApplications.tsx
 const PilotCRM = lazy(() => import("./pages/pilot/PilotCRM.tsx"));
 const PilotOutreach = lazy(() => import("./pages/pilot/PilotOutreach.tsx"));
 const UsersAccess = lazy(() => import("./pages/UsersAccess.tsx"));
-const SuperAdminOrgs = lazy(() => import("./pages/SuperAdminOrgs.tsx"));
-const WorkersHub = lazy(() => import("./pages/workers/WorkersHub.tsx"));
-const ClaimsManager = lazy(() => import("./pages/workers/ClaimsManager.tsx"));
-const SupplementSpecialist = lazy(() => import("./pages/workers/SupplementSpecialist.tsx"));
-const RevenueRecoveryCoordinator = lazy(() => import("./pages/workers/RevenueRecoveryCoordinator.tsx"));
-const ProjectManager = lazy(() => import("./pages/workers/ProjectManager.tsx"));
-const EstimatorWorker = lazy(() => import("./pages/workers/Estimator.tsx"));
-const CustomerSuccess = lazy(() => import("./pages/workers/CustomerSuccess.tsx"));
-const Governance = lazy(() => import("./pages/Governance.tsx"));
-const RegulatoryDashboard = lazy(() => import("./pages/RegulatoryDashboard.tsx"));
-const RegulatoryIntelligence = lazy(() => import("./pages/RegulatoryIntelligence.tsx"));
+
 
 /** Protected section: auth gate + workspace shell.
  * VoiceSessionProvider is mounted OUTSIDE the router (see render tree) so the
@@ -182,6 +173,8 @@ createRoot(document.getElementById("root")!).render(
         <VoiceSessionProvider>
         <BrowserRouter>
           <RouteSyncer />
+          {/* Lets Atlas voice tools (navigate_atlas) drive the REAL router. */}
+          <AtlasNavigationBridge />
           <Suspense fallback={<RouteLoading />}>
             <Routes>
               <Route path="/" element={<Landing />} />
@@ -567,11 +560,6 @@ createRoot(document.getElementById("root")!).render(
                 }
               />
               <Route
-                path="/dashboard/orgs"
-                element={
-                  <ProtectedLayout>
-                    <RequireInternalAuth section="superadmin">
-                      <SuperAdminOrgs />
                     </RequireInternalAuth>
                   </ProtectedLayout>
                 }

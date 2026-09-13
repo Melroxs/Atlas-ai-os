@@ -69,6 +69,10 @@ export type JobEventType = (typeof JOB_EVENT_TYPES)[number];
 
 // ---------------------------------------------------------------------------
 // Job types
+//
+// Platform-infrastructure job types (knowledge monitoring, content engine and
+// document worker stages) are declared once in @/lib/platform/types and folded
+// in here so there is exactly ONE canonical job vocabulary.
 // ---------------------------------------------------------------------------
 
 export const JOB_TYPES = [
@@ -114,6 +118,31 @@ export const JOB_TYPES = [
   // System
   "system_maintenance",
   "system_cleanup",
+
+  // Platform infrastructure — knowledge monitoring, source checking,
+  // versioning, the content engine and document worker stages. Declared here
+  // because this file is the single canonical job vocabulary.
+  "knowledge_source_check",
+  "knowledge_freshness_sweep",
+  "knowledge_detect_change",
+  "knowledge_extract",
+  "knowledge_verify",
+  "knowledge_version",
+  "knowledge_refresh",
+  "knowledge_index_maintenance",
+  "content_detect_opportunity",
+  "content_research",
+  "content_write_blog",
+  "content_write_linkedin",
+  "content_review",
+  "content_publish_blog",
+  "content_publish_linkedin",
+  "document_ingest",
+  "document_extract",
+  "document_ocr",
+  "document_embed",
+  "document_index",
+  "platform_failed_job_sweep",
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];
 

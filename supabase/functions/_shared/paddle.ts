@@ -10,6 +10,10 @@
 // Server-only secrets are read from Deno.env (never VITE_/client env):
 //   PADDLE_ENVIRONMENT, PADDLE_API_KEY, PADDLE_WEBHOOK_SECRET,
 //   PADDLE_*_PRICE_ID_{MONTHLY,ANNUAL}
+//
+// PADDLE_CLIENT_TOKEN is the one publishable Paddle value: paddle-checkout
+// returns it to the browser so Paddle.js can open the checkout overlay. It is
+// never a secret and never replaces PADDLE_API_KEY.
 // ---------------------------------------------------------------------------
 
 export type InternalPlan = "ATLAS_STARTER" | "ATLAS_GROWTH" | "ATLAS_SCALE";
@@ -318,11 +322,23 @@ export function parsePaddleEvent(
 // Checkout — transaction creation
 // ---------------------------------------------------------------------------
 
+/**
+ * Create a Paddle transaction for the given plan/interval.
+ *
+ * Returns the transaction id plus Paddle's hosted checkout URL when the
+ * seller has a default payment link configured. `url` is null otherwise —
+ * that is NOT an error: the browser opens the Paddle.js overlay with
+ * `transactionId` instead, so checkout does not depend on the hosted URL.
+ *
+ * `returnUrl` becomes `checkout.url` on the transaction when supplied, so
+ * Paddle returns the customer to the Atlas success page after payment.
+ */
 export async function createPaddleTransaction(
   organizationId: string,
   plan: InternalPlan,
   interval: BillingInterval,
-): Promise<{ transactionId: string; url: string }> {
+  returnUrl?: string,
+): Promise<{ transactionId: string; url: string | null; priceId: string }> {
   const apiKey = Deno.env.get("PADDLE_API_KEY") ?? "";
   if (!apiKey) {
     throw new Error("PADDLE_API_KEY is not configured.");
@@ -332,7 +348,10 @@ export async function createPaddleTransaction(
     throw new Error("The selected Atlas plan is not configured for billing.");
   }
 
-  const response = await fetch(`${paddleApiBase()}/v1/transactions`, {
+  // Paddle Billing API endpoints carry no version prefix: the base URL is
+  // already versioned (api.paddle.com / api.sandbox.paddle.com). A `/v1`
+  // prefix yields HTTP 404 from Paddle.
+  const response = await fetch(`${paddleApiBase()}/transactions`, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
@@ -348,22 +367,239 @@ export async function createPaddleTransaction(
         atlas_internal_plan: plan,
         atlas_billing_interval: interval,
       },
+      // `checkout.url` is where Paddle returns the customer after payment.
+      // Paddle only fills in a hosted checkout URL when the seller has a
+      // default payment link configured; when it doesn't, Atlas opens the
+      // Paddle.js overlay with this transaction id instead, so a missing
+      // hosted URL is never fatal.
+      ...(returnUrl ? { checkout: { url: returnUrl } } : {}),
     }),
   });
 
   if (!response.ok) {
-    throw new Error(`Paddle checkout could not be created (HTTP ${response.status}).`);
+    // Include the sanitized Paddle error detail in the thrown message so the
+    // Edge Function log identifies the real failure; the client never sees
+    // this message (paddle-checkout maps it to a generic 502 response).
+    const detail = await response
+      .text()
+      .then((t) => t.slice(0, 300))
+      .catch(() => "");
+    throw new Error(
+      `Paddle checkout could not be created (HTTP ${response.status}${detail ? `: ${detail}` : ""}).`,
+    );
   }
 
   const json = (await response.json()) as Record<string, unknown>;
   const data = (json.data as Record<string, unknown>) ?? json;
   const checkout = (data.checkout as Record<string, unknown>) ?? {};
-  const url = (checkout.url as string) ?? (data.url as string) ?? "";
+  const checkoutUrl = typeof checkout.url === "string" ? checkout.url : "";
+  const fallbackUrl = typeof data.url === "string" ? data.url : "";
+  const url = checkoutUrl || fallbackUrl || null;
 
-  if (!url) {
-    throw new Error("Paddle did not return a checkout URL for the transaction.");
+  // The transaction id is the hard requirement (the overlay needs it); a
+  // missing hosted URL is expected when no default payment link is set.
+  const transactionId = typeof data.id === "string" ? data.id : "";
+  if (!transactionId) {
+    throw new Error("Paddle did not return a transaction id.");
   }
-  return { transactionId: (data.id as string) ?? "", url };
+  return { transactionId, url, priceId };
+}
+
+// ---------------------------------------------------------------------------
+// Client-safe checkout configuration (Paddle.js overlay)
+// ---------------------------------------------------------------------------
+
+/**
+ * Client-safe Paddle configuration for the browser overlay checkout.
+ *
+ * PADDLE_CLIENT_TOKEN is a publishable client-side token (Paddle → Developer
+ * tools → Authentication → Client-side tokens). It is the ONLY Paddle value
+ * allowed to reach the browser; the API key and the webhook secret never
+ * leave the server.
+ *
+ * Returns `clientToken: null` when the token is missing or when its prefix
+ * does not match the configured environment — a sandbox token in live would
+ * open a checkout that can never take a real payment, and a live token in
+ * sandbox would target the live catalog. Callers then fall back to the
+ * hosted checkout URL or report that checkout is unavailable.
+ */
+export function paddleClientConfig(): {
+  clientToken: string | null;
+  environment: PaddleEnvironment;
+} {
+  const token = Deno.env.get("PADDLE_CLIENT_TOKEN") ?? "";
+  const environment = paddleEnvironment();
+
+  if (token) {
+    const isLiveToken = token.startsWith("live_");
+    if (environment === "live" && !isLiveToken) {
+      console.error(
+        "[paddle] PADDLE_CLIENT_TOKEN is not a live token while PADDLE_ENVIRONMENT=live; overlay checkout disabled.",
+      );
+      return { clientToken: null, environment };
+    }
+    if (environment === "sandbox" && isLiveToken) {
+      console.error(
+        "[paddle] PADDLE_CLIENT_TOKEN is a live token while PADDLE_ENVIRONMENT=sandbox; overlay checkout disabled.",
+      );
+      return { clientToken: null, environment };
+    }
+  }
+
+  return { clientToken: token || null, environment };
+}
+
+// ---------------------------------------------------------------------------
+// Webhook sender IP allowlist
+//
+// Paddle publishes the current webhook-sending IPs at https://api.paddle.com/ips
+// (also api.sandbox.paddle.com for sandbox). The list is fetched and cached
+// rather than hard-coded, because it can change. Enforcement in the webhook
+// function is opt-in via PADDLE_WEBHOOK_ENFORCE_IP_ALLOWLIST=1, so an
+// infrastructure mismatch (e.g. a proxy that rewrites source IPs) cannot
+// silently break live webhook delivery; signature verification remains the
+// mandatory control. All current entries are /32 IPv4.
+// ---------------------------------------------------------------------------
+
+const PADDLE_IPS_URL = "https://api.paddle.com/ips";
+const PADDLE_IPS_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const PADDLE_IPS_CACHE_KEY = "atlas_paddle_ips_cache";
+
+interface PaddleIpsCache {
+  cidrs: string[];
+  fetchedAt: number;
+}
+
+export function ipToBytes(ip: string): Uint8Array | null {
+  if (ip.includes(".")) {
+    const parts = ip.split(".");
+    if (parts.length !== 4) return null;
+    const bytes = new Uint8Array(4);
+    for (let i = 0; i < 4; i++) {
+      const n = Number(parts[i]);
+      if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+      bytes[i] = n;
+    }
+    return bytes;
+  }
+  if (ip.includes(":")) {
+    // Expanded IPv6 only (Paddle currently publishes IPv4 /32s; IPv6 support
+    // is handled as a safety fallback rather than a full parser).
+    const parts = ip.split(":");
+    if (parts.length !== 8) return null;
+    const bytes = new Uint8Array(16);
+    for (let i = 0; i < 8; i++) {
+      if (!/^[0-9a-fA-F]{1,4}$/.test(parts[i])) return null;
+      const n = parseInt(parts[i], 16);
+      bytes[i * 2] = (n >> 8) & 0xff;
+      bytes[i * 2 + 1] = n & 0xff;
+    }
+    return bytes;
+  }
+  return null;
+}
+
+export function ipMatchesCidr(ip: string, cidr: string): boolean {
+  const [network, prefixStr] = cidr.split("/");
+  if (!network || prefixStr === undefined) return false;
+  const prefix = Number(prefixStr);
+  if (!Number.isInteger(prefix) || prefix < 0) return false;
+  const ipBytes = ipToBytes(ip);
+  const netBytes = ipToBytes(network);
+  if (!ipBytes || !netBytes || ipBytes.length !== netBytes.length) return false;
+  const maxBits = ipBytes.length * 8;
+  if (prefix > maxBits) return false;
+  const fullBytes = Math.floor(prefix / 8);
+  for (let i = 0; i < fullBytes; i++) {
+    if (ipBytes[i] !== netBytes[i]) return false;
+  }
+  const remainingBits = prefix % 8;
+  if (remainingBits > 0 && fullBytes < ipBytes.length) {
+    const mask = 0xff << (8 - remainingBits);
+    if ((ipBytes[fullBytes] & mask) !== (netBytes[fullBytes] & mask)) return false;
+  }
+  return true;
+}
+
+async function fetchPaddleWebhookIps(): Promise<string[]> {
+  const globalKey = PADDLE_IPS_CACHE_KEY as unknown as string;
+  const cached = (globalThis as Record<string, unknown>)[globalKey] as
+    | PaddleIpsCache
+    | undefined;
+  if (cached && Date.now() - cached.fetchedAt < PADDLE_IPS_TTL_MS) {
+    return cached.cidrs;
+  }
+  const response = await fetch(PADDLE_IPS_URL, { headers: { Accept: "application/json" } });
+  if (!response.ok) {
+    throw new Error(`Paddle IP list fetch failed (HTTP ${response.status}).`);
+  }
+  const json = (await response.json()) as { data?: { ipv4_cidrs?: string[] } };
+  const cidrs = json.data?.ipv4_cidrs ?? [];
+  if (cidrs.length === 0) {
+    throw new Error("Paddle IP list returned no CIDRs.");
+  }
+  (globalThis as Record<string, unknown>)[globalKey] = {
+    cidrs,
+    fetchedAt: Date.now(),
+  };
+  return cidrs;
+}
+
+/**
+ * Resolve the caller's IP from a Deno edge request. Supabase sets the
+ * x-forwarded-for / x-real-ip headers; falls back to conn.remoteAddr.
+ */
+export function webhookClientIp(req: Request): string | null {
+  const xff = req.headers.get("x-forwarded-for") ?? "";
+  if (xff) {
+    const first = xff.split(",")[0].trim();
+    if (first) return first;
+  }
+  const xri = req.headers.get("x-real-ip") ?? "";
+  if (xri) return xri.trim();
+  const remote = req.headers.get("cf-connecting-ip");
+  if (remote) return remote.trim();
+  return null;
+}
+
+/**
+ * Allowlist check against Paddle's published webhook sender IPs.
+ * Throws if the caller is not in the allowlist (403) or if the list could
+ * not be fetched (fail-open is NOT applied here: the caller decides via
+ * enforce flag; see isPaddleWebhookSource).
+ */
+export async function isPaddleWebhookSource(ip: string | null): Promise<boolean> {
+  if (!ip) return false;
+  const cidrs = await fetchPaddleWebhookIps();
+  return cidrs.some((cidr) => ipMatchesCidr(ip, cidr));
+}
+
+/**
+ * Run the allowlist check when PADDLE_WEBHOOK_ENFORCE_IP_ALLOWLIST=1.
+ * Fails OPEN (returns true, logs a warning) if the IP list cannot be fetched
+ * or the caller IP is unknown, so an infrastructure hiccup cannot brick live
+ * webhook delivery; signature verification remains the mandatory control.
+ */
+export async function enforcePaddleWebhookIpAllowlist(req: Request): Promise<{
+  allowed: boolean;
+  reason?: string;
+}> {
+  if ((Deno.env.get("PADDLE_WEBHOOK_ENFORCE_IP_ALLOWLIST") ?? "") !== "1") {
+    return { allowed: true }; // feature off
+  }
+  const ip = webhookClientIp(req);
+  if (!ip) {
+    console.warn("[paddle-webhook] IP allowlist enabled but caller IP unavailable; allowing (signature still required).");
+    return { allowed: true };
+  }
+  try {
+    const allowed = await isPaddleWebhookSource(ip);
+    return { allowed, reason: allowed ? undefined : `caller IP ${ip} not in Paddle webhook allowlist` };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn("[paddle-webhook] IP allowlist check failed; allowing (signature still required):", msg);
+    return { allowed: true };
+  }
 }
 
 // ---------------------------------------------------------------------------

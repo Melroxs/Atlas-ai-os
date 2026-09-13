@@ -16,6 +16,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { rpcCall } from "@/lib/actions/rpc";
+import { toJobsRpcArgs, type JobsRpcFn } from "./rpc-args";
 import type {
   AtlasJob,
   AtlasJobStep,
@@ -32,6 +33,25 @@ import {
   createJobError,
   JOB_ERROR_CODES,
 } from "./engine";
+
+// ---------------------------------------------------------------------------
+// RPC transport
+//
+// `rpcCall()` adds the `p_` prefix and lowercases camelCase keys, which is
+// only correct for RPCs whose parameters were declared camelCase. The job
+// RPCs declare snake_case parameters (`p_tenant_id`, `p_job_type`, …), so
+// every call is translated through `toJobsRpcArgs()` first — otherwise the
+// request becomes `jobs_create_job(p_tenantid, p_jobtype, p_idempotencykey)`
+// and PostgREST answers PGRST202 (function not found in the schema cache).
+// ---------------------------------------------------------------------------
+
+async function jobsRpc<T = unknown>(
+  supabase: SupabaseClient,
+  fn: string,
+  args: Record<string, unknown> = {},
+): Promise<T> {
+  return (await rpcCall(supabase, fn, toJobsRpcArgs(fn as JobsRpcFn, args))) as T;
+}
 
 // ---------------------------------------------------------------------------
 // Job creation
@@ -52,7 +72,7 @@ export async function createJob(
     throw new Error(`Invalid job input: ${errors.map((e) => e.message).join("; ")}`);
   }
 
-  const result = (await rpcCall(supabase, "jobs_create_job", {
+  const result = (await jobsRpc(supabase, "jobs_create_job", {
     tenantId: input.tenant_id,
     userId: input.user_id ?? null,
     jobType: input.job_type,
@@ -154,7 +174,7 @@ export async function createJobStep(
   input: Record<string, unknown> = {},
   maxAttempts = 3,
 ): Promise<{ step_id: string }> {
-  const result = (await rpcCall(supabase, "jobs_create_step", {
+  const result = (await jobsRpc(supabase, "jobs_create_step", {
     jobId,
     stepType,
     sequence,
@@ -173,7 +193,7 @@ export async function completeStep(
   output: Record<string, unknown> = {},
   aiMetadata?: Record<string, unknown> | null,
 ): Promise<{ ok: boolean }> {
-  return (await rpcCall(supabase, "jobs_complete_step", {
+  return (await jobsRpc(supabase, "jobs_complete_step", {
     stepId,
     output,
     aiMetadata: aiMetadata ?? null,
@@ -188,7 +208,7 @@ export async function failStep(
   stepId: string,
   error: { code: string; message: string; details?: Record<string, unknown>; retryable?: boolean },
 ): Promise<{ ok: boolean }> {
-  return (await rpcCall(supabase, "jobs_fail_step", {
+  return (await jobsRpc(supabase, "jobs_fail_step", {
     stepId,
     error,
   })) as { ok: boolean };
@@ -201,7 +221,7 @@ export async function retryStep(
   supabase: SupabaseClient,
   stepId: string,
 ): Promise<{ ok: boolean }> {
-  return (await rpcCall(supabase, "jobs_retry_step", {
+  return (await jobsRpc(supabase, "jobs_retry_step", {
     stepId,
   })) as { ok: boolean };
 }
@@ -219,7 +239,7 @@ export async function completeJob(
   result: Record<string, unknown> = {},
   aiMetadata?: Record<string, unknown> | null,
 ): Promise<{ ok: boolean }> {
-  return (await rpcCall(supabase, "jobs_complete_job", {
+  return (await jobsRpc(supabase, "jobs_complete_job", {
     jobId,
     result,
     aiMetadata: aiMetadata ?? null,
@@ -234,7 +254,7 @@ export async function failJob(
   jobId: string,
   error: { code: string; message: string; details?: Record<string, unknown>; retryable?: boolean },
 ): Promise<{ ok: boolean; retrying: boolean; next_scheduled_at?: string }> {
-  return (await rpcCall(supabase, "jobs_fail_job", {
+  return (await jobsRpc(supabase, "jobs_fail_job", {
     jobId,
     error,
     retryable: error.retryable ?? true,
@@ -248,7 +268,7 @@ export async function cancelJob(
   supabase: SupabaseClient,
   jobId: string,
 ): Promise<{ ok: boolean }> {
-  return (await rpcCall(supabase, "jobs_cancel_job", {
+  return (await jobsRpc(supabase, "jobs_cancel_job", {
     jobId,
   })) as { ok: boolean };
 }
@@ -264,7 +284,7 @@ export async function getJob(
   supabase: SupabaseClient,
   jobId: string,
 ): Promise<AtlasJob & { steps: AtlasJobStep[] } | null> {
-  const result = await rpcCall(supabase, "jobs_get_job", { jobId });
+  const result = await jobsRpc(supabase, "jobs_get_job", { jobId });
   return (result as AtlasJob & { steps: AtlasJobStep[] }) ?? null;
 }
 
@@ -280,7 +300,7 @@ export async function listJobs(
     offset?: number;
   } = {},
 ): Promise<AtlasJob[]> {
-  const result = await rpcCall(supabase, "jobs_list_jobs", {
+  const result = await jobsRpc(supabase, "jobs_list_jobs", {
     status: options.status ?? null,
     jobType: options.job_type ?? null,
     limit: options.limit ?? 50,
@@ -297,7 +317,7 @@ export async function getJobEvents(
   jobId: string,
   limit = 100,
 ): Promise<AtlasJobEvent[]> {
-  const result = await rpcCall(supabase, "jobs_get_events", { jobId, limit });
+  const result = await jobsRpc(supabase, "jobs_get_events", { jobId, limit });
   return (Array.isArray(result) ? result : []) as AtlasJobEvent[];
 }
 
@@ -309,7 +329,7 @@ export async function awaitingReview(
   jobId: string,
   reviewId?: string | null,
 ): Promise<{ ok: boolean }> {
-  return (await rpcCall(supabase, "jobs_awaiting_review", {
+  return (await jobsRpc(supabase, "jobs_awaiting_review", {
     jobId,
     reviewId: reviewId ?? null,
   })) as { ok: boolean };
@@ -324,7 +344,7 @@ export async function resumeFromReview(
   reviewId: string,
   decision: "approved" | "rejected" | "needs_changes",
 ): Promise<{ ok: boolean; status?: string; rerun_step?: string }> {
-  return (await rpcCall(supabase, "jobs_resume_from_review", {
+  return (await jobsRpc(supabase, "jobs_resume_from_review", {
     jobId,
     reviewId,
     decision,
@@ -345,6 +365,6 @@ export async function getJobStats(
   processing_count: number;
   failed_24h: number;
 }> {
-  const result = await rpcCall(supabase, "jobs_stats");
+  const result = await jobsRpc(supabase, "jobs_stats");
   return result as ReturnType<typeof getJobStats>;
 }

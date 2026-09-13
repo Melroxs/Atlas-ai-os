@@ -2,6 +2,7 @@ import {
   analyzeRecoveryOpportunities,
   type ClaimFacts,
 } from "@/lib/atlas-data/everest-insurance";
+import { normalizeEvidence, normalizeEvidenceRows } from "@/lib/insurance/evidence";
 
 export const CLAIM_STATUSES = [
   "lead",
@@ -1046,6 +1047,12 @@ export interface SupplementDocument {
  * Structured supplement document. Never invents policy language or carrier
  * requirements — missing information is stated as missing and the document
  * always requires human review before submission.
+ *
+ * Every list-valued field (evidence, requestedItems, affectedLineItems,
+ * scope lists) is passed through the canonical evidence decoder before it is
+ * joined, so a legacy supplement row whose jsonb value is a string, a JSON
+ * array-literal string, an object or missing can never crash `.join()` —
+ * values are coerced, never dropped and never fabricated.
  */
 export function buildSupplementDocument(
   claim: ClaimSnapshot,
@@ -1063,6 +1070,11 @@ export function buildSupplementDocument(
   const sec = (title: string, body: string[]): { title: string; body: string[] } => ({ title, body });
   const money = (n?: number | null) =>
     typeof n === "number" ? `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : undefined;
+  const evidence = normalizeEvidence(supplement.evidence);
+  const requestedItems = normalizeEvidence(supplement.requestedItems);
+  const affectedLineItems = normalizeEvidence(supplement.affectedLineItems);
+  const expectedScope = normalizeEvidence(claim.expectedScope);
+  const actualScope = normalizeEvidence(claim.actualScope);
   const sections: Array<{ title: string; body: string[] }> = [];
 
   sections.push(
@@ -1082,31 +1094,31 @@ export function buildSupplementDocument(
   );
   sections.push(
     sec("Original scope", [
-      (claim.expectedScope?.length ?? 0) > 0
-        ? claim.expectedScope!.join("; ")
+      expectedScope.length > 0
+        ? expectedScope.join("; ")
         : "Original scope not documented in Atlas.",
     ]),
   );
   sections.push(
     sec("Revised scope / items requested", [
-      (supplement.requestedItems?.length ?? 0) > 0
-        ? supplement.requestedItems!.join("; ")
-        : (claim.actualScope?.length ?? 0) > 0
-          ? `Performed scope observed: ${claim.actualScope!.join("; ")}`
+      requestedItems.length > 0
+        ? requestedItems.join("; ")
+        : actualScope.length > 0
+          ? `Performed scope observed: ${actualScope.join("; ")}`
           : "Revised scope not documented — requires review.",
     ]),
   );
   sections.push(
     sec("Supporting evidence", [
-      (supplement.evidence?.length ?? 0) > 0
-        ? supplement.evidence!.join("; ")
+      evidence.length > 0
+        ? evidence.join("; ")
         : "No supporting evidence attached yet — add dated photos, logs and documentation.",
     ]),
   );
   sections.push(
     sec("Affected line items", [
-      (supplement.affectedLineItems?.length ?? 0) > 0
-        ? supplement.affectedLineItems!.join("; ")
+      affectedLineItems.length > 0
+        ? affectedLineItems.join("; ")
         : "Line items not itemized — requires review against the estimate.",
     ]),
   );
@@ -1241,9 +1253,7 @@ export function normalizeClaimPackageResponse(
   const supplements = Array.isArray(pkg.supplements)
     ? (pkg.supplements as Array<Record<string, unknown>>)
     : [];
-  const findings = Array.isArray(pkg.findings)
-    ? (pkg.findings as Array<Record<string, unknown>>)
-    : [];
+  const findings = normalizeEvidenceRows(pkg.findings);
   const evidenceDocs = Array.isArray(pkg.evidenceDocs)
     ? (pkg.evidenceDocs as Array<Record<string, unknown>>)
     : [];
@@ -1290,6 +1300,77 @@ const TERMINAL_CLAIM_STATUSES = new Set([
  * claim `_id` is preserved verbatim (never undefined), so list rows and the
  * detail route resolve the SAME claim.
  */
+// ---------------------------------------------------------------------------
+// Supplement document contract (insurance_get_supplement_document)
+// ---------------------------------------------------------------------------
+// The deployed RPC returns the RAW claim + supplement rows:
+//   { claim: {…}, supplement: {…} }
+// The dialog renders the DERIVED document (status, requestedAmount,
+// disclaimer, sections). This normalizer builds that document at the data
+// boundary from the raw rows through the same deterministic builder the
+// workflows use, so the page can never crash on a missing `sections` field
+// (the production defect: `Cannot read properties of undefined (reading
+// 'map')` on ClaimDetail's supplement document dialog) and so legacy
+// supplement rows (string evidence, malformed jsonb lists) render as honest
+// text instead of crashing. Nothing is fabricated: a missing/empty payload
+// yields null and the dialog shows its loading state.
+
+export interface SupplementDocumentResponse {
+  status?: string;
+  requestedAmount?: number;
+  disclaimer: string;
+  sections: Array<{ title: string; body: string[] }>;
+}
+
+/**
+ * Normalize an insurance_get_supplement_document RPC result into the derived
+ * supplement document the dialog renders. Accepts the deployed
+ * `{ claim, supplement }` wrapper AND already-flat supplement rows.
+ */
+export function normalizeSupplementDocumentResponse(
+  raw: unknown,
+): SupplementDocumentResponse | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const claim =
+    r.claim && typeof r.claim === "object" && !Array.isArray(r.claim)
+      ? (r.claim as Record<string, unknown>)
+      : r;
+  const supplement =
+    r.supplement && typeof r.supplement === "object" && !Array.isArray(r.supplement)
+      ? (r.supplement as Record<string, unknown>)
+      : r;
+  if (Object.keys(r).length === 0) return null;
+  const snapshot = toClaimSnapshot(claim);
+  const doc = buildSupplementDocument(snapshot, {
+    reason: typeof supplement.reason === "string" ? supplement.reason : null,
+    amount:
+      typeof supplement.amount === "number"
+        ? supplement.amount
+        : typeof supplement.requestedAmount === "number"
+          ? supplement.requestedAmount
+          : null,
+    affectedLineItems: supplement.affectedLineItems as string[] | null | undefined,
+    requestedItems: supplement.requestedItems as string[] | null | undefined,
+    evidence: supplement.evidence as string[] | null | undefined,
+    justification:
+      typeof supplement.justification === "string" ? supplement.justification : null,
+    status: typeof supplement.status === "string" ? supplement.status : "draft",
+    createdAt:
+      typeof supplement.createdAt === "number"
+        ? supplement.createdAt
+        : typeof supplement._creationTime === "number"
+          ? supplement._creationTime
+          : null,
+  });
+  return {
+    status: doc.status,
+    requestedAmount: doc.requestedAmount,
+    disclaimer: doc.disclaimer,
+    sections: doc.sections,
+  };
+}
+
 export function normalizeClaimListResponse(
   raw: unknown,
 ): Array<Record<string, unknown>> {
@@ -1303,9 +1384,7 @@ export function normalizeClaimListResponse(
         ? (wrapper.claim as Record<string, unknown>)
         : wrapper; // already-flat rows pass through
     if (!claim._id) continue;
-    const findings = Array.isArray(wrapper.findings)
-      ? (wrapper.findings as Array<Record<string, unknown>>)
-      : [];
+    const findings = normalizeEvidenceRows(wrapper.findings);
     const supplements = Array.isArray(wrapper.supplements)
       ? (wrapper.supplements as Array<Record<string, unknown>>)
       : [];
@@ -1368,9 +1447,9 @@ export function matchCandidateEvidenceDocs(
   };
   const refs: string[] = [];
   for (const v of [
-    ...(Array.isArray(candidate.filePaths) ? candidate.filePaths : []),
-    ...(Array.isArray(candidate.evidence) ? candidate.evidence : []),
-    ...(Array.isArray(candidate.documentTitles) ? candidate.documentTitles : []),
+    ...normalizeEvidence(candidate.filePaths),
+    ...normalizeEvidence(candidate.evidence),
+    ...normalizeEvidence(candidate.documentTitles),
   ]) {
     const n = norm(basename(String(v ?? "")));
     if (n && !refs.includes(n)) refs.push(n);

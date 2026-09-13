@@ -1,5 +1,6 @@
 import { AtlasAssistant } from "@/components/atlas-assistant";
 import { useVoiceSession } from "@/components/voice-session";
+import { AtlasVoiceControl } from "@/components/atlas-voice-control";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { canAccessPilotAdmin, canAccessCRM, canAccessMail, canAccessUserAdmin } from "@/lib/auth/access-gate";
@@ -54,7 +55,6 @@ import {
   Radar,
   Scale,
   ScrollText,
-  Send,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -210,6 +210,12 @@ const NAV_SECTIONS: Array<{
     ],
   },
   {
+    label: "Platform",
+    items: [
+      { to: "/dashboard/platform", label: "Platform Operations", icon: Server },
+    ],
+  },
+  {
     label: "Mail",
     items: [{ to: "/dashboard/mail", label: "Atlas Mail", icon: Mail }],
   },
@@ -272,6 +278,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/dashboard/pilot/crm": "CRM",
   "/dashboard/pilot/outreach": "Outreach Center",
   "/dashboard/users": "Users & Access",
+  "/dashboard/platform": "Platform Operations",
 };
 
 function initials(name?: string | null, email?: string | null): string {
@@ -397,6 +404,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           {NAV_SECTIONS.filter((section) => {
             // Filter nav sections by role
             if (section.label === "Admin") return canAccessUserAdmin(role);
+            if (section.label === "Platform") return isInternalRole(role);
             if (section.label === "Mail") return canAccessMail(role);
             if (section.label === "Pilot") return canAccessPilotAdmin(role);
             if (section.label === "Pilot Intelligence") return canAccessPilotAdmin(role);
@@ -544,6 +552,11 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </main>
       </SidebarInset>
+
+      {/* Atlas Voice — global access to the same Atlas intelligence by voice.
+          Additive: the existing navigation, sidebar and assistant are
+          untouched. */}
+      <AtlasVoiceControl />
 
       {/* Global ambient voice indicator — visible when ambient listening is
           active, even when the floating panel is closed. */}

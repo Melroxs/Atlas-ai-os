@@ -32,12 +32,19 @@ export {
 
 // Providers (for direct registration)
 export { BrowserVoiceProvider } from "./providers/browser-voice";
+export { ElevenLabsVoiceProvider } from "./providers/elevenlabs-voice";
 export { NvidiaNimVoiceProvider } from "./providers/nvidia-nim-voice";
+export type {
+  ElevenLabsVoiceTransport,
+  VoicePlayback,
+  PlaybackFactory,
+} from "./providers/elevenlabs-voice";
 
 // Configuration
 export {
   loadVoiceProviderConfigs,
   resetVoiceConfigCache,
+  isElevenLabsVoiceConfigured,
   isNvidiaNimVoiceConfigured,
   getVoiceRuntimeConfig,
   getNvidiaVoiceModel,

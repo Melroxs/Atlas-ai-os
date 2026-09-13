@@ -72,6 +72,7 @@ synchronized by the `paddle-webhook` Edge Function. All Paddle values are
 | `PADDLE_GROWTH_PRICE_ID_ANNUAL` | Supabase edge secrets | ✅ prod | No | Price id for Growth annual |
 | `PADDLE_SCALE_PRICE_ID_MONTHLY` | Supabase edge secrets | ✅ prod | No | Price id for Scale monthly |
 | `PADDLE_SCALE_PRICE_ID_ANNUAL` | Supabase edge secrets | ✅ prod | No | Price id for Scale annual |
+| `PADDLE_WEBHOOK_ENFORCE_IP_ALLOWLIST` | Supabase edge secrets | Optional | No | Set to `1` to reject webhook deliveries whose sender IP is not in Paddle's published list (`https://api.paddle.com/ips`, fetched + cached, not hard-coded). Leave unset if the host rewrites source IPs; signature verification is always mandatory regardless. |
 
 Price ids are **not** secrets (they are catalog identifiers), but they are
 kept server-side so the plan → price mapping stays authoritative and the six
@@ -84,6 +85,12 @@ Deployment notes:
   Supabase JWT); the signature header is verified inside the function.
 - Point the Paddle notification destination at
   `https://<ref>.supabase.co/functions/v1/paddle-webhook`.
+- Webhook security stack: mandatory HMAC signature verification (5-min replay
+  window), idempotent event ledger, out-of-order guard, and an **optional**
+  sender-IP allowlist (`PADDLE_WEBHOOK_ENFORCE_IP_ALLOWLIST=1`) that checks the
+  caller against `https://api.paddle.com/ips` (current list: 6 IPv4 /32s).
+  Verify the source IPs your hosting provider presents before enabling; the
+  check fails open if the list cannot be fetched.
 
 ## Notes
 

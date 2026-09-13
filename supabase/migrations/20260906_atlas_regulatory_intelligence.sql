@@ -18,6 +18,32 @@
 -- history divergence in this repo); apply this file via the repo's
 -- scripts/run-db-sql.mjs convention after review, like the governance
 -- migration (20260904) was applied.
+--
+-- ============================================================================
+-- VERSION + CONTENT DIVERGENCE (verified against production 2026-09-13)
+--
+--   Production history contains version `20260906192230`, name
+--   `atlas_regulatory_intelligence`. It was applied through the Management API
+--   migrations endpoint (scripts/apply-regulatory-migration.mjs), which
+--   assigns a server-generated 14-digit version instead of using a filename
+--   version key — that is why the version differs from `20260906`.
+--
+--   The bodies are NOT equivalent, so this file must NOT be renamed to
+--   `20260906192230_...`:
+--     * production has nine `atlas_regulatory_*` tables
+--       (jurisdictions, sources, source_versions, propositions,
+--       proposition_versions, contradictions, review_queue, coverage,
+--       acquisition_jobs) — the shape src/lib/regulatory/store.ts reads and
+--       supabase/verification/20260906_atlas_regulatory_verification.sql
+--       asserts;
+--     * this file creates five differently-named, unprefixed tables
+--       (`regulatory_*`) that exist nowhere in production and that no code
+--       reads.
+--   Applying this file would therefore create a second, unused regulatory
+--   schema rather than reproduce what is live. Renaming it would mark SQL as
+--   applied that never ran. The correct resolution is a human decision:
+--   either commit the real (nine-table) migration body, or delete this draft.
+-- ============================================================================
 -- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------

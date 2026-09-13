@@ -1,4 +1,12 @@
 -- ============================================================================
+-- VERSION NOTE (2026-09-13 migration-history reconciliation):
+--   This file was `20260909_atlas_findings_evidence_jsonb.sql`. Version
+--   `20260909` is owned by `20260909_atlas_complimentary_access.sql` in
+--   production history, so this file could never be represented as applied.
+--   It is renamed to `20260909a` (unique, and ordered before the dependent
+--   `20260909b` supplement decoder). The SQL below was applied to production
+--   under the same session as that reconciliation.
+-- ============================================================================
 -- Atlas — canonicalize claimFindings.evidence as JSONB + harden readers
 --
 -- PROBLEM (root cause of "f.evidence.map is not a function" style page

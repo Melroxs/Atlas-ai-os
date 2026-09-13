@@ -43,6 +43,24 @@ EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 -- 2. Ensure UNIQUE constraint on relationships
+-- Drop-then-recreate, mirroring block 1, so the migration is replayable.
+-- Postgres raises 42P07 duplicate_table (not 42710 duplicate_object) when the
+-- constraint already exists, and PL/pgSQL's duplicate_object handler does not
+-- catch it — re-running the file would abort here.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_class t ON c.conrelid = t.oid
+    WHERE c.conname = 'industry_rels_unique'
+      AND lower(t.relname) = lower('atlasIndustryRelationships')
+  ) THEN
+    ALTER TABLE atlasIndustryRelationships
+      DROP CONSTRAINT industry_rels_unique;
+  END IF;
+EXCEPTION WHEN undefined_object THEN NULL;
+END $$;
+
 DO $$
 BEGIN
   ALTER TABLE atlasIndustryRelationships

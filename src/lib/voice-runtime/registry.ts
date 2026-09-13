@@ -31,6 +31,9 @@ export async function initializeVoiceRegistry(): Promise<void> {
     if (config.id === "browser") {
       const { BrowserVoiceProvider } = await import("./providers/browser-voice");
       _providers.set("browser", new BrowserVoiceProvider(config));
+    } else if (config.id === "elevenlabs") {
+      const { ElevenLabsVoiceProvider } = await import("./providers/elevenlabs-voice");
+      _providers.set("elevenlabs", new ElevenLabsVoiceProvider(config));
     } else if (config.id === "nvidia-nim-voice") {
       const { NvidiaNimVoiceProvider } = await import("./providers/nvidia-nim-voice");
       _providers.set("nvidia-nim-voice", new NvidiaNimVoiceProvider(config));

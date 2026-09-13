@@ -5,6 +5,7 @@ import { RequireAuth } from "@/components/RequireAuth";
 import { RequireInternalAuth } from "@/components/RequireInternalAuth";
 import { AppShell } from "@/components/app-shell";
 import { VoiceSessionProvider } from "@/components/voice-session";
+import { AtlasNavigationBridge } from "@/components/atlas-navigation-bridge";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
@@ -182,6 +183,8 @@ createRoot(document.getElementById("root")!).render(
         <VoiceSessionProvider>
         <BrowserRouter>
           <RouteSyncer />
+          {/* Lets Atlas voice tools (navigate_atlas) drive the REAL router. */}
+          <AtlasNavigationBridge />
           <Suspense fallback={<RouteLoading />}>
             <Routes>
               <Route path="/" element={<Landing />} />

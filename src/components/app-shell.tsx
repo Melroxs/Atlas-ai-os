@@ -1,5 +1,6 @@
 import { AtlasAssistant } from "@/components/atlas-assistant";
 import { useVoiceSession } from "@/components/voice-session";
+import { AtlasVoiceControl } from "@/components/atlas-voice-control";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { canAccessPilotAdmin, canAccessCRM, canAccessMail, canAccessUserAdmin } from "@/lib/auth/access-gate";
@@ -544,6 +545,11 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </main>
       </SidebarInset>
+
+      {/* Atlas Voice — global access to the same Atlas intelligence by voice.
+          Additive: the existing navigation, sidebar and assistant are
+          untouched. */}
+      <AtlasVoiceControl />
 
       {/* Global ambient voice indicator — visible when ambient listening is
           active, even when the floating panel is closed. */}

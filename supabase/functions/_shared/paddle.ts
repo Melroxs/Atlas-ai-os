@@ -10,6 +10,10 @@
 // Server-only secrets are read from Deno.env (never VITE_/client env):
 //   PADDLE_ENVIRONMENT, PADDLE_API_KEY, PADDLE_WEBHOOK_SECRET,
 //   PADDLE_*_PRICE_ID_{MONTHLY,ANNUAL}
+//
+// PADDLE_CLIENT_TOKEN is the one publishable Paddle value: paddle-checkout
+// returns it to the browser so Paddle.js can open the checkout overlay. It is
+// never a secret and never replaces PADDLE_API_KEY.
 // ---------------------------------------------------------------------------
 
 export type InternalPlan = "ATLAS_STARTER" | "ATLAS_GROWTH" | "ATLAS_SCALE";
@@ -318,11 +322,23 @@ export function parsePaddleEvent(
 // Checkout — transaction creation
 // ---------------------------------------------------------------------------
 
+/**
+ * Create a Paddle transaction for the given plan/interval.
+ *
+ * Returns the transaction id plus Paddle's hosted checkout URL when the
+ * seller has a default payment link configured. `url` is null otherwise —
+ * that is NOT an error: the browser opens the Paddle.js overlay with
+ * `transactionId` instead, so checkout does not depend on the hosted URL.
+ *
+ * `returnUrl` becomes `checkout.url` on the transaction when supplied, so
+ * Paddle returns the customer to the Atlas success page after payment.
+ */
 export async function createPaddleTransaction(
   organizationId: string,
   plan: InternalPlan,
   interval: BillingInterval,
-): Promise<{ transactionId: string; url: string }> {
+  returnUrl?: string,
+): Promise<{ transactionId: string; url: string | null; priceId: string }> {
   const apiKey = Deno.env.get("PADDLE_API_KEY") ?? "";
   if (!apiKey) {
     throw new Error("PADDLE_API_KEY is not configured.");
@@ -351,6 +367,12 @@ export async function createPaddleTransaction(
         atlas_internal_plan: plan,
         atlas_billing_interval: interval,
       },
+      // `checkout.url` is where Paddle returns the customer after payment.
+      // Paddle only fills in a hosted checkout URL when the seller has a
+      // default payment link configured; when it doesn't, Atlas opens the
+      // Paddle.js overlay with this transaction id instead, so a missing
+      // hosted URL is never fatal.
+      ...(returnUrl ? { checkout: { url: returnUrl } } : {}),
     }),
   });
 
@@ -370,12 +392,61 @@ export async function createPaddleTransaction(
   const json = (await response.json()) as Record<string, unknown>;
   const data = (json.data as Record<string, unknown>) ?? json;
   const checkout = (data.checkout as Record<string, unknown>) ?? {};
-  const url = (checkout.url as string) ?? (data.url as string) ?? "";
+  const checkoutUrl = typeof checkout.url === "string" ? checkout.url : "";
+  const fallbackUrl = typeof data.url === "string" ? data.url : "";
+  const url = checkoutUrl || fallbackUrl || null;
 
-  if (!url) {
-    throw new Error("Paddle did not return a checkout URL for the transaction.");
+  // The transaction id is the hard requirement (the overlay needs it); a
+  // missing hosted URL is expected when no default payment link is set.
+  const transactionId = typeof data.id === "string" ? data.id : "";
+  if (!transactionId) {
+    throw new Error("Paddle did not return a transaction id.");
   }
-  return { transactionId: (data.id as string) ?? "", url };
+  return { transactionId, url, priceId };
+}
+
+// ---------------------------------------------------------------------------
+// Client-safe checkout configuration (Paddle.js overlay)
+// ---------------------------------------------------------------------------
+
+/**
+ * Client-safe Paddle configuration for the browser overlay checkout.
+ *
+ * PADDLE_CLIENT_TOKEN is a publishable client-side token (Paddle → Developer
+ * tools → Authentication → Client-side tokens). It is the ONLY Paddle value
+ * allowed to reach the browser; the API key and the webhook secret never
+ * leave the server.
+ *
+ * Returns `clientToken: null` when the token is missing or when its prefix
+ * does not match the configured environment — a sandbox token in live would
+ * open a checkout that can never take a real payment, and a live token in
+ * sandbox would target the live catalog. Callers then fall back to the
+ * hosted checkout URL or report that checkout is unavailable.
+ */
+export function paddleClientConfig(): {
+  clientToken: string | null;
+  environment: PaddleEnvironment;
+} {
+  const token = Deno.env.get("PADDLE_CLIENT_TOKEN") ?? "";
+  const environment = paddleEnvironment();
+
+  if (token) {
+    const isLiveToken = token.startsWith("live_");
+    if (environment === "live" && !isLiveToken) {
+      console.error(
+        "[paddle] PADDLE_CLIENT_TOKEN is not a live token while PADDLE_ENVIRONMENT=live; overlay checkout disabled.",
+      );
+      return { clientToken: null, environment };
+    }
+    if (environment === "sandbox" && isLiveToken) {
+      console.error(
+        "[paddle] PADDLE_CLIENT_TOKEN is a live token while PADDLE_ENVIRONMENT=sandbox; overlay checkout disabled.",
+      );
+      return { clientToken: null, environment };
+    }
+  }
+
+  return { clientToken: token || null, environment };
 }
 
 // ---------------------------------------------------------------------------

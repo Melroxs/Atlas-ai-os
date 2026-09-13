@@ -1619,6 +1619,39 @@ pilotIntelligence: {
     unlockStuck: def<{ unlocked: number }>("jobs_unlock_stuck", "mutation"),
     stats: def<Obj>("jobs_stats", "query"),
   },
+  // ---------------------------------------------------------------------
+  // Atlas Platform Infrastructure
+  //   scheduling, source checking, knowledge versioning, content engine.
+  //   Registered read surfaces for the Platform Operations page.
+  // ---------------------------------------------------------------------
+  platform: {
+    // Scheduling
+    listSchedules: def<ObjArray>("schedules_list", "query"),
+    upsertSchedule: def<{ ok: boolean; schedule_id?: string }>("schedules_upsert", "mutation"),
+    setScheduleEnabled: def<{ ok: boolean }>("schedules_set_enabled", "mutation"),
+    fireDueSchedules: def<{ fired: ObjArray; count: number }>("schedules_fire_due", "mutation"),
+    recordScheduleResult: def<{ ok: boolean }>("schedules_record_result", "mutation"),
+    // Source registry / change detection
+    listDueSources: def<ObjArray>("sources_list_due", "query"),
+    getSource: def<Obj | null>("sources_get", "query"),
+    listSourceChecks: def<ObjArray>("sources_list_checks", "query"),
+    recordSourceCheck: def<Obj>("sources_record_check", "mutation"),
+    setSourceCheckFrequency: def<{ ok: boolean }>("sources_set_check_frequency", "mutation"),
+    // Knowledge versioning / provenance
+    listKnowledgeVersions: def<ObjArray>("knowledge_versions", "query"),
+    knowledgeAsOf: def<ObjArray>("knowledge_as_of", "query"),
+    createKnowledgeVersion: def<Obj>("knowledge_create_version", "mutation"),
+    verifyKnowledge: def<{ ok: boolean }>("knowledge_verify", "mutation"),
+    // Content engine
+    createContent: def<Obj>("content_create", "mutation"),
+    transitionContent: def<{ ok: boolean }>("content_transition", "mutation"),
+    listContent: def<ObjArray>("content_list", "query"),
+    getContent: def<Obj | null>("content_get", "query"),
+    listContentProvenance: def<ObjArray>("content_list_provenance", "query"),
+    contentPublicList: def<ObjArray>("content_public_list", "query"),
+    // Failed-job visibility (reuses the existing job queue)
+    failedJobs: def<ObjArray>("jobs_list_jobs", "query"),
+  },
 } as const;
 
 export type Api = typeof api;

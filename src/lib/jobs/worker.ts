@@ -196,6 +196,47 @@ export class AtlasWorker {
     this.logger.info("Worker stopped", this.getStatusRecord());
   }
 
+  /**
+   * Run exactly ONE dequeue + execution cycle and resolve once every claimed
+   * job has settled.
+   *
+   * start()/stop() own a long-lived interval, which a cron-triggered or
+   * serverless host cannot keep alive. runOnce() owns no timer, so the same
+   * worker (and the same registered handlers) can be driven by either kind of
+   * host without a second job system.
+   */
+  async runOnce(): Promise<{ claimed: number; processed: number; failed: number }> {
+    const slots = Math.max(1, this.config.max_concurrent_jobs);
+    const claimed = await this.rpc.dequeue(
+      this.config.worker_id,
+      this.config.job_types.length > 0 ? this.config.job_types : undefined,
+      slots,
+    );
+
+    if (claimed.length === 0) {
+      return { claimed: 0, processed: 0, failed: 0 };
+    }
+
+    const failedBefore = this.totalFailed;
+    const doneBefore = this.totalProcessed + this.totalFailed;
+
+    await Promise.all(
+      claimed.map(({ id }) =>
+        this.processJob(id).catch((err) => {
+          this.logger.error("Job processing threw", { job_id: id, error: String(err) });
+          this.activeJobs.delete(id);
+          this.stopHeartbeat(id);
+        }),
+      ),
+    );
+
+    return {
+      claimed: claimed.length,
+      processed: this.totalProcessed + this.totalFailed - doneBefore,
+      failed: this.totalFailed - failedBefore,
+    };
+  }
+
   /** Get current worker status. */
   getStatus(): WorkerStatus {
     return {

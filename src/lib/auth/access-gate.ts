@@ -153,7 +153,7 @@ export function evaluateAtlasAccess(
       return { allowed: true, reason: "active" };
     case "past_due":
       // Grace period: customer has paid before, subscription is past due
-      // but Stripe may still be retrying. Allow access.
+      // but Paddle may still be retrying. Allow access.
       return { allowed: true, reason: "past_due" };
     case "pending_checkout":
       return { allowed: false, reason: "pending_checkout" };

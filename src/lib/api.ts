@@ -1245,26 +1245,47 @@ export const api = {
       serverConfigured: boolean;
       voiceRuntimeAvailable: boolean;
       nvidiaVoiceAvailable: boolean;
+      elevenlabsVoiceAvailable: boolean;
     }>("voice_provider_status", "client", async () => {
-      // Check Voice Runtime availability (Phase 6)
+      // Check Voice Runtime availability (Phase 6) plus which SERVER-backed
+      // speech engine is configured. The ElevenLabs Speech Engine is the
+      // preferred voice layer; its API key stays in the Edge Functions and is
+      // never readable from the browser.
       let voiceRuntimeAvailable = false;
       let nvidiaVoiceAvailable = false;
+      let elevenlabsVoiceAvailable = false;
       try {
-        const { isVoiceRuntimeInitialized, isVoiceProviderAvailable } = await import("@/lib/voice-runtime");
+        const {
+          isVoiceRuntimeInitialized,
+          isVoiceProviderAvailable,
+          isElevenLabsVoiceConfigured,
+        } = await import("@/lib/voice-runtime");
         voiceRuntimeAvailable = isVoiceRuntimeInitialized();
         nvidiaVoiceAvailable = isVoiceProviderAvailable("nvidia-nim-voice");
+        elevenlabsVoiceAvailable = isElevenLabsVoiceConfigured();
       } catch {
         // Voice runtime not yet initialized — fall back to browser voice
       }
 
+      // ElevenLabs (voice-synthesize / voice-transcribe) first, then NVIDIA
+      // NIM, then the browser's Web Speech API. Callers that receive
+      // "server" fall back to browser speech on any provider error.
+      const serverSpeech = elevenlabsVoiceAvailable || nvidiaVoiceAvailable;
+      const provider = elevenlabsVoiceAvailable
+        ? "elevenlabs"
+        : nvidiaVoiceAvailable
+          ? "nvidia-nemotron"
+          : "browser";
+
       return {
-        stt: nvidiaVoiceAvailable ? "server" : "browser",
-        tts: nvidiaVoiceAvailable ? "server" : "browser",
-        sttProvider: nvidiaVoiceAvailable ? "nvidia-nemotron" : "browser",
-        ttsProvider: nvidiaVoiceAvailable ? "nvidia-nemotron" : "browser",
-        serverConfigured: nvidiaVoiceAvailable,
+        stt: serverSpeech ? "server" : "browser",
+        tts: serverSpeech ? "server" : "browser",
+        sttProvider: provider,
+        ttsProvider: provider,
+        serverConfigured: serverSpeech,
         voiceRuntimeAvailable,
         nvidiaVoiceAvailable,
+        elevenlabsVoiceAvailable,
       };
     }),
     synthesizeSpeech: def<Obj>("voice-synthesize", "edge"),

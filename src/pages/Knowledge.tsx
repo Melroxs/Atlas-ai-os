@@ -25,6 +25,7 @@ import {
   FlaskConical,
   Loader2,
   Radar,
+  Search,
   ShieldCheck,
   UploadCloud,
   XCircle,
@@ -32,6 +33,8 @@ import {
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
+import { Input } from "@/components/ui/input";
+import { filterBySearch, paginate, totalPages } from "@/lib/workforce/selectors";
 
 export default function Knowledge() {
   const navigate = useNavigate();
@@ -50,6 +53,8 @@ export default function Knowledge() {
   const [uploading, setUploading] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [docQuery, setDocQuery] = useState("");
+  const [docPage, setDocPage] = useState(1);
   const [uploads, setUploads] = useState<
     Array<{
       id: string;
@@ -396,7 +401,7 @@ export default function Knowledge() {
         <span className="text-muted-foreground/70">{stats?.chunks ?? 0} chunks</span>
       </div>
 
-      {/* Document list */}
+      {/* Document list — scalable: search + pagination over the collection */}
       {(docs ?? []).length === 0 ? (
         <EmptyPanel
           icon={Database}
@@ -422,43 +427,97 @@ export default function Knowledge() {
           }
         />
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border/70 bg-card/50">
-          <div className="divide-y divide-border/50">
-            {(docs ?? []).map((d) => (
-              <button
-                key={d._id}
-                type="button"
-                onClick={() => navigate(`/dashboard/knowledge/${d._id}`)}
-                className="flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-muted/40"
-              >
-                <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-teal-400/10 text-teal-600 dark:text-teal-300 ring-1 ring-teal-400/20">
-                  <FileText className="size-4" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{d.title}</p>
-                  <p className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                    <span>{formatBytes(d.size)}</span>
-                    <span>·</span>
-                    <span>{d.chunkCount ?? 0} chunks</span>
-                    <span>·</span>
-                    <span>{d.entityCount ?? 0} entities</span>
-                  </p>
-                </div>
-                <div className="hidden shrink-0 items-center gap-2 sm:flex">
-                  <ClassificationBadge classification={d.classification} />
-                  <DocStatusBadge status={d.status ?? "unknown"} />
-                  {d.externalDeletedAt ? (
-                    <span className="rounded-md border border-rose-400/30 bg-rose-400/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-rose-600 dark:text-rose-300">
-                      removed from source
-                    </span>
-                  ) : null}
-                </div>
-                <div className="hidden shrink-0 font-mono text-[11px] text-muted-foreground/60 md:block">
-                  {formatDate(d.processedAt ?? d._creationTime)}
-                </div>
-              </button>
-            ))}
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative min-w-52 flex-1">
+              <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={docQuery}
+                onChange={(e) => {
+                  setDocQuery(e.target.value);
+                  setDocPage(1);
+                }}
+                placeholder="Search documents…"
+                className="h-8 pl-8 text-xs"
+                aria-label="Search documents"
+              />
+            </div>
+            <span className="ml-auto font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+              {docs?.length.toLocaleString() ?? 0} document{(docs?.length ?? 0) === 1 ? "" : "s"}
+            </span>
           </div>
+          {(() => {
+            const filteredDocs = filterBySearch(docs ?? [], docQuery, [
+              (d) => d.title,
+              (d) => String(d.classification ?? ""),
+              (d) => String(d.summary ?? ""),
+            ]);
+            const pages = totalPages(filteredDocs.length, 25);
+            const pageDocs = paginate(filteredDocs, Math.min(docPage, pages), 25);
+            return (
+              <>
+                {pageDocs.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border/70 px-6 py-8 text-center text-sm text-muted-foreground">
+                    No documents match “{docQuery}”.
+                  </div>
+                ) : (
+                  <div className="overflow-hidden rounded-xl border border-border/70 bg-card/50">
+                    <div className="divide-y divide-border/50">
+                      {pageDocs.map((d) => (
+                        <button
+                          key={d._id}
+                          type="button"
+                          onClick={() => navigate(`/dashboard/knowledge/${d._id}`)}
+                          className="flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-muted/40"
+                        >
+                          <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-teal-400/10 text-teal-600 dark:text-teal-300 ring-1 ring-teal-400/20">
+                            <FileText className="size-4" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-medium">{d.title}</p>
+                            <p className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>{formatBytes(d.size)}</span>
+                              <span>·</span>
+                              <span>{d.chunkCount ?? 0} chunks</span>
+                              <span>·</span>
+                              <span>{d.entityCount ?? 0} entities</span>
+                            </p>
+                          </div>
+                          <div className="hidden shrink-0 items-center gap-2 sm:flex">
+                            <ClassificationBadge classification={d.classification} />
+                            <DocStatusBadge status={d.status ?? "unknown"} />
+                            {d.externalDeletedAt ? (
+                              <span className="rounded-md border border-rose-400/30 bg-rose-400/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-rose-600 dark:text-rose-300">
+                                removed from source
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="hidden shrink-0 font-mono text-[11px] text-muted-foreground/60 md:block">
+                            {formatDate(d.processedAt ?? d._creationTime)}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {pages > 1 && (
+                  <div className="flex items-center justify-between">
+                    <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                      Page {Math.min(docPage, pages)} of {pages}
+                    </p>
+                    <div className="flex gap-1.5">
+                      <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs" disabled={docPage <= 1} onClick={() => setDocPage((p) => Math.max(1, p - 1))}>
+                        Previous
+                      </Button>
+                      <Button variant="outline" size="sm" className="h-7 px-2.5 text-xs" disabled={docPage >= pages} onClick={() => setDocPage((p) => Math.min(pages, p + 1))}>
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
     </div>

@@ -30,7 +30,8 @@ import {
   SimWorker,
   type LoadTestConfig,
 } from "./jobs/load-test";
-import { JOB_STATUSES, JOB_PRIORITIES, JOB_STEP_STATUSES } from "./jobs/types";
+import { JOB_STATUSES, JOB_PRIORITIES, JOB_STEP_STATUSES, DEFAULT_WORKER_CONFIG } from "./jobs/types";
+import { getPipelineConfig } from "./jobs/pipeline-config";
 
 // =========================================================================
 // 1. Backpressure System
@@ -695,7 +696,6 @@ describe("Milestone 9: Capacity Model", () => {
 
   it("atlas_worker_config defaults are documented", () => {
     // Verify the defaults we audited
-    const { DEFAULT_WORKER_CONFIG } = require("./jobs/types");
     expect(DEFAULT_WORKER_CONFIG.poll_interval_ms).toBe(2000);
     expect(DEFAULT_WORKER_CONFIG.max_concurrent_jobs).toBe(5);
     expect(DEFAULT_WORKER_CONFIG.lock_timeout_ms).toBe(300_000);
@@ -705,7 +705,6 @@ describe("Milestone 9: Capacity Model", () => {
   });
 
   it("pipeline config defaults are documented", () => {
-    const { getPipelineConfig } = require("./jobs/pipeline-config");
     const config = getPipelineConfig();
     expect(config.enabled).toBe(false);
     expect(typeof config.maxConcurrent).toBe("number");

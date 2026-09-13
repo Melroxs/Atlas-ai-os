@@ -5,14 +5,19 @@ import { RequireAuth } from "@/components/RequireAuth";
 import { RequireInternalAuth } from "@/components/RequireInternalAuth";
 import { AppShell } from "@/components/app-shell";
 import { VoiceSessionProvider } from "@/components/voice-session";
+import { AtlasNavigationBridge } from "@/components/atlas-navigation-bridge";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes, useLocation } from "react-router";
+import BillingSettings from "./pages/BillingSettings.tsx";
 import "./index.css";
 
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
+const Terms = lazy(() => import("./pages/Terms.tsx"));
+const Privacy = lazy(() => import("./pages/Privacy.tsx"));
+const Refunds = lazy(() => import("./pages/Refunds.tsx"));
 const Pilot = lazy(() => import("./pages/Pilot.tsx"));
 const Pricing = lazy(() => import("./pages/Pricing.tsx"));
 const Checkout = lazy(() => import("./pages/Checkout.tsx"));
@@ -30,6 +35,7 @@ const Recommendations = lazy(() => import("./pages/Recommendations.tsx"));
 const Connections = lazy(() => import("./pages/Connections.tsx"));
 const Actions = lazy(() => import("./pages/Actions.tsx"));
 const Events = lazy(() => import("./pages/Events.tsx"));
+const WorkQueue = lazy(() => import("./pages/WorkQueue.tsx"));
 const Workflows = lazy(() => import("./pages/Workflows.tsx"));
 const WorkflowDetail = lazy(() => import("./pages/WorkflowDetail.tsx"));
 const RevenueRecovery = lazy(() => import("./pages/RevenueRecovery.tsx"));
@@ -53,7 +59,7 @@ const PilotApplications = lazy(() => import("./pages/pilot/PilotApplications.tsx
 const PilotCRM = lazy(() => import("./pages/pilot/PilotCRM.tsx"));
 const PilotOutreach = lazy(() => import("./pages/pilot/PilotOutreach.tsx"));
 const UsersAccess = lazy(() => import("./pages/UsersAccess.tsx"));
-const PlatformOps = lazy(() => import("./pages/PlatformOps.tsx"));
+
 
 /** Protected section: auth gate + workspace shell.
  * VoiceSessionProvider is mounted OUTSIDE the router (see render tree) so the
@@ -167,11 +173,16 @@ createRoot(document.getElementById("root")!).render(
         <VoiceSessionProvider>
         <BrowserRouter>
           <RouteSyncer />
+          {/* Lets Atlas voice tools (navigate_atlas) drive the REAL router. */}
+          <AtlasNavigationBridge />
           <Suspense fallback={<RouteLoading />}>
             <Routes>
               <Route path="/" element={<Landing />} />
               <Route path="/pilot" element={<Pilot />} />
               <Route path="/pricing" element={<Pricing />} />
+              <Route path="/terms" element={<Terms />} />
+              <Route path="/privacy" element={<Privacy />} />
+              <Route path="/refunds" element={<Refunds />} />
               <Route path="/pricing-success" element={<PricingSuccess />} />
               <Route path="/checkout" element={<Checkout />} />
               <Route
@@ -191,6 +202,88 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <ProtectedLayout>
                     <Dashboard />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers"
+                element={
+                  <ProtectedLayout>
+                    <WorkersHub />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/claims"
+                element={
+                  <ProtectedLayout>
+                    <ClaimsManager />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/supplements"
+                element={
+                  <ProtectedLayout>
+                    <SupplementSpecialist />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/recovery"
+                element={
+                  <ProtectedLayout>
+                    <RevenueRecoveryCoordinator />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/projects"
+                element={
+                  <ProtectedLayout>
+                    <ProjectManager />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/estimator"
+                element={
+                  <ProtectedLayout>
+                    <EstimatorWorker />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/workers/customers"
+                element={
+                  <ProtectedLayout>
+                    <CustomerSuccess />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/governance"
+                element={
+                  <ProtectedLayout>
+                    <Governance />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/regulatory"
+                element={
+                  <ProtectedLayout>
+                    <RequireInternalAuth section="users">
+                      <RegulatoryDashboard />
+                    </RequireInternalAuth>
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/regulatory-intelligence"
+                element={
+                  <ProtectedLayout>
+                    <RegulatoryIntelligence />
                   </ProtectedLayout>
                 }
               />
@@ -291,6 +384,14 @@ createRoot(document.getElementById("root")!).render(
                 }
               />
               <Route
+                path="/dashboard/work-queue"
+                element={
+                  <ProtectedLayout>
+                    <WorkQueue />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
                 path="/dashboard/revenue-recovery"
                 element={
                   <ProtectedLayout>
@@ -327,6 +428,14 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <ProtectedLayout>
                     <Settings />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/billing"
+                element={
+                  <ProtectedLayout>
+                    <BillingSettings />
                   </ProtectedLayout>
                 }
               />
@@ -451,11 +560,6 @@ createRoot(document.getElementById("root")!).render(
                 }
               />
               <Route
-                path="/dashboard/platform"
-                element={
-                  <ProtectedLayout>
-                    <RequireInternalAuth section="platform">
-                      <PlatformOps />
                     </RequireInternalAuth>
                   </ProtectedLayout>
                 }

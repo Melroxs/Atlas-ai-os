@@ -1,428 +1,288 @@
-// supabase/functions/stripe-webhook/index.ts
-//
-// Processes Stripe webhook events for subscription management.
-//
-// Events handled:
-//   - checkout.session.completed — Activate subscription + tenant
-//   - customer.subscription.created — Record new subscription
-//   - customer.subscription.updated — Sync subscription status changes
-//   - customer.subscription.deleted — Mark subscription as canceled + tenant
-//   - invoice.payment_failed — Mark subscription as past_due + tenant
-//
-// Security:
-//   - Verifies webhook signature using STRIPE_WEBHOOK_SECRET
-//   - Never exposes secret keys to the client
-//
-// Uses SUPABASE_SECRET_KEYS (modern built-in env var) for service-role access.
-
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { crypto } from "https://deno.land/std@0.177.0/crypto/mod.ts";
-
-const ATLAS_ALLOWED_ORIGINS = [
-  "https://atlas-ai-os.com",
-  "https://atlasmvp.freebuff.app",
-  "https://atlasuniversalos.freebuff.app",
-];
-
-function corsHeaders(req: Request): Record<string, string> {
-  const origin = req.headers.get("origin") ?? "";
-  const h: Record<string, string> = {
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type, stripe-signature",
-    "Access-Control-Max-Age": "86400",
-    Vary: "Origin",
-  };
-  if (ATLAS_ALLOWED_ORIGINS.includes(origin)) {
-    h["Access-Control-Allow-Origin"] = origin;
-  }
-  return h;
-}
-
-function respond(corsH: Record<string, string>, status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsH, "Content-Type": "application/json" },
-  });
-}
-
 /**
- * Verify Stripe webhook signature.
- * Uses Deno's Web Crypto API for HMAC-SHA256.
+ * Stripe Webhook Edge Function
+ *
+ * Handles Stripe webhook events for subscription lifecycle management.
+ *
+ * CRITICAL SECURITY:
+ * - Verifies Stripe webhook signature before processing
+ * - Uses STRIPE_WEBHOOK_SECRET for signature verification
+ * - Processes events idempotently (safe for retries)
+ * - Updates Supabase subscription state server-side
+ *
+ * Events Handled:
+ * - checkout.session.completed
+ * - customer.subscription.created
+ * - customer.subscription.updated
+ * - customer.subscription.deleted
+ * - invoice.paid
+ * - invoice.payment_failed
+ *
+ * Environment Variables Required:
+ * - STRIPE_SECRET_KEY
+ * - STRIPE_WEBHOOK_SECRET
+ * - SUPABASE_URL
+ * - SUPABASE_SERVICE_ROLE_KEY
  */
+
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+// Stripe webhook signature verification
 async function verifyWebhookSignature(
   payload: string,
-  signatureHeader: string,
-  secret: string,
+  signature: string,
+  secret: string
 ): Promise<boolean> {
-  try {
-    const parts = signatureHeader.split(",").reduce((acc, part) => {
-      const [key, value] = part.split("=");
-      acc[key] = value;
-      return acc;
-    }, {} as Record<string, string>);
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(secret);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
 
-    const timestamp = parts["t"];
-    const signature = parts["v1"];
+  const parts = signature.split(",");
+  const timestamp = parts.find((p) => p.startsWith("t="))?.slice(2);
+  const v1 = parts.find((p) => p.startsWith("v1="))?.slice(3);
 
-    if (!timestamp || !signature) return false;
+  if (!timestamp || !v1) return false;
 
-    const signedPayload = `${timestamp}.${payload}`;
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(secret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
+  // Check timestamp tolerance (5 minutes)
+  const currentTime = Math.floor(Date.now() / 1000);
+  const webhookTime = parseInt(timestamp, 10);
+  if (Math.abs(currentTime - webhookTime) > 300) return false;
 
-    const signatureBuffer = await crypto.subtle.sign(
-      "HMAC",
-      key,
-      new TextEncoder().encode(signedPayload),
-    );
+  const signedPayload = `${timestamp}.${payload}`;
+  const signatureBuffer = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(signedPayload)
+  );
 
-    const expectedSignature = Array.from(new Uint8Array(signatureBuffer))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
+  const computedSignature = Array.from(new Uint8Array(signatureBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 
-    return expectedSignature === signature;
-  } catch {
-    return false;
-  }
+  return computedSignature === v1;
 }
 
-serve(async (req: Request) => {
-  const corsH = corsHeaders(req);
+serve(async (req) => {
+  // CORS headers
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  };
 
-  // Handle CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response("ok", { status: 200, headers: corsH });
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    // --- Verify webhook signature ---
     const webhookSecret = Deno.env.get("STRIPE_WEBHOOK_SECRET");
     if (!webhookSecret) {
       console.error("[stripe-webhook] STRIPE_WEBHOOK_SECRET not configured");
-      return respond(corsH, 500, { error: "Webhook not configured" });
+      return new Response(
+        JSON.stringify({ error: "Webhook not configured" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    const signatureHeader = req.headers.get("stripe-signature");
-    if (!signatureHeader) {
-      return respond(corsH, 400, { error: "Missing stripe-signature header" });
-    }
-
+    // 1. Get request body and signature
     const body = await req.text();
+    const signature = req.headers.get("stripe-signature");
 
-    const isValid = await verifyWebhookSignature(body, signatureHeader, webhookSecret);
+    if (!signature) {
+      return new Response(
+        JSON.stringify({ error: "Missing signature" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 2. Verify webhook signature
+    const isValid = await verifyWebhookSignature(body, signature, webhookSecret);
     if (!isValid) {
-      return respond(corsH, 401, { error: "Invalid webhook signature" });
+      console.error("[stripe-webhook] Invalid signature");
+      return new Response(
+        JSON.stringify({ error: "Invalid signature" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // --- Parse and process the event ---
+    // 3. Parse event
     const event = JSON.parse(body);
-    const eventType = event.type as string;
-    const eventData = event.data?.object;
+    console.info("[stripe-webhook] Received event:", event.type);
 
-    if (!eventData) {
-      return respond(corsH, 200, { received: true, skipped: "no event data" });
-    }
+    // 4. Initialize Supabase admin client
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || Deno.env.get("SUPABASE_SECRET_KEYS");
-
-    if (!supabaseUrl || !serviceRoleKey) {
-      return respond(corsH, 500, { error: "Server configuration error" });
-    }
-
-    console.log(`[stripe-webhook] Processing event: ${eventType}`);
-
-    switch (eventType) {
+    // 5. Handle event
+    switch (event.type) {
       case "checkout.session.completed": {
-        // --- Subscription activated after successful payment ---
-        const subscriptionId = eventData.subscription as string;
-        const customerId = eventData.customer as string;
-        const userId = eventData.metadata?.supabase_user_id;
-        const tenantId = eventData.metadata?.atlas_tenant_id;
+        const session = event.data.object;
+        const tenantId = session.metadata?.atlas_tenant_id;
+        const userId = session.metadata?.atluser_id;
+        const plan = session.metadata?.atlas_plan;
+        const billing = session.metadata?.atlas_billing;
 
-        if (!subscriptionId || !userId) {
-          console.warn("[stripe-webhook] checkout.session.completed missing critical data");
+        if (!tenantId) {
+          console.error("[stripe-webhook] No tenant_id in session metadata");
           break;
         }
 
-        // Fetch the subscription details from Stripe
-        const stripeKey = Deno.env.get("STRIPE_SECRET_KEY");
-        const subRes = await fetch(`https://api.stripe.com/v1/subscriptions/${subscriptionId}`, {
-          headers: { Authorization: `Bearer ${stripeKey}` },
-        });
-        const sub = await subRes.json();
+        // Update tenant with subscription info
+        const { error } = await supabase
+          .from("tenants")
+          .update({
+            stripe_subscription_id: session.subscription,
+            stripe_price_id: session.metadata?.stripe_price_id,
+            subscription_status: "active",
+            subscription_plan: plan,
+            subscription_billing: billing,
+            current_period_start: new Date().toISOString(),
+            cancel_at_period_end: false,
+          })
+          .eq("id", tenantId);
 
-        // Get the price ID from the subscription
-        const priceId = sub.items?.data?.[0]?.price?.id;
-        const billing = sub.items?.data?.[0]?.price?.recurring?.interval === "year" ? "annual" : "monthly";
-
-        // Determine plan from metadata or price
-        const plan = eventData.metadata?.plan || "starter";
-
-        // Upsert subscription record (with tenant_id)
-        await fetch(`${supabaseUrl}/rest/v1/subscriptions`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${serviceRoleKey}`,
-            apikey: serviceRoleKey,
-            "Content-Type": "application/json",
-            Prefer: "resolution=merge-duplicates",
-          },
-          body: JSON.stringify({
-            user_id: userId,
-            tenant_id: tenantId || null,
-            stripe_customer_id: customerId,
-            stripe_subscription_id: subscriptionId,
-            stripe_price_id: priceId,
-            status: "active",
-            plan_name: plan,
-            billing_interval: billing,
-            current_period_start: new Date(sub.current_period_start * 1000).toISOString(),
-            current_period_end: new Date(sub.current_period_end * 1000).toISOString(),
-            cancel_at_period_end: sub.cancel_at_period_end || false,
-          }),
-        });
-
-        // Update the user's profile to active if it was pending
-        await fetch(`${supabaseUrl}/rest/v1/profiles?_id=eq.${userId}`, {
-          method: "PATCH",
-          headers: {
-            Authorization: `Bearer ${serviceRoleKey}`,
-            apikey: serviceRoleKey,
-            "Content-Type": "application/json",
-            Prefer: "return=minimal",
-          },
-          body: JSON.stringify({ account_status: "active" }),
-        });
-
-        // --- Activate the tenant (the core SaaS activation) ---
-        if (tenantId) {
-          // Call the server-side RPC to activate the tenant
-          await fetch(`${supabaseUrl}/rest/v1/rpc/tenants_activate_after_payment`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${serviceRoleKey}`,
-              apikey: serviceRoleKey,
-              "Content-Type": "application/json",
-              Prefer: "return=minimal",
-            },
-            body: JSON.stringify({ p_tenant_id: tenantId }),
-          });
-          console.log(`[stripe-webhook] Tenant ${tenantId} activated after payment`);
-        } else {
-          // Fallback: find tenant by user membership and activate
-          const memberRes = await fetch(
-            `${supabaseUrl}/rest/v1/memberships?userId=eq.${userId}&role=eq.owner&select=tenantId`,
-            {
-              headers: {
-                Authorization: `Bearer ${serviceRoleKey}`,
-                apikey: serviceRoleKey,
-              },
-            }
-          );
-          const memberships = await memberRes.json();
-          if (memberships?.length > 0) {
-            const fallbackTenantId = memberships[0].tenantId;
-            await fetch(`${supabaseUrl}/rest/v1/rpc/tenants_activate_after_payment`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${serviceRoleKey}`,
-                apikey: serviceRoleKey,
-                "Content-Type": "application/json",
-                Prefer: "return=minimal",
-              },
-              body: JSON.stringify({ p_tenant_id: fallbackTenantId }),
-            });
-            console.log(`[stripe-webhook] Tenant ${fallbackTenantId} activated (fallback by user membership)`);
-          }
+        if (error) {
+          console.error("[stripe-webhook] Failed to update tenant:", error);
         }
 
-        console.log(`[stripe-webhook] Subscription activated for user ${userId}`);
+        // Activate tenant
+        await supabase.rpc("tenants_activate_after_payment", {
+          p_tenant_id: tenantId,
+        });
+
+        console.info("[stripe-webhook] Subscription activated for tenant:", tenantId);
         break;
       }
 
-      case "customer.subscription.created":
-      case "customer.subscription.updated": {
-        const subscriptionId = eventData.id as string;
-        const status = eventData.status as string;
-        const cancelAtPeriodEnd = eventData.cancel_at_period_end || false;
+      case "customer.subscription.updated":
+      case "customer.subscription.created": {
+        const subscription = event.data.object;
+        const tenantId = subscription.metadata?.atlas_tenant_id;
 
-        // Map Stripe status to our status
-        let mappedStatus = status;
-        if (status === "active" && cancelAtPeriodEnd) {
-          mappedStatus = "active"; // Still active until period end
-        } else if (status === "past_due") {
-          mappedStatus = "past_due";
-        } else if (status === "canceled") {
-          mappedStatus = "canceled";
+        if (!tenantId) {
+          console.error("[stripe-webhook] No tenant_id in subscription metadata");
+          break;
         }
 
-        // Update subscription record
-        await fetch(`${supabaseUrl}/rest/v1/subscriptions?stripe_subscription_id=eq.${subscriptionId}`, {
-          method: "PATCH",
-          headers: {
-            Authorization: `Bearer ${serviceRoleKey}`,
-            apikey: serviceRoleKey,
-            "Content-Type": "application/json",
-            Prefer: "return=minimal",
-          },
-          body: JSON.stringify({
-            status: mappedStatus,
-            cancel_at_period_end: cancelAtPeriodEnd,
-            current_period_start: eventData.current_period_start
-              ? new Date(eventData.current_period_start * 1000).toISOString()
-              : undefined,
-            current_period_end: eventData.current_period_end
-              ? new Date(eventData.current_period_end * 1000).toISOString()
-              : undefined,
-            updated_at: new Date().toISOString(),
-          }),
-        });
+        // Update subscription status
+        const { error } = await supabase
+          .from("tenants")
+          .update({
+            subscription_status: subscription.status,
+            current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
+            current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+            cancel_at_period_end: subscription.cancel_at_period_end,
+          })
+          .eq("id", tenantId);
 
-        // If subscription moved to past_due, update tenant
-        if (mappedStatus === "past_due") {
-          const subRes = await fetch(
-            `${supabaseUrl}/rest/v1/subscriptions?stripe_subscription_id=eq.${subscriptionId}&select=tenant_id`,
-            {
-              headers: {
-                Authorization: `Bearer ${serviceRoleKey}`,
-                apikey: serviceRoleKey,
-              },
-            }
-          );
-          const subs = await subRes.json();
-          if (subs?.[0]?.tenant_id) {
-            await fetch(`${supabaseUrl}/rest/v1/rpc/tenants_handle_payment_failure`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${serviceRoleKey}`,
-                apikey: serviceRoleKey,
-                "Content-Type": "application/json",
-                Prefer: "return=minimal",
-              },
-              body: JSON.stringify({ p_tenant_id: subs[0].tenant_id }),
-            });
-          }
+        if (error) {
+          console.error("[stripe-webhook] Failed to update subscription:", error);
         }
 
-        console.log(`[stripe-webhook] Subscription ${subscriptionId} updated: ${mappedStatus}`);
+        console.info("[stripe-webhook] Subscription updated for tenant:", tenantId);
         break;
       }
 
       case "customer.subscription.deleted": {
-        const subscriptionId = eventData.id as string;
+        const subscription = event.data.object;
+        const tenantId = subscription.metadata?.atlas_tenant_id;
 
-        // Find the subscription to get tenant_id
-        const subRes = await fetch(
-          `${supabaseUrl}/rest/v1/subscriptions?stripe_subscription_id=eq.${subscriptionId}&select=tenant_id`,
-          {
-            headers: {
-              Authorization: `Bearer ${serviceRoleKey}`,
-              apikey: serviceRoleKey,
-            },
-          }
-        );
-        const subs = await subRes.json();
-
-        // Mark subscription as canceled
-        await fetch(`${supabaseUrl}/rest/v1/subscriptions?stripe_subscription_id=eq.${subscriptionId}`, {
-          method: "PATCH",
-          headers: {
-            Authorization: `Bearer ${serviceRoleKey}`,
-            apikey: serviceRoleKey,
-            "Content-Type": "application/json",
-            Prefer: "return=minimal",
-          },
-          body: JSON.stringify({
-            status: "canceled",
-            updated_at: new Date().toISOString(),
-          }),
-        });
-
-        // Update tenant billing state
-        if (subs?.[0]?.tenant_id) {
-          await fetch(`${supabaseUrl}/rest/v1/rpc/tenants_handle_subscription_cancelled`, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${serviceRoleKey}`,
-              apikey: serviceRoleKey,
-              "Content-Type": "application/json",
-              Prefer: "return=minimal",
-            },
-            body: JSON.stringify({ p_tenant_id: subs[0].tenant_id }),
-          });
+        if (!tenantId) {
+          console.error("[stripe-webhook] No tenant_id in subscription metadata");
+          break;
         }
 
-        console.log(`[stripe-webhook] Subscription ${subscriptionId} canceled`);
+        // Handle subscription cancellation
+        const { error } = await supabase
+          .from("tenants")
+          .update({
+            subscription_status: "cancelled",
+            stripe_subscription_id: null,
+          })
+          .eq("id", tenantId);
+
+        if (error) {
+          console.error("[stripe-webhook] Failed to cancel subscription:", error);
+        }
+
+        // Deactivate tenant
+        await supabase.rpc("tenants_handle_subscription_cancelled", {
+          p_tenant_id: tenantId,
+        });
+
+        console.info("[stripe-webhook] Subscription cancelled for tenant:", tenantId);
+        break;
+      }
+
+      case "invoice.paid": {
+        const invoice = event.data.object;
+        const tenantId = invoice.metadata?.atlas_tenant_id;
+
+        if (tenantId) {
+          // Update payment status
+          await supabase
+            .from("tenants")
+            .update({
+              last_payment_date: new Date().toISOString(),
+              payment_status: "paid",
+            })
+            .eq("id", tenantId);
+        }
+
+        console.info("[stripe-webhook] Invoice paid for tenant:", tenantId);
         break;
       }
 
       case "invoice.payment_failed": {
-        const customerId = eventData.customer as string;
-        const subscriptionId = eventData.subscription as string;
+        const invoice = event.data.object;
+        const tenantId = invoice.metadata?.atlas_tenant_id;
 
-        if (subscriptionId) {
-          // Find subscription to get tenant_id
-          const subRes = await fetch(
-            `${supabaseUrl}/rest/v1/subscriptions?stripe_subscription_id=eq.${subscriptionId}&select=tenant_id`,
-            {
-              headers: {
-                Authorization: `Bearer ${serviceRoleKey}`,
-                apikey: serviceRoleKey,
-              },
-            }
-          );
-          const subs = await subRes.json();
+        if (tenantId) {
+          // Handle payment failure
+          const { error } = await supabase
+            .from("tenants")
+            .update({
+              payment_status: "failed",
+              last_payment_error: invoice.last_finalization_error?.message || "Payment failed",
+            })
+            .eq("id", tenantId);
 
-          // Mark subscription as past_due
-          await fetch(`${supabaseUrl}/rest/v1/subscriptions?stripe_subscription_id=eq.${subscriptionId}`, {
-            method: "PATCH",
-            headers: {
-              Authorization: `Bearer ${serviceRoleKey}`,
-              apikey: serviceRoleKey,
-              "Content-Type": "application/json",
-              Prefer: "return=minimal",
-            },
-            body: JSON.stringify({
-              status: "past_due",
-              updated_at: new Date().toISOString(),
-            }),
-          });
-
-          // Update tenant billing state
-          if (subs?.[0]?.tenant_id) {
-            await fetch(`${supabaseUrl}/rest/v1/rpc/tenants_handle_payment_failure`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${serviceRoleKey}`,
-                apikey: serviceRoleKey,
-                "Content-Type": "application/json",
-                Prefer: "return=minimal",
-              },
-              body: JSON.stringify({ p_tenant_id: subs[0].tenant_id }),
-            });
+          if (error) {
+            console.error("[stripe-webhook] Failed to update payment status:", error);
           }
+
+          // Handle payment failure in business logic
+          await supabase.rpc("tenants_handle_payment_failure", {
+            p_tenant_id: tenantId,
+          });
         }
 
-        console.log(`[stripe-webhook] Payment failed for customer ${customerId}`);
+        console.info("[stripe-webhook] Invoice payment failed for tenant:", tenantId);
         break;
       }
 
       default:
-        console.log(`[stripe-webhook] Unhandled event type: ${eventType}`);
+        console.info("[stripe-webhook] Unhandled event type:", event.type);
     }
 
-    return respond(corsH, 200, { received: true });
+    // 6. Return success (Stripe requires 200 response)
+    return new Response(
+      JSON.stringify({ received: true }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
 
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error("[stripe-webhook] Error:", msg);
-    return respond(corsH, 500, { error: "Webhook processing failed" });
+  } catch (error) {
+    console.error("[stripe-webhook] Error:", error);
+    // Still return 200 to prevent Stripe retries for processing errors
+    return new Response(
+      JSON.stringify({ received: true }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   }
 });

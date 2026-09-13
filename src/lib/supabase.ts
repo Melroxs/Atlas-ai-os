@@ -70,6 +70,13 @@ const SUPABASE_ANON_KEY = isJwt(RAW_ANON_KEY) ? RAW_ANON_KEY : FALLBACK_ANON_KEY
 export const resolvedSupabaseUrl: string = SUPABASE_URL as string;
 
 /**
+ * The resolved Supabase anon key (public by design — ships in the browser
+ * bundle; row-level security gates all data). Exported so tests and tools can
+ * construct independent clients (the default client is a singleton).
+ */
+export const resolvedSupabaseAnonKey: string = SUPABASE_ANON_KEY as string;
+
+/**
  * True when the browser-side Supabase config keys are present. The Auth page
  * shows an honest banner when this is false instead of firing doomed calls.
  */

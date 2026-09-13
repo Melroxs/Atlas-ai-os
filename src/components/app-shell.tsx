@@ -1,8 +1,9 @@
 import { AtlasAssistant } from "@/components/atlas-assistant";
 import { useVoiceSession } from "@/components/voice-session";
+import { AtlasVoiceControl } from "@/components/atlas-voice-control";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
-import { canAccessPilotAdmin, canAccessCRM, canAccessMail, canAccessUserAdmin, isInternalRole } from "@/lib/auth/access-gate";
+import { canAccessPilotAdmin, canAccessCRM, canAccessMail, canAccessUserAdmin } from "@/lib/auth/access-gate";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/atlas-ui";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -36,32 +37,37 @@ import type { LucideIcon } from "lucide-react";
 import {
   Activity,
   Brain,
+  Briefcase,
   Building2,
   Cable,
   Calendar,
+  ClipboardCheck,
   Database,
+  FileSearch,
+  Handshake,
   Landmark,
   LayoutGrid,
   Layers,
   Lightbulb,
   LogOut,
+  Mail,
   MessageSquareText,
   Radar,
+  Scale,
   ScrollText,
-  Server,
   Settings2,
+  ShieldCheck,
   Sparkles,
   Target,
   TrendingUp,
   Users,
   Workflow,
   Zap,
-  Mail,
   FileText,
-  Send,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink, Navigate, useLocation, useNavigate } from "react-router";
+import { canAccessSuperAdmin } from "@/lib/auth/access-gate";
 
 /**
  * Global ambient voice indicator — a small pill in the bottom-left corner
@@ -145,43 +151,51 @@ const NAV_SECTIONS: Array<{
   }>;
 }> = [
   {
-    label: "Operations",
+    label: "Command",
+    items: [{ to: "/dashboard", label: "Command Center", icon: LayoutGrid }],
+  },
+  {
+    label: "Workforce",
     items: [
-      { to: "/dashboard", label: "Atlas Home", icon: LayoutGrid },
-      {
-        to: "/dashboard/revenue-recovery",
-        label: "Revenue Recovery",
-        icon: TrendingUp,
-      },
-      { to: "/dashboard/workflows", label: "Workflows", icon: Workflow },
+      { to: "/dashboard/workers", label: "Workers", icon: Sparkles },
+      { to: "/dashboard/workers/claims", label: "Claims Manager", icon: Radar },
+      { to: "/dashboard/workers/supplements", label: "Supplement Specialist", icon: FileSearch },
+      { to: "/dashboard/workers/recovery", label: "Revenue Recovery", icon: TrendingUp },
+      { to: "/dashboard/workers/projects", label: "Project Manager", icon: ClipboardCheck },
+      { to: "/dashboard/workers/estimator", label: "Estimator", icon: Scale },
+      { to: "/dashboard/workers/customers", label: "Customer Success", icon: Handshake },
+    ],
+  },
+  {
+    label: "Work",
+    items: [
+      { to: "/dashboard/work-queue", label: "Work Queue", icon: Briefcase },
+      { to: "/dashboard/governance", label: "Governance", icon: ShieldCheck },
     ],
   },
   {
     label: "Intelligence",
     items: [
-      { to: "/dashboard/intelligence", label: "Atlas Intelligence", icon: Layers },
-      { to: "/dashboard/brain", label: "Business Brain", icon: Brain },
-      { to: "/dashboard/knowledge", label: "Knowledge", icon: Database },
-      { to: "/dashboard/events", label: "Events", icon: Activity },
-    ],
-  },
-  {
-    label: "Atlas",
-    items: [
       { to: "/dashboard/ask", label: "Ask Atlas", icon: MessageSquareText },
-      { to: "/dashboard/actions", label: "Actions", icon: Zap },
+      { to: "/dashboard/knowledge", label: "Knowledge & Ingestion", icon: Database },
+      { to: "/dashboard/regulatory", label: "Regulatory", icon: Landmark },
+      { to: "/dashboard/intelligence", label: "Intelligence Packs", icon: Layers },
+      { to: "/dashboard/brain", label: "Business Brain", icon: Brain },
       {
         to: "/dashboard/recommendations",
         label: "Recommendations",
         icon: Target,
         badge: "open",
       },
-      { to: "/dashboard/audit", label: "Activity / Audit", icon: ScrollText },
     ],
   },
   {
-    label: "Workspace",
+    label: "System",
     items: [
+      { to: "/dashboard/workflows", label: "Workflows", icon: Workflow },
+      { to: "/dashboard/events", label: "Events", icon: Activity },
+      { to: "/dashboard/actions", label: "Actions & Tools", icon: Zap },
+      { to: "/dashboard/audit", label: "Activity / Audit", icon: ScrollText },
       { to: "/dashboard/connections", label: "Connections", icon: Cable },
       { to: "/dashboard/team", label: "Team", icon: Users },
       { to: "/dashboard/settings", label: "Settings", icon: Settings2 },
@@ -191,6 +205,8 @@ const NAV_SECTIONS: Array<{
     label: "Admin",
     items: [
       { to: "/dashboard/users", label: "Users & Access", icon: Users },
+      { to: "/dashboard/orgs", label: "Organizations", icon: Building2 },
+      { to: "/dashboard/regulatory", label: "Regulatory Intelligence", icon: ShieldCheck },
     ],
   },
   {
@@ -201,14 +217,12 @@ const NAV_SECTIONS: Array<{
   },
   {
     label: "Mail",
-    items: [
-      { to: "/dashboard/mail", label: "Atlas Mail", icon: Mail },
-    ],
+    items: [{ to: "/dashboard/mail", label: "Atlas Mail", icon: Mail }],
   },
   {
     label: "Pilot",
     items: [
-      { to: "/dashboard/pilot", label: "Command Center", icon: Radar },
+      { to: "/dashboard/pilot", label: "Pilot Home", icon: Radar },
       { to: "/dashboard/pilot/applications", label: "Applications", icon: FileText },
       { to: "/dashboard/pilot/crm", label: "CRM", icon: Users },
       { to: "/dashboard/pilot/outreach", label: "Outreach", icon: Send },
@@ -227,15 +241,25 @@ const NAV_SECTIONS: Array<{
 ];
 
 const PAGE_TITLES: Record<string, string> = {
-  "/dashboard": "Atlas Home",
+  "/dashboard": "Command Center",
+  "/dashboard/workers": "Workers",
+  "/dashboard/workers/claims": "Claims Manager",
+  "/dashboard/workers/supplements": "Supplement Specialist",
+  "/dashboard/workers/recovery": "Revenue Recovery Coordinator",
+  "/dashboard/workers/projects": "Project Manager",
+  "/dashboard/workers/estimator": "Estimator",
+  "/dashboard/workers/customers": "Customer Success Manager",
+  "/dashboard/governance": "Governance",
+  "/dashboard/regulatory": "Regulatory Intelligence",
   "/dashboard/ask": "Ask Atlas",
-  "/dashboard/knowledge": "Knowledge Base",
-  "/dashboard/intelligence": "Intelligence Model",
+  "/dashboard/knowledge": "Knowledge & Ingestion",
+  "/dashboard/intelligence": "Intelligence Packs",
   "/dashboard/brain": "Business Brain",
   "/dashboard/recommendations": "Recommendation Center",
   "/dashboard/connections": "Connections",
   "/dashboard/actions": "Actions & Tools",
   "/dashboard/events": "Events",
+  "/dashboard/work-queue": "Work Queue",
   "/dashboard/workflows": "Workflows",
   "/dashboard/revenue-recovery": "Revenue Recovery",
   "/dashboard/revenue-recovery/:id": "Claim Package",
@@ -249,7 +273,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/dashboard/pilot-intelligence/outcomes": "Pilot Outcomes",
   "/dashboard/mail": "Atlas Mail",
   "/dashboard/mail/settings": "Mail Settings",
-  "/dashboard/pilot": "Pilot Command Center",
+  "/dashboard/pilot": "Pilot Home",
   "/dashboard/pilot/applications": "Pilot Applications",
   "/dashboard/pilot/crm": "CRM",
   "/dashboard/pilot/outreach": "Outreach Center",
@@ -392,14 +416,19 @@ export function AppShell({ children }: { children: ReactNode }) {
               <SidebarGroupLabel>{section.label}</SidebarGroupLabel>
               <SidebarMenu>
                 {section.items.map((item) => {
+                  // Organizations is strictly Super Admin — hide it for
+                  // atlas_admin even though the Admin section is visible.
+                  if (item.to === "/dashboard/orgs" && !canAccessSuperAdmin(role)) {
+                    return null;
+                  }
                   const Icon = item.icon;
                   return (
                     <SidebarMenuItem key={item.to}>
                       <SidebarMenuButton
                         asChild
                         isActive={
-                          item.to === "/dashboard"
-                            ? location.pathname === "/dashboard"
+                          item.to === "/dashboard" || item.to === "/dashboard/workers"
+                            ? location.pathname === item.to
                             : location.pathname.startsWith(item.to)
                         }
                         tooltip={item.label}
@@ -523,6 +552,11 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </main>
       </SidebarInset>
+
+      {/* Atlas Voice — global access to the same Atlas intelligence by voice.
+          Additive: the existing navigation, sidebar and assistant are
+          untouched. */}
+      <AtlasVoiceControl />
 
       {/* Global ambient voice indicator — visible when ambient listening is
           active, even when the floating panel is closed. */}

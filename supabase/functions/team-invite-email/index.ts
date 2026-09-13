@@ -17,12 +17,13 @@
 //
 // Deploy:
 //   supabase functions deploy team-invite-email
-// Required secrets (already used by outreach-send):
-//   RESEND_API_KEY, RESEND_SENDER_EMAIL, RESEND_SENDER_NAME
+// Required secrets (already used by the shared email module):
+//   RESEND_API_KEY
 // Optional:
-//   SITE_URL (defaults to https://atlas-ai-os.com) — used as the link target.
+//   ATLAS_EMAIL_FROM / ATLAS_EMAIL_REPLY_TO / ATLAS_APP_URL / SITE_URL
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+import { sendAtlasEmail, atlasSiteUrl } from "../_shared/email.ts";
 
 const ATLAS_ALLOWED_ORIGINS = [
   "https://atlas-ai-os.com",
@@ -50,8 +51,6 @@ function fail(message: string, detail?: string) {
   return { ok: false, error: message };
 }
 
-const RESEND_API = "https://api.resend.com/emails";
-
 serve(async (req: Request) => {
   const corsH = corsHeaders(req);
   if (req.method === "OPTIONS") {
@@ -66,19 +65,15 @@ serve(async (req: Request) => {
 
   try {
     // ── 1. Secrets ────────────────────────────────────────────────────────
-    const apiKey = Deno.env.get("RESEND_API_KEY");
-    if (!apiKey) {
+    // The shared email module reads RESEND_API_KEY from Edge Function secrets
+    // and the sender identity from ATLAS_EMAIL_FROM. Failing closed here keeps
+    // the error message clear when the service is not configured.
+    if (!Deno.env.get("RESEND_API_KEY")) {
       return respond(corsH, 500, fail(
         "Invitation email service is not configured. Ask your administrator to set up email delivery.",
         "RESEND_API_KEY missing",
       ));
     }
-    const senderEmail =
-      Deno.env.get("RESEND_SENDER_EMAIL") || "pilot@atlas-ai-os.com";
-    const senderName =
-      Deno.env.get("RESEND_SENDER_NAME") || "Atlas";
-    const siteUrl =
-      Deno.env.get("SITE_URL") || "https://atlas-ai-os.com";
 
     // ── 2. Parse request ──────────────────────────────────────────────────
     const authHeader = req.headers.get("Authorization");
@@ -179,67 +174,32 @@ serve(async (req: Request) => {
       if (p?.name) inviterName = p.name;
     } catch { /* best-effort naming */ }
 
-    // ── 5. Send via Resend ────────────────────────────────────────────────
-    const roleLabel = String(invite.role ?? "member");
-    const html = `
-      <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
-        <h2 style="margin:0 0 12px;color:#0f172a;">You've been invited to ${escapeHtml(tenantName)} on Atlas</h2>
-        <p style="color:#334155;line-height:1.6;margin:0 0 16px;">
-          ${escapeHtml(inviterName || "A teammate")} has invited you to collaborate in
-          <strong>${escapeHtml(tenantName)}</strong> as <strong>${escapeHtml(roleLabel)}</strong>.
-        </p>
-        <p style="color:#334155;line-height:1.6;margin:0 0 24px;">
-          Sign in to Atlas (or create your account) using <strong>${escapeHtml(email)}</strong> and this
-          workspace will be waiting for you automatically.
-        </p>
-        <a href="${siteUrl}/auth?returnTo=%2Fdashboard"
-           style="display:inline-block;background:#0d9488;color:#ffffff;text-decoration:none;
-                  padding:10px 20px;border-radius:8px;font-weight:600;">Open Atlas</a>
-        <p style="color:#94a3b8;font-size:12px;margin-top:24px;">
-          If you weren't expecting this invitation you can safely ignore this email.
-        </p>
-      </div>`;
-
-    const res = await fetch(RESEND_API, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
+    // ── 5. Send via the centralized Atlas email system ────────────────────
+    // One branded invitation template, one Resend path, safe error handling.
+    const emailResult = await sendAtlasEmail({
+      to: email,
+      template: "invitation",
+      vars: {
+        full_name: email.split("@")[0],
+        inviter_name: inviterName || "a teammate",
+        organization_name: tenantName,
+        invite_url: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
       },
-      body: JSON.stringify({
-        from: `${senderName} <${senderEmail}>`,
-        to: [email],
-        subject: `You've been invited to ${tenantName} on Atlas`,
-        html,
-      }),
     });
 
-    const resBody = await res.json().catch(() => null);
-
-    if (!res.ok) {
-      // Map provider failures honestly — never leak the API key.
-      const providerError =
-        resBody && typeof resBody === "object" && typeof resBody.message === "string"
-          ? resBody.message.slice(0, 200)
-          : `HTTP ${res.status}`;
-      console.error(`[team-invite-email] Resend rejected: HTTP ${res.status} ${providerError}`);
-      const friendly =
-        res.status === 401 || res.status === 403
-          ? "Email service authentication failed. Contact your administrator."
-          : res.status === 422
-            ? "The email service rejected this recipient or sender configuration."
-            : "The email service could not be reached. Try again shortly.";
-      return respond(corsH, 502, { ok: false, error: friendly });
+    if (!emailResult.ok) {
+      return respond(corsH, 502, { ok: false, error: emailResult.error });
     }
 
     // Provider accepted the message. Delivery to the inbox is not guaranteed
     // from acceptance alone — report acceptance honestly.
-    const messageId = resBody && typeof resBody === "object" ? resBody.id ?? null : null;
-    console.info(`[team-invite-email] accepted by provider for ${maskEmail(email)} id=${messageId ?? "?"}`);
+    console.info(
+      `[team-invite-email] invitation accepted by provider for ${maskEmail(email)} id=${emailResult.messageId ?? "?"}`,
+    );
 
     return respond(corsH, 200, {
       ok: true,
-      message_id: messageId,
+      message_id: emailResult.messageId,
       message: `Invitation email sent to ${email}`,
     });
   } catch (err) {
@@ -255,12 +215,6 @@ function respond(corsH: Record<string, string>, status: number, body: unknown) {
     status,
     headers: { ...corsH, "Content-Type": "application/json" },
   });
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c,
-  );
 }
 
 /** Never log full recipient addresses. */

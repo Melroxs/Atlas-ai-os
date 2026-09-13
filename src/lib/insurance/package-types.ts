@@ -1,3 +1,5 @@
+import { normalizeEvidence } from "@/lib/insurance/evidence";
+
 // ---------------------------------------------------------------------------
 // Atlas Claim / Supplement Package — types and builder.
 //
@@ -456,7 +458,7 @@ export function buildPackageModel(input: PackageBuildInput): PackageModel {
       description: f.description ?? "",
       confidence: typeof f.confidence === "number" ? f.confidence : 0.5,
       estimatedAmount: typeof f.estimatedAmount === "number" ? f.estimatedAmount : null,
-      evidence: Array.isArray(f.evidence) ? f.evidence : [],
+      evidence: normalizeEvidence(f.evidence),
       limitation: f.limitation ?? "No limitation recorded.",
       recommendedNextStep: f.recommendedNextStep ?? "Review manually.",
     }));

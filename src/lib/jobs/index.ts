@@ -106,6 +106,15 @@ export {
   countPendingReviews,
 } from "./review-rpc";
 
+// Claim Review Handler
+export {
+  CLAIM_REVIEW_JOB_TYPES,
+  handleClaimReviewJob,
+  handleSupplementPrepJob,
+  handleDailyScanJob,
+} from "./claim-review-handler";
+export { registerClaimReviewHandlers } from "./claim-review-registration";
+
 // Scalability (Milestone 9)
 export {
   getBackpressureLevel,

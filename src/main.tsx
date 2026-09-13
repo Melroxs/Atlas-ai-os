@@ -53,6 +53,7 @@ const PilotApplications = lazy(() => import("./pages/pilot/PilotApplications.tsx
 const PilotCRM = lazy(() => import("./pages/pilot/PilotCRM.tsx"));
 const PilotOutreach = lazy(() => import("./pages/pilot/PilotOutreach.tsx"));
 const UsersAccess = lazy(() => import("./pages/UsersAccess.tsx"));
+const PlatformOps = lazy(() => import("./pages/PlatformOps.tsx"));
 
 /** Protected section: auth gate + workspace shell.
  * VoiceSessionProvider is mounted OUTSIDE the router (see render tree) so the
@@ -445,6 +446,16 @@ createRoot(document.getElementById("root")!).render(
                   <ProtectedLayout>
                     <RequireInternalAuth section="users">
                       <UsersAccess />
+                    </RequireInternalAuth>
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/platform"
+                element={
+                  <ProtectedLayout>
+                    <RequireInternalAuth section="platform">
+                      <PlatformOps />
                     </RequireInternalAuth>
                   </ProtectedLayout>
                 }

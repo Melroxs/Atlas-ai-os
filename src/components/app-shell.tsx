@@ -48,6 +48,7 @@ import {
   MessageSquareText,
   Radar,
   ScrollText,
+  Server,
   Settings2,
   Sparkles,
   Target,
@@ -193,6 +194,12 @@ const NAV_SECTIONS: Array<{
     ],
   },
   {
+    label: "Platform",
+    items: [
+      { to: "/dashboard/platform", label: "Platform Operations", icon: Server },
+    ],
+  },
+  {
     label: "Mail",
     items: [
       { to: "/dashboard/mail", label: "Atlas Mail", icon: Mail },
@@ -247,6 +254,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/dashboard/pilot/crm": "CRM",
   "/dashboard/pilot/outreach": "Outreach Center",
   "/dashboard/users": "Users & Access",
+  "/dashboard/platform": "Platform Operations",
 };
 
 function initials(name?: string | null, email?: string | null): string {
@@ -372,6 +380,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           {NAV_SECTIONS.filter((section) => {
             // Filter nav sections by role
             if (section.label === "Admin") return canAccessUserAdmin(role);
+            if (section.label === "Platform") return isInternalRole(role);
             if (section.label === "Mail") return canAccessMail(role);
             if (section.label === "Pilot") return canAccessPilotAdmin(role);
             if (section.label === "Pilot Intelligence") return canAccessPilotAdmin(role);

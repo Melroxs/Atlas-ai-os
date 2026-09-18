@@ -458,6 +458,13 @@ const GUARD_CALLS = [
   "governance_resolve_tenant",
   "atlas_can_access_tenant",
   "atlas_assert_tenant_access",
+  // Trusted-server / internal-operator primitives added by the 2026-09
+  // hardening migration (20260918). A function that calls one of these in its
+  // body authorizes the caller itself.
+  "atlas_is_trusted_server",
+  "atlas_assert_trusted_server",
+  "atlas_is_internal_admin",
+  "atlas_assert_internal_admin",
 ];
 
 /** Latest definition of every public function across the migration chain. */
@@ -513,10 +520,12 @@ function authenticatedReachableUnguarded(): string[] {
 }
 
 /**
- * The audited backlog. Hardening a function REMOVES its entry; a new entry here
- * means a new authorization hole was introduced.
+ * The 16 functions the 2026-09 audit recorded as reachable by `authenticated`
+ * with no in-function authorization check. Kept as a historical record: the
+ * ratchet below proves none of them is unguarded any more — each has either
+ * gained an in-body guard or been moved into the service-only set.
  */
-const AUDITED_UNGUARDED_BASELINE = [
+const HISTORICALLY_UNGUARDED = [
   "ensure_profile",
   "handle_new_user",
   "jobs_awaiting_review",
@@ -535,25 +544,54 @@ const AUDITED_UNGUARDED_BASELINE = [
   "org_seat_limit",
 ];
 
+/**
+ * Ratchet allowlist. Intentionally EMPTY: the audited backlog is fully closed,
+ * so ANY unguarded, authenticated-reachable SECURITY DEFINER function is now a
+ * regression. Add an entry only together with a written reason.
+ */
+const DOCUMENTED_ALLOWLIST: Record<string, string> = {};
+
+/** Unguarded, authenticated-reachable SECURITY DEFINER functions with no
+ *  documented exception. Must stay empty. */
+function unguardedRegressions(): string[] {
+  return authenticatedReachableUnguarded().filter(
+    (n) => !(n in DOCUMENTED_ALLOWLIST),
+  );
+}
+
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((d) =>
     d.isDirectory() ? walk(resolve(dir, d.name)) : [resolve(dir, d.name)],
   );
 }
 
-describe("jobs/auth authorization boundary (audit baseline)", () => {
+describe("jobs/auth authorization boundary (ratchet)", () => {
   it("introduces no NEW unguarded authenticated-reachable SECURITY DEFINER function", () => {
-    const baseline = new Set(AUDITED_UNGUARDED_BASELINE);
-    const regressions = authenticatedReachableUnguarded().filter((n) => !baseline.has(n));
-    expect(regressions).toEqual([]);
+    expect(unguardedRegressions()).toEqual([]);
   });
 
-  it("still finds the audited backlog, so the check above is not vacuous", () => {
-    // Hardening shrinks this set; if the assertion fails because it is now
-    // EMPTY or SHORTER, that is progress — shrink AUDITED_UNGUARDED_BASELINE.
-    expect(authenticatedReachableUnguarded().length).toBeGreaterThan(0);
-    expect(AUDITED_UNGUARDED_BASELINE).toContain("jobs_stats");
-    expect(AUDITED_UNGUARDED_BASELINE).toContain("jobs_dequeue");
+  it("keeps the ratchet honest — the scanner still detects real shapes", () => {
+    // the parser must have walked the whole migration chain...
+    expect(FUNCS.size).toBeGreaterThan(50);
+    // ...SECURITY DEFINER detection must work...
+    expect(isDefiner("jobs_dequeue")).toBe(true);
+    expect(isDefiner("jobs_list_jobs")).toBe(true);
+    // ...the guard detector must recognise an in-body tenant authorization...
+    expect(guardsItself("jobs_create_job")).toBe(true);
+    expect(guardsItself("jobs_list_jobs")).toBe(true);
+    // ...the service-only allowlist must actually exclude functions...
+    expect(SERVICE_ONLY.has("jobs_dequeue")).toBe(true);
+    expect(SERVICE_ONLY.has("jobs_awaiting_review")).toBe(true);
+    expect(SERVICE_ONLY.has("handle_new_user")).toBe(true);
+    // ...and the anon allowlist must be non-empty.
+    expect(ANON_ALLOWED.size).toBeGreaterThan(0);
+  });
+
+  it("has closed every function the 2026-09 audit flagged as unguarded", () => {
+    const still = authenticatedReachableUnguarded().filter((n) =>
+      HISTORICALLY_UNGUARDED.includes(n),
+    );
+    expect(still).toEqual([]);
   });
 
   it("records that jobs_stats aggregates across EVERY tenant", () => {
@@ -607,5 +645,201 @@ describe("jobs/auth authorization boundary (audit baseline)", () => {
       /from\s+"@\/lib\/platform/.test(readFileSync(f, "utf8")),
     );
     expect(importers).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Job authorization boundary (2026-09 hardening)
+//
+// The job RPCs are SECURITY DEFINER, so the tenant RLS policies on atlas_jobs
+// never apply to them. These tests pin the boundary the functions now enforce
+// themselves, read from the SQL that will ship.
+// ---------------------------------------------------------------------------
+
+const WORKER_ONLY_JOBS = [
+  "jobs_dequeue",
+  "jobs_complete_job",
+  "jobs_complete_step",
+  "jobs_fail_job",
+  "jobs_fail_step",
+  "jobs_retry_step",
+  "jobs_cancel_job",
+  "jobs_unlock_stuck",
+  "jobs_awaiting_review",
+];
+
+const TENANT_GUARDED_JOBS = [
+  "jobs_create_job",
+  "jobs_create_step",
+  "jobs_get_job",
+  "jobs_list_jobs",
+  "jobs_get_events",
+  "jobs_resume_from_review",
+];
+
+describe("job authorization boundary", () => {
+  it("jobs_create_job derives identity from auth.uid(), never from p_user_id alone", () => {
+    const body = fnBody(HARDENING_SQL, "jobs_create_job");
+    expect(body).toMatch(/v_user := auth\.uid\(\)/);
+    // p_user_id is only reached behind the trusted-server branch
+    expect(body).toMatch(/atlas_is_trusted_server\(\) then\s*\n\s*v_user := p_user_id/);
+    // the caller-supplied tenant id is the target, never the grant
+    expect(body).toMatch(/atlas_assert_tenant_access\(p_tenant_id\)/);
+    expect(body).not.toMatch(/m\."tenantId" = p_tenant_id/);
+  });
+
+  it("jobs_create_step authorises through the owning job's tenant", () => {
+    const body = fnBody(HARDENING_SQL, "jobs_create_step");
+    expect(body).toMatch(/select j\.tenant_id into v_tenant\s*\n\s*from public\.atlas_jobs/);
+    expect(body).toMatch(/atlas_assert_tenant_access\(v_tenant\)/);
+  });
+
+  it("jobs_get_job authorises before reading tenant-owned rows", () => {
+    const body = fnBody(HARDENING_SQL, "jobs_get_job");
+    expect(body).toMatch(/atlas_assert_tenant_access\(v_tenant\)/);
+    expect(body.indexOf("atlas_assert_tenant_access")).toBeGreaterThan(-1);
+    expect(body.indexOf("atlas_assert_tenant_access")).toBeLessThan(
+      body.indexOf("to_jsonb(j.*)"),
+    );
+  });
+
+  it.each(WORKER_ONLY_JOBS)(
+    "%s asserts a trusted server before any work",
+    (name) => {
+      expect(fnBody(HARDENING_SQL, name)).toMatch(/atlas_assert_trusted_server\(\)/);
+    },
+  );
+
+  it.each(WORKER_ONLY_JOBS)("%s is service-role only", (name) => {
+    expect(SERVICE_ONLY.has(name)).toBe(true);
+    expect(ANON_ALLOWED.has(name)).toBe(false);
+    expect(guardsItself(name)).toBe(true);
+  });
+
+  it("jobs_dequeue validates trust before it touches the queue", () => {
+    const body = fnBody(HARDENING_SQL, "jobs_dequeue");
+    const assertAt = body.indexOf("atlas_assert_trusted_server");
+    const drainAt = body.indexOf("from public.atlas_jobs");
+    expect(assertAt).toBeGreaterThan(-1);
+    expect(drainAt).toBeGreaterThan(-1);
+    expect(assertAt).toBeLessThan(drainAt);
+  });
+
+  it("jobs_stats is INTERNAL_ONLY and refuses ordinary tenant users", () => {
+    const body = fnBody(HARDENING_SQL, "jobs_stats");
+    expect(body).toMatch(/atlas_is_internal_admin\(\)/);
+    expect(body).toMatch(/raise exception 'Access denied: internal operator required'/);
+    // still an authenticated RPC (internal operators use it) but guarded
+    expect(SERVICE_ONLY.has("jobs_stats")).toBe(false);
+    expect(guardsItself("jobs_stats")).toBe(true);
+    expect(body.indexOf("atlas_is_internal_admin")).toBeLessThan(
+      body.indexOf("jsonb_build_object"),
+    );
+  });
+
+  it("the internal-operator guard matches the app's internal role model", () => {
+    const body = fnBody(HARDENING_SQL, "atlas_is_internal_admin");
+    expect(body).toMatch(/is_super_admin\(\)/);
+    expect(body).toMatch(/is_atlas_admin\(\)/);
+    expect(body).toMatch(/auth\.uid\(\) is not null/);
+  });
+
+  it.each(TENANT_GUARDED_JOBS)(
+    "%s stays reachable by authenticated members but is guarded",
+    (name) => {
+      expect(SERVICE_ONLY.has(name)).toBe(false);
+      expect(ANON_ALLOWED.has(name)).toBe(false);
+      expect(guardsItself(name)).toBe(true);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 9. Regulatory schema reconciliation (Phase 6)
+//
+// Production carries nine `atlas_regulatory_*` tables (verified by
+// supabase/verification/20260906_atlas_regulatory_verification.sql). The
+// repository draft 20260906_atlas_regulatory_intelligence.sql instead creates
+// five unprefixed `regulatory_*` tables that exist nowhere in production, and
+// the deletion path referenced one of them. These tests pin the reconciliation.
+// ---------------------------------------------------------------------------
+
+const REG_RECON = "20260919_atlas_regulatory_schema_reconciliation.sql";
+
+const CANONICAL_REG_TABLES = [
+  "atlas_regulatory_jurisdictions",
+  "atlas_regulatory_sources",
+  "atlas_regulatory_source_versions",
+  "atlas_regulatory_propositions",
+  "atlas_regulatory_proposition_versions",
+  "atlas_regulatory_contradictions",
+  "atlas_regulatory_review_queue",
+  "atlas_regulatory_coverage",
+  "atlas_regulatory_acquisition_jobs",
+];
+
+const ORPHAN_REG_TABLES = [
+  "regulatory_jurisdictions",
+  "regulatory_sources",
+  "regulatory_propositions",
+  "regulatory_contradictions",
+  "regulatory_acquisition_jobs",
+];
+
+describe("regulatory schema reconciliation", () => {
+  it("admin_prepare_user_deletion no longer references the obsolete unprefixed table", () => {
+    const sql = stripComments(read("20260909_atlas_complimentary_access.sql"));
+    const at = sql.indexOf("function public.admin_prepare_user_deletion");
+    expect(at).toBeGreaterThan(-1);
+    const body = sql.slice(at);
+    // \b does NOT match inside atlas_regulatory_contradictions (the preceding
+    // underscore is a word character), so this fires only on the orphan.
+    expect(body).not.toMatch(/\bregulatory_contradictions\b/);
+    expect(body).toMatch(/atlas_regulatory_contradictions/);
+  });
+
+  it("the forward reconciliation migration drops the orphan unprefixed tables", () => {
+    const sql = stripComments(read(REG_RECON));
+    for (const t of ORPHAN_REG_TABLES) {
+      expect(sql).toMatch(
+        new RegExp(String.raw`drop table if exists public\.` + t + String.raw`\b`, "i"),
+      );
+    }
+  });
+
+  it("the reconciliation migration creates all nine canonical tables with RLS", () => {
+    const sql = read(REG_RECON);
+    for (const t of CANONICAL_REG_TABLES) {
+      expect(sql).toMatch(
+        new RegExp(String.raw`create table if not exists public\.` + t + String.raw`\b`, "i"),
+      );
+      expect(sql).toMatch(
+        new RegExp(String.raw`alter table public\.` + t + String.raw`\s+enable row level security`, "i"),
+      );
+    }
+    expect(sql).toMatch(/policy[\s\S]*for select to authenticated/i);
+  });
+
+  it("does not falsely claim the production migration version was applied", () => {
+    // 20260906192230 is the PRODUCTION version key. The repository must not
+    // make its draft look applied there by adopting that version.
+    expect(migrationFiles().some((f) => f.startsWith("20260906192230"))).toBe(false);
+    // the draft stays present under its own (different) version key
+    expect(migrationFiles()).toContain(
+      "20260906_atlas_regulatory_intelligence.sql",
+    );
+  });
+
+  it("the production verification script still asserts the nine canonical tables", () => {
+    const verification = readFileSync(
+      resolve(
+        HERE,
+        "../../../supabase/verification/20260906_atlas_regulatory_verification.sql",
+      ),
+      "utf8",
+    );
+    for (const t of CANONICAL_REG_TABLES) {
+      expect(verification).toContain(`'${t}'`);
+    }
   });
 });

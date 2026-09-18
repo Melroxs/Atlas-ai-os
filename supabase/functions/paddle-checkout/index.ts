@@ -174,26 +174,35 @@ Deno.serve(async (req) => {
       return errorResponse("You do not have access to this organization.", 403);
     }
 
+    // The Atlas POST-PAYMENT destination. It is handed to the browser (which
+    // passes it to the Paddle.js overlay as `settings.successUrl`) and is
+    // deliberately NOT sent to Paddle as the transaction's `checkout.url`:
+    // that field is the payment-link base URL, so passing the success URL made
+    // Paddle return a payment link pointing at Atlas's own success page.
     const successUrl = `${ATLAS_APP_URL}/pricing-success?tenantId=${encodeURIComponent(tenantId)}&plan=${encodeURIComponent(plan)}&billing=${encodeURIComponent(billing)}`;
     const cancelUrl = `${ATLAS_APP_URL}/pricing`;
+
+    // Client-safe Paddle configuration, resolved BEFORE any Paddle API call so
+    // a missing/invalid environment fails fast with a clear configuration
+    // error instead of creating an orphaned transaction.
+    const { clientToken, environment } = paddleClientConfig();
 
     const { transactionId, url } = await createPaddleTransaction(
       tenantId,
       plan,
       billing,
-      successUrl,
     );
 
-    // Client-safe overlay config. The browser opens Paddle.js with the
-    // transaction id when a client-side token is configured, and falls back to
-    // the hosted checkout URL otherwise. At least one of the two must exist,
-    // or the customer would reach a dead end.
-    const { clientToken, environment } = paddleClientConfig();
+    // A payable checkout surface must exist, otherwise the customer reaches a
+    // dead end. `url` is only ever a Paddle-served checkout URL — a payment
+    // link on the Atlas domain is discarded in createPaddleTransaction and can
+    // never be handed back as a checkout surface.
     if (!clientToken && !url) {
       console.error("[paddle-checkout] no checkout surface available", {
         organization_id: tenantId,
+        environment,
         reason:
-          "PADDLE_CLIENT_TOKEN is unset and Paddle returned no hosted checkout URL (no default payment link configured).",
+          "PADDLE_CLIENT_TOKEN is unset (or is not valid for this environment) and Paddle returned no Paddle-hosted checkout URL.",
       });
       return errorResponse(
         "Checkout isn't available yet. Our team has been notified — please try again shortly.",
@@ -211,6 +220,7 @@ Deno.serve(async (req) => {
       billing_interval: billing,
       transaction_id: transactionId,
       surface: clientToken ? "overlay" : "hosted",
+      environment,
       retain_customer: paddleCustomerId ? "known" : "none",
       result: "ok",
     });
@@ -232,6 +242,12 @@ Deno.serve(async (req) => {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[paddle-checkout] failed", { detail: msg.slice(0, 200) });
+    if (msg.includes("PADDLE_ENVIRONMENT")) {
+      return errorResponse(
+        "Billing isn't configured for this environment yet. Please contact support.",
+        503,
+      );
+    }
     if (msg.includes("not configured for billing")) {
       return errorResponse("The selected Atlas plan is not configured for billing.", 422);
     }

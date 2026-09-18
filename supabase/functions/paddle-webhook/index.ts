@@ -292,7 +292,20 @@ Deno.serve(async (req) => {
 
 // ---------------------------------------------------------------------------
 // Helpers
+//
+// `recordProcessed` and `appendAudit` are POST-MUTATION bookkeeping. They run
+// after the subscription row and `tenants.billing_state` have already been
+// written, so a failure here must never become an HTTP failure for Paddle: a
+// non-2xx response makes Paddle treat an already-applied billing change as
+// failed and retry it indefinitely. Bookkeeping problems are logged loudly and
+// swallowed; every failure that affects billing correctness (signature,
+// payload parsing, organization resolution, subscription upsert, billing-state
+// mutation) still returns a real error response.
 // ---------------------------------------------------------------------------
+
+function describeError(e: unknown): string {
+  return (e instanceof Error ? e.message : String(e)).slice(0, 200);
+}
 
 async function recordProcessed(
   supabase: ReturnType<typeof createClient>,
@@ -300,20 +313,43 @@ async function recordProcessed(
   organizationId: string | null,
   result: string,
 ): Promise<void> {
-  await supabase
-    .from("processed_webhook_events")
-    .insert({
-      provider: "paddle",
-      provider_event_id: event.eventId,
+  // Idempotency ledger. Uses the supported PostgREST conflict mechanism:
+  // `upsert()` with the `onConflict` / `ignoreDuplicates` options. Chaining
+  // `.onConflict(...).ignore()` after `.insert(...)` is NOT part of the
+  // installed postgrest-js API and threw a TypeError, which turned every
+  // delivery — including a fully applied one — into an HTTP 500.
+  try {
+    const { error } = await supabase
+      .from("processed_webhook_events")
+      .upsert(
+        {
+          provider: "paddle",
+          provider_event_id: event.eventId,
+          event_type: event.eventType,
+          organization_id: organizationId,
+          provider_customer_id: event.providerCustomerId ?? null,
+          provider_subscription_id: event.providerSubscriptionId ?? null,
+          result,
+          provider_event_at: event.providerEventAt,
+        },
+        { onConflict: "provider,provider_event_id", ignoreDuplicates: true },
+      );
+    if (error) {
+      console.error("[paddle-webhook] processed-event ledger write failed", {
+        event_id: event.eventId,
+        event_type: event.eventType,
+        result,
+        detail: describeError(error),
+      });
+    }
+  } catch (e) {
+    console.error("[paddle-webhook] processed-event ledger write threw", {
+      event_id: event.eventId,
       event_type: event.eventType,
-      organization_id: organizationId,
-      provider_customer_id: event.providerCustomerId ?? null,
-      provider_subscription_id: event.providerSubscriptionId ?? null,
       result,
-      provider_event_at: event.providerEventAt,
-    })
-    .onConflict("provider, provider_event_id")
-    .ignore();
+      detail: describeError(e),
+    });
+  }
 }
 
 async function appendAudit(
@@ -323,15 +359,32 @@ async function appendAudit(
   result: string,
   note: string,
 ): Promise<void> {
-  await supabase.from("billing_audit_events").insert({
-    organization_id: organizationId,
-    provider: "paddle",
-    provider_event_id: event.eventId,
-    event_type: event.eventType,
-    provider_customer_id: event.providerCustomerId ?? null,
-    provider_subscription_id: event.providerSubscriptionId ?? null,
-    result,
-    note,
-    provider_event_at: event.providerEventAt,
-  });
+  try {
+    const { error } = await supabase.from("billing_audit_events").insert({
+      organization_id: organizationId,
+      provider: "paddle",
+      provider_event_id: event.eventId,
+      event_type: event.eventType,
+      provider_customer_id: event.providerCustomerId ?? null,
+      provider_subscription_id: event.providerSubscriptionId ?? null,
+      result,
+      note,
+      provider_event_at: event.providerEventAt,
+    });
+    if (error) {
+      console.error("[paddle-webhook] audit append failed", {
+        event_id: event.eventId,
+        event_type: event.eventType,
+        result,
+        detail: describeError(error),
+      });
+    }
+  } catch (e) {
+    console.error("[paddle-webhook] audit append threw", {
+      event_id: event.eventId,
+      event_type: event.eventType,
+      result,
+      detail: describeError(e),
+    });
+  }
 }

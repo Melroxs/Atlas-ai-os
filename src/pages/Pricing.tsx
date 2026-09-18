@@ -108,8 +108,8 @@ export default function Pricing() {
             Choose your plan
           </h1>
           <p className="mt-4 text-lg text-muted-foreground max-w-2xl mx-auto">
-            Start with a plan that fits your team. Every plan starts with a
-            1-day trial for $10 — then your plan's regular price applies.
+            Start with a plan that fits your team. Billing is handled by Paddle
+            and you can change or cancel your plan at any time.
           </p>
 
           {/* Billing Toggle */}
@@ -159,12 +159,6 @@ export default function Pricing() {
                   Most Popular
                 </div>
               )}
-              {plan.monthlyPrice !== null && (
-                <div className="absolute -top-3 right-4 rounded-full border border-teal-400/40 bg-teal-400/10 px-3 py-1 text-[11px] font-medium text-teal-700 dark:text-teal-300">
-                  $10 · 1-day trial
-                </div>
-              )}
-
               <div className="mb-6">
                 <h3 className="text-xl font-semibold text-foreground">{plan.name}</h3>
                 <p className="mt-1 text-sm text-muted-foreground">{plan.description}</p>
@@ -196,13 +190,6 @@ export default function Pricing() {
                   </li>
                 ))}
               </ul>
-
-              {plan.monthlyPrice !== null && (
-                <p className="mb-3 text-center text-xs text-muted-foreground">
-                  Start your 1-day trial for $10. After the trial, you'll be
-                  billed {billing === "monthly" ? `$${plan.monthlyPrice}/month` : `$${plan.annualPrice} annually`}.
-                </p>
-              )}
 
               <Button
                 onClick={() => handleGetStarted(plan)}
@@ -248,7 +235,7 @@ export default function Pricing() {
               },
               {
                 q: "Is there a free trial?",
-                a: "No — every plan starts with a 1-day trial for $10. You're charged $10 at checkout, and the plan's regular price applies once the trial ends.",
+                a: "No — Atlas has no free trial. The plan price you select is charged at checkout, and it renews automatically on your chosen billing interval until you cancel.",
               },
               {
                 q: "What payment methods do you accept?",

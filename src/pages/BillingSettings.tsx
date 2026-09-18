@@ -232,8 +232,8 @@ export default function BillingSettings() {
             needed to resolve access. No card details are stored in Atlas.
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            New subscriptions start with a 1-day trial for $10, then bill at
-            the plan's regular price on the selected billing interval.
+            New subscriptions are billed at the plan's price on the selected
+            billing interval and renew automatically until cancelled.
             Cancellations and payment-method updates are handled through
             Paddle's checkout and the billing emails Paddle sends — a
             self-service customer portal is not yet wired into Atlas.

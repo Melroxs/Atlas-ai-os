@@ -311,6 +311,669 @@ $$;
 
 
 -- ---------------------------------------------------------------------------
+-- 3b. JOB ENQUEUE / READ / LIFECYCLE AUTHORIZATION
+-- ---------------------------------------------------------------------------
+-- WHY THIS EXISTS
+--
+-- `atlas_jobs` and `atlas_job_steps` are tenant-owned (tenant_id NOT NULL,
+-- RLS enabled), but every job RPC is SECURITY DEFINER, so the tables' tenant
+-- policies never apply to them. In the original bodies (0020_atlas_jobs.sql,
+-- 0021_atlas_human_reviews.sql) the caller-supplied `p_tenant_id` / `p_job_id`
+-- was therefore the whole boundary. Three concrete holes:
+--
+--   * jobs_create_job trusted `p_user_id` as the caller. Any authenticated user
+--     could name another user, satisfy the membership check against THAT user's
+--     tenant, and enqueue work attributed to them.
+--   * jobs_dequeue drained EVERY tenant's queue with no predicate at all.
+--   * jobs_complete_job / _step, jobs_fail_job / _step, jobs_retry_step,
+--     jobs_cancel_job, jobs_unlock_stuck and jobs_awaiting_review called
+--     `perform public.atlas_is_trusted_server();` — which discards the boolean
+--     and guards nothing. An ordinary authenticated user could complete, fail,
+--     cancel or re-queue any job in any tenant.
+--   * jobs_stats aggregates across EVERY tenant and had no guard, exposing
+--     global queue depth / failure counts to any signed-in user.
+--
+-- AUTHORIZATION MODEL ESTABLISHED HERE
+--
+--   authenticated + tenant member (or super_admin)
+--     jobs_create_job, jobs_create_step, jobs_get_job          — guarded in-body
+--     jobs_list_jobs, jobs_get_events                          — guarded in 5b-vii
+--     jobs_resume_from_review                                  — guarded in 5b-viii
+--   internal operator (platform_role super_admin/atlas_admin) or service_role
+--     jobs_stats                                               — guarded in-body
+--   trusted server ONLY (service_role / direct superuser; no client role)
+--     jobs_dequeue and every worker-owned lifecycle transition  — asserted in-body
+--     AND named in `v_service_only` (section 4)
+--
+-- Identity for jobs_create_job derives from auth.uid(). `p_user_id` is honoured
+-- only for a trusted server connection and never establishes membership on its
+-- own. Tenant membership is always verified against public.memberships through
+-- atlas_assert_tenant_access(), so a caller-supplied tenant id grants nothing.
+
+-- ---------------------------------------------------------------------------
+-- jobs_create_job — enqueue (idempotent on idempotency_key)
+-- ---------------------------------------------------------------------------
+create or replace function public.jobs_create_job(
+  p_tenant_id    uuid,
+  p_job_type     text,
+  p_idempotency_key text,
+  p_user_id      uuid default null,
+  p_priority     int default 3,
+  p_payload      jsonb default '{}',
+  p_max_attempts int default 3,
+  p_scheduled_at timestamptz default null,
+  p_parent_job_id uuid default null,
+  p_tags         text[] default '{}'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user uuid;
+  v_job_id uuid;
+begin
+  if p_tenant_id is null then
+    raise exception 'Tenant is required.' using errcode = '22004';
+  end if;
+
+  -- Caller identity derives from the session. p_user_id is NEVER the identity
+  -- of an authenticated caller; it is only honoured for a trusted server
+  -- connection (worker / scheduler) that has no user JWT.
+  if auth.uid() is not null then
+    v_user := auth.uid();
+  elsif public.atlas_is_trusted_server() then
+    v_user := p_user_id;
+  else
+    raise exception 'Authenticated caller required.' using errcode = '42501';
+  end if;
+
+  -- Server-side tenant authorization: the caller-supplied tenant id only
+  -- selects the target, it does not grant access.
+  perform public.atlas_assert_tenant_access(p_tenant_id);
+
+  -- Idempotency is scoped to the authorised tenant.
+  select id into v_job_id
+  from public.atlas_jobs
+  where tenant_id = p_tenant_id
+    and idempotency_key = p_idempotency_key
+    and status not in ('completed', 'cancelled')
+  limit 1;
+
+  if v_job_id is not null then
+    return jsonb_build_object('job_id', v_job_id, 'deduplicated', true);
+  end if;
+
+  insert into public.atlas_jobs (
+    tenant_id, user_id, job_type, status, priority,
+    idempotency_key, payload, max_attempts,
+    scheduled_at, parent_job_id, tags
+  ) values (
+    p_tenant_id, v_user, p_job_type, 'pending', p_priority,
+    p_idempotency_key, p_payload, p_max_attempts,
+    p_scheduled_at, p_parent_job_id, p_tags
+  )
+  returning id into v_job_id;
+
+  insert into public.atlas_job_events (job_id, event_type, payload, actor)
+  values (v_job_id, 'job_created', jsonb_build_object(
+    'job_type', p_job_type,
+    'priority', p_priority,
+    'idempotency_key', p_idempotency_key
+  ), coalesce(v_user::text, 'system'));
+
+  update public.atlas_jobs set status = 'queued' where id = v_job_id;
+
+  insert into public.atlas_job_events (job_id, event_type, payload, actor)
+  values (v_job_id, 'job_queued', jsonb_build_object('job_type', p_job_type), 'system');
+
+  return jsonb_build_object('job_id', v_job_id, 'deduplicated', false);
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- jobs_create_step — add a step to an existing job
+-- ---------------------------------------------------------------------------
+create or replace function public.jobs_create_step(
+  p_job_id       uuid,
+  p_step_type    text,
+  p_sequence     int,
+  p_input        jsonb default '{}',
+  p_max_attempts int default 3
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_tenant uuid;
+  v_step_id uuid;
+begin
+  -- Resolve the job's tenant FIRST, then authorise the caller against it. A
+  -- step can only be created inside a tenant the caller may already write to.
+  select j.tenant_id into v_tenant
+  from public.atlas_jobs j
+  where j.id = p_job_id
+  for share;
+
+  if v_tenant is null then
+    raise exception 'Job not found' using errcode = '42501';
+  end if;
+
+  perform public.atlas_assert_tenant_access(v_tenant);
+
+  insert into public.atlas_job_steps (job_id, step_type, sequence, input, max_attempts)
+  values (p_job_id, p_step_type, p_sequence, p_input, p_max_attempts)
+  returning id into v_step_id;
+
+  return jsonb_build_object('step_id', v_step_id);
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- jobs_get_job — read a job with its steps
+-- ---------------------------------------------------------------------------
+create or replace function public.jobs_get_job(
+  p_job_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_tenant uuid;
+  v_job jsonb;
+  v_steps jsonb;
+begin
+  -- A signed-in caller may only read a job whose tenant it belongs to; an
+  -- unknown job id returns NULL (no existence oracle), a foreign job raises.
+  select j.tenant_id into v_tenant
+  from public.atlas_jobs j
+  where j.id = p_job_id
+  for share;
+
+  if v_tenant is null then
+    return null;
+  end if;
+
+  perform public.atlas_assert_tenant_access(v_tenant);
+
+  select to_jsonb(j.*) into v_job
+  from public.atlas_jobs j
+  where j.id = p_job_id;
+
+  select jsonb_agg(to_jsonb(s.*) order by s.sequence)
+  into v_steps
+  from public.atlas_job_steps s
+  where s.job_id = p_job_id;
+
+  return v_job || jsonb_build_object('steps', coalesce(v_steps, '[]'::jsonb));
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- jobs_dequeue — drain the queue (TRUSTED WORKER ONLY)
+-- ---------------------------------------------------------------------------
+-- Intentionally has NO tenant predicate: AtlasWorker is cross-tenant
+-- infrastructure (it runs platform-wide knowledge/content jobs as well as
+-- tenant jobs). The protection is the authorization boundary, not a tenant
+-- filter: only a trusted server connection may execute it. It is revoked from
+-- public/anon/authenticated in section 4 and asserts trust in-body.
+create or replace function public.jobs_dequeue(
+  p_worker_id    text,
+  p_job_types    text[] default null,
+  p_max_jobs     int default 1
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_jobs jsonb := '[]'::jsonb;
+  v_row record;
+  v_lock_timeout interval := interval '5 minutes';
+  v_max int := greatest(coalesce(p_max_jobs, 1), 1);
+begin
+  -- Ordinary authenticated users (and anon) must never drain the queue.
+  perform public.atlas_assert_trusted_server();
+
+  if p_worker_id is null or btrim(p_worker_id) = '' then
+    raise exception 'Worker id is required.' using errcode = '22004';
+  end if;
+
+  for v_row in
+    select j.id
+    from public.atlas_jobs j
+    where j.status in ('pending', 'queued')
+      and (j.scheduled_at is null or j.scheduled_at <= now())
+      and (p_job_types is null or j.job_type = any(p_job_types))
+    order by j.priority asc, j.scheduled_at asc nulls first, j.created_at asc
+    limit v_max
+    for update of j skip locked
+  loop
+    update public.atlas_jobs
+    set status = 'processing',
+        locked_by = p_worker_id,
+        locked_at = now(),
+        lock_expires_at = now() + v_lock_timeout,
+        started_at = case when started_at is null then now() else started_at end,
+        attempt_count = attempt_count + 1
+    where id = v_row.id;
+
+    insert into public.atlas_job_events (job_id, event_type, payload, actor)
+    values (v_row.id, 'job_started', jsonb_build_object('worker_id', p_worker_id), p_worker_id);
+
+    insert into public.atlas_job_attempts (job_id, worker_id, attempt_number, status)
+    select v_row.id, p_worker_id, j.attempt_count, 'running'
+    from public.atlas_jobs j where j.id = v_row.id;
+
+    v_jobs := v_jobs || to_jsonb(v_row.id);
+  end loop;
+
+  return jsonb_build_object('jobs', v_jobs, 'count', jsonb_array_length(v_jobs));
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Worker-owned lifecycle transitions (TRUSTED WORKER ONLY)
+-- ---------------------------------------------------------------------------
+
+create or replace function public.jobs_complete_job(
+  p_job_id   uuid,
+  p_result   jsonb default '{}',
+  p_ai_metadata jsonb default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.atlas_assert_trusted_server();
+
+  update public.atlas_jobs
+  set status = 'completed',
+      result = p_result,
+      ai_metadata = coalesce(p_ai_metadata, ai_metadata),
+      completed_at = now(),
+      locked_by = null,
+      locked_at = null,
+      lock_expires_at = null
+  where id = p_job_id;
+
+  update public.atlas_job_attempts
+  set status = 'completed',
+      completed_at = now(),
+      duration_ms = extract(epoch from (now() - started_at)) * 1000
+  where job_id = p_job_id
+    and status = 'running';
+
+  insert into public.atlas_job_events (job_id, event_type, payload, actor)
+  values (p_job_id, 'job_completed', jsonb_build_object('result_size', pg_column_size(p_result)), 'system');
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.jobs_fail_job(
+  p_job_id   uuid,
+  p_error    jsonb,
+  p_retryable boolean default true
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_job record;
+  v_next_scheduled timestamptz;
+begin
+  perform public.atlas_assert_trusted_server();
+
+  select * into v_job from public.atlas_jobs where id = p_job_id for update;
+
+  if not found then
+    return jsonb_build_object('ok', false, 'error', 'job_not_found');
+  end if;
+
+  update public.atlas_job_attempts
+  set status = 'failed',
+      completed_at = now(),
+      error = p_error,
+      duration_ms = extract(epoch from (now() - started_at)) * 1000
+  where job_id = p_job_id
+    and status = 'running';
+
+  if p_retryable
+     and v_job.attempt_count < v_job.max_attempts
+  then
+    v_next_scheduled := now() + least(
+      interval '15 seconds' * power(2, v_job.attempt_count - 1),
+      interval '1 hour'
+    );
+
+    update public.atlas_jobs
+    set status = 'retrying',
+        error = p_error,
+        scheduled_at = v_next_scheduled,
+        locked_by = null,
+        locked_at = null,
+        lock_expires_at = null
+    where id = p_job_id;
+
+    insert into public.atlas_job_events (job_id, event_type, payload, actor)
+    values (p_job_id, 'job_retrying', jsonb_build_object(
+      'attempt', v_job.attempt_count,
+      'max_attempts', v_job.max_attempts,
+      'next_scheduled_at', v_next_scheduled,
+      'error', p_error
+    ), 'system');
+
+    return jsonb_build_object('ok', true, 'retrying', true, 'next_scheduled_at', v_next_scheduled);
+  else
+    update public.atlas_jobs
+    set status = 'failed',
+        error = p_error,
+        completed_at = now(),
+        locked_by = null,
+        locked_at = null,
+        lock_expires_at = null
+    where id = p_job_id;
+
+    insert into public.atlas_job_events (job_id, event_type, payload, actor)
+    values (p_job_id, 'job_failed', jsonb_build_object(
+      'attempt', v_job.attempt_count,
+      'error', p_error
+    ), 'system');
+
+    return jsonb_build_object('ok', true, 'retrying', false);
+  end if;
+end;
+$$;
+
+create or replace function public.jobs_complete_step(
+  p_step_id  uuid,
+  p_output   jsonb default '{}',
+  p_ai_metadata jsonb default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.atlas_assert_trusted_server();
+
+  update public.atlas_job_steps
+  set status = 'completed',
+      output = p_output,
+      ai_metadata = coalesce(p_ai_metadata, ai_metadata),
+      completed_at = now()
+  where id = p_step_id;
+
+  insert into public.atlas_job_events (job_id, step_id, event_type, payload, actor)
+  select job_id, p_step_id, 'step_completed', jsonb_build_object(
+    'step_type', step_type,
+    'sequence', sequence
+  ), 'system'
+  from public.atlas_job_steps where id = p_step_id;
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.jobs_fail_step(
+  p_step_id  uuid,
+  p_error    jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.atlas_assert_trusted_server();
+
+  update public.atlas_job_steps
+  set status = 'failed',
+      error = p_error,
+      completed_at = now()
+  where id = p_step_id;
+
+  insert into public.atlas_job_events (job_id, step_id, event_type, payload, actor)
+  select job_id, p_step_id, 'step_failed', jsonb_build_object(
+    'step_type', step_type,
+    'sequence', sequence,
+    'error', p_error
+  ), 'system'
+  from public.atlas_job_steps where id = p_step_id;
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.jobs_retry_step(
+  p_step_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.atlas_assert_trusted_server();
+
+  update public.atlas_job_steps
+  set status = 'pending',
+      error = null,
+      started_at = null,
+      completed_at = null
+  where id = p_step_id
+    and status = 'failed';
+
+  insert into public.atlas_job_events (job_id, step_id, event_type, payload, actor)
+  select job_id, p_step_id, 'step_started', jsonb_build_object(
+    'step_type', step_type,
+    'retry', true
+  ), 'system'
+  from public.atlas_job_steps where id = p_step_id;
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.jobs_cancel_job(
+  p_job_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform public.atlas_assert_trusted_server();
+
+  update public.atlas_jobs
+  set status = 'cancelled',
+      completed_at = now(),
+      locked_by = null,
+      locked_at = null,
+      lock_expires_at = null
+  where id = p_job_id
+    and status not in ('completed', 'cancelled');
+
+  update public.atlas_job_steps
+  set status = 'cancelled'
+  where job_id = p_job_id
+    and status in ('pending', 'processing');
+
+  insert into public.atlas_job_events (job_id, event_type, payload, actor)
+  values (p_job_id, 'job_cancelled', '{}', 'system');
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+create or replace function public.jobs_unlock_stuck(
+  -- Retained for signature compatibility; the reclaim predicate is the lock's
+  -- own expiry (lock_expires_at < now()), matching the original behaviour.
+  p_stale_after interval default interval '10 minutes'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_count int;
+begin
+  perform public.atlas_assert_trusted_server();
+
+  with unlocked as (
+    update public.atlas_jobs
+    set status = 'retrying',
+        locked_by = null,
+        locked_at = null,
+        lock_expires_at = null,
+        scheduled_at = now()
+    where status = 'processing'
+      and lock_expires_at is not null
+      and lock_expires_at < now()
+    returning id
+  )
+  select count(*) into v_count from unlocked;
+
+  insert into public.atlas_job_events (job_id, event_type, payload, actor)
+  select u.id, 'job_retrying', jsonb_build_object('reason', 'stuck_job_unlocked'), 'system'
+  from public.atlas_jobs u
+  where u.locked_by is null
+    and u.status = 'retrying'
+    and u.updated_at > now() - interval '1 minute';
+
+  return jsonb_build_object('unlocked', v_count);
+end;
+$$;
+
+create or replace function public.jobs_awaiting_review(
+  p_job_id uuid,
+  p_review_id uuid default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_job record;
+begin
+  perform public.atlas_assert_trusted_server();
+
+  select * into v_job from public.atlas_jobs where id = p_job_id for update;
+
+  if not found then
+    return jsonb_build_object('ok', false, 'error', 'job_not_found');
+  end if;
+
+  if v_job.status != 'processing' then
+    return jsonb_build_object('ok', false, 'error', 'invalid_status', 'current_status', v_job.status);
+  end if;
+
+  update public.atlas_jobs
+  set status = 'awaiting_review',
+      locked_by = null,
+      locked_at = null,
+      lock_expires_at = null,
+      updated_at = now()
+  where id = p_job_id;
+
+  update public.atlas_job_attempts
+  set status = 'completed',
+      completed_at = now(),
+      duration_ms = extract(epoch from (now() - started_at)) * 1000
+  where job_id = p_job_id
+    and status = 'running';
+
+  insert into public.atlas_job_events (job_id, event_type, payload, actor)
+  values (p_job_id, 'job_awaiting_review', jsonb_build_object(
+    'review_id', p_review_id,
+    'reason', 'agent_recommendation_requires_human_review'
+  ), 'system');
+
+  return jsonb_build_object('ok', true, 'job_id', p_job_id, 'status', 'awaiting_review');
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- jobs_stats — INTERNAL_ONLY operational aggregate
+-- ---------------------------------------------------------------------------
+-- Cross-tenant queue depth / failure counts, not a tenant metric. Reachable by
+-- internal operators (platform_role super_admin / atlas_admin) and trusted
+-- servers only. Ordinary tenant users are refused in-body.
+create or replace function public.jobs_stats()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if not public.atlas_is_internal_admin() then
+    raise exception 'Access denied: internal operator required' using errcode = '42501';
+  end if;
+
+  return (
+    SELECT jsonb_build_object(
+      'total', count(*),
+      'by_status', (
+        SELECT jsonb_object_agg(status, cnt)
+        FROM (
+          SELECT status, count(*) as cnt
+          FROM atlas_jobs
+          GROUP BY status
+        ) s
+      ),
+      'by_type', (
+        SELECT jsonb_object_agg(job_type, cnt)
+        FROM (
+          SELECT job_type, count(*) as cnt
+          FROM atlas_jobs
+          GROUP BY job_type
+        ) t
+      ),
+      'avg_duration_ms', (
+        SELECT AVG(duration_ms)
+        FROM atlas_job_attempts
+        WHERE status = 'completed' AND completed_at > now() - interval '24 hours'
+      ),
+      'queue_depth', (
+        SELECT count(*)
+        FROM atlas_jobs
+        WHERE status IN ('pending', 'queued')
+      ),
+      'processing_count', (
+        SELECT count(*)
+        FROM atlas_jobs
+        WHERE status = 'processing'
+      ),
+      'failed_24h', (
+        SELECT count(*)
+        FROM atlas_jobs
+        WHERE status = 'failed'
+          AND updated_at > now() - interval '24 hours'
+      )
+    )
+    FROM atlas_jobs
+  );
+end;
+$$;
+
+
+-- ---------------------------------------------------------------------------
 -- 4. PRIVILEGE NORMALIZATION
 -- ---------------------------------------------------------------------------
 -- Runs LAST so it governs every function defined above and in every earlier
@@ -363,7 +1026,25 @@ declare
     'knowledge_versions','knowledge_as_of','knowledge_create_version',
     'knowledge_verify',
     'content_create','content_transition','content_list','content_get',
-    'content_list_provenance'
+    'content_list_provenance',
+    -- Job queue drain + worker-owned lifecycle transitions. These are driven
+    -- exclusively by AtlasWorker (src/lib/jobs/worker.ts) through
+    -- createSupabaseWorkerRPC (src/lib/platform/runtime.ts), which is handed a
+    -- service-role client. No routed page, component or client helper calls
+    -- them, so no client role may execute them. jobs_resume_from_review is the
+    -- ONE lifecycle RPC with a genuine browser caller (the Reviews page) and is
+    -- therefore tenant-guarded rather than revoked (see 5b-viii).
+    'jobs_dequeue',
+    'jobs_complete_job','jobs_complete_step',
+    'jobs_fail_job','jobs_fail_step','jobs_retry_step',
+    'jobs_cancel_job','jobs_unlock_stuck','jobs_awaiting_review',
+    -- Auth / tenancy bootstrap internals with no client caller:
+    --   handle_new_user  — trigger on auth.users; trigger invocation performs no
+    --                      EXECUTE check, so revoking it from client roles is
+    --                      safe and closes direct RPC invocation.
+    --   ensure_profile   — called internally by tenants_create_tenant().
+    --   org_seat_limit   — called internally by org_seat_status().
+    'handle_new_user','ensure_profile','org_seat_limit'
   ];
   -- Read-only predicate helpers that RLS policies may evaluate while serving an
   -- anonymous request (policies default to PUBLIC, so `anon` can trigger them).
@@ -526,6 +1207,53 @@ as $$
 begin
   if not public.atlas_can_access_tenant(p_tenant) then
     raise exception 'Access denied' using errcode = '42501';
+  end if;
+end;
+$$;
+
+-- Trusted background-worker boundary.
+-- A trusted server is service_role / a direct superuser connection (no JWT).
+-- It is NOT an anon key: atlas_is_trusted_server() rejects auth.role()='anon'
+-- even though both have a NULL auth.uid(). This is the explicit authorization
+-- boundary for the job queue drain and the worker-owned lifecycle transitions.
+create or replace function public.atlas_assert_trusted_server()
+returns void
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if not public.atlas_is_trusted_server() then
+    raise exception 'Access denied: trusted server connection required' using errcode = '42501';
+  end if;
+end;
+$$;
+
+-- Internal operator boundary: platform_role super_admin / atlas_admin, or a
+-- trusted server. This is the server-side counterpart of RequireInternalAuth
+-- (src/components/RequireInternalAuth.tsx → src/lib/auth/access-gate.ts).
+create or replace function public.atlas_is_internal_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select public.atlas_is_trusted_server()
+      or (auth.uid() is not null and (public.is_super_admin() or public.is_atlas_admin()))
+$$;
+
+create or replace function public.atlas_assert_internal_admin()
+returns void
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+  if not public.atlas_is_internal_admin() then
+    raise exception 'Access denied: internal operator required' using errcode = '42501';
   end if;
 end;
 $$;
@@ -994,7 +1722,26 @@ begin
           'email_accounts_get_credentials', 'outreach_records_update_status',
           'billing_apply_state', 'tenants_activate_after_payment',
           'tenants_handle_payment_failure', 'tenants_handle_subscription_cancelled',
-          'industry_ingest_corpus', 'industry_seed_internal'
+          'industry_ingest_corpus', 'industry_seed_internal',
+          'jobs_dequeue', 'jobs_complete_job', 'jobs_complete_step',
+          'jobs_fail_job', 'jobs_fail_step', 'jobs_retry_step',
+          'jobs_cancel_job', 'jobs_unlock_stuck', 'jobs_awaiting_review',
+          'handle_new_user', 'ensure_profile', 'org_seat_limit'
+        ),
+        'job_boundary', jsonb_build_object(
+          'tenant_guarded', jsonb_build_array(
+            'jobs_create_job', 'jobs_create_step', 'jobs_get_job'
+          ),
+          'internal_only', jsonb_build_array('jobs_stats'),
+          'worker_only', jsonb_build_array(
+            'jobs_dequeue', 'jobs_complete_job', 'jobs_complete_step',
+            'jobs_fail_job', 'jobs_fail_step', 'jobs_retry_step',
+            'jobs_cancel_job', 'jobs_unlock_stuck', 'jobs_awaiting_review'
+          ),
+          'helpers', jsonb_build_array(
+            'atlas_assert_trusted_server', 'atlas_is_internal_admin',
+            'atlas_assert_internal_admin'
+          )
         ),
         'provenance_anon_read', 'restricted to published/approved content',
         'tenant_scoped', jsonb_build_array(

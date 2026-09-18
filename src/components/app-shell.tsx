@@ -3,7 +3,13 @@ import { useVoiceSession } from "@/components/voice-session";
 import { AtlasVoiceControl } from "@/components/atlas-voice-control";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
-import { canAccessPilotAdmin, canAccessCRM, canAccessMail, canAccessUserAdmin } from "@/lib/auth/access-gate";
+import {
+  canAccessPilotAdmin,
+  canAccessCRM,
+  canAccessMail,
+  canAccessUserAdmin,
+  isInternalRole,
+} from "@/lib/auth/access-gate";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/atlas-ui";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -55,6 +61,8 @@ import {
   Radar,
   Scale,
   ScrollText,
+  Send,
+  Server,
   Settings2,
   ShieldCheck,
   Sparkles,

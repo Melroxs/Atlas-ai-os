@@ -26,9 +26,40 @@ export const ALL_INTERNAL_PLANS: InternalPlan[] = [
 // Environment
 // ---------------------------------------------------------------------------
 
+/**
+ * Raised when the Paddle environment is missing or not one of the supported
+ * values. Callers surface this as a clear configuration error (HTTP 503) —
+ * never as a silent fallback.
+ */
+export class PaddleConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PaddleConfigurationError";
+  }
+}
+
+/**
+ * Resolve the Paddle environment, FAILING CLOSED.
+ *
+ * `PADDLE_ENVIRONMENT` must be set explicitly to one of the supported values:
+ *   - `sandbox`                  → api.sandbox.paddle.com / checkout.sandbox
+ *   - `live`                     → api.paddle.com / checkout.paddle.com
+ *   - `production`               → alias of `live`
+ *
+ * Anything else (unset, empty, misspelled) throws instead of defaulting to
+ * sandbox. A silent sandbox default is dangerous in production: it points
+ * transaction creation at the sandbox API and makes the live client token look
+ * environment-incompatible, which disables the overlay and pushes the customer
+ * onto a checkout surface that can never take a real payment.
+ */
 export function paddleEnvironment(): PaddleEnvironment {
-  const v = (Deno.env.get("PADDLE_ENVIRONMENT") ?? "sandbox").toLowerCase();
-  return v === "live" || v === "production" ? "live" : "sandbox";
+  const v = (Deno.env.get("PADDLE_ENVIRONMENT") ?? "").trim().toLowerCase();
+  if (v === "live" || v === "production") return "live";
+  if (v === "sandbox") return "sandbox";
+  throw new PaddleConfigurationError(
+    "PADDLE_ENVIRONMENT must be set explicitly to 'sandbox' or 'live'. " +
+      "Paddle billing refuses to guess an environment.",
+  );
 }
 
 export function paddleApiBase(): string {
@@ -318,11 +349,43 @@ export function parsePaddleEvent(
 // Checkout — transaction creation
 // ---------------------------------------------------------------------------
 
+/**
+ * True only for a URL that Paddle itself serves as a checkout surface.
+ *
+ * Paddle's transaction `checkout.url` is the PAYMENT-LINK base URL — it is not
+ * a post-payment return URL. Atlas's `/pricing-success` page must never be
+ * treated as a checkout just because Paddle echoed it back as a payment link,
+ * so only Paddle-owned hosts are accepted here.
+ */
+export function isGenuinePaddleCheckoutUrl(value: unknown): value is string {
+  if (typeof value !== "string" || !value) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  const host = parsed.hostname.toLowerCase();
+  // Paddle-owned domains only (checkout.paddle.com, and any Paddle-hosted
+  // sandbox host under paddle.com). A lookalike such as `evilpaddle.com`
+  // fails the `.paddle.com` suffix test.
+  return host === "paddle.com" || host.endsWith(".paddle.com");
+}
+
+/** Host-only excerpt of a URL, safe to log (never the query string). */
+function urlHostOnly(value: string): string {
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return "invalid-url";
+  }
+}
+
 export async function createPaddleTransaction(
   organizationId: string,
   plan: InternalPlan,
   interval: BillingInterval,
-  returnUrl?: string,
 ): Promise<{ transactionId: string; url: string | null; priceId: string }> {
   const apiKey = Deno.env.get("PADDLE_API_KEY") ?? "";
   if (!apiKey) {
@@ -345,6 +408,14 @@ export async function createPaddleTransaction(
     // Note: Paddle's create-transaction API has no top-level `description`
     // field — sending undocumented fields risks a 400. The price name/plan
     // is carried by the catalog price itself and custom_data below.
+    //
+    // No `checkout` field is sent. Paddle's `checkout.url` is the PAYMENT-LINK
+    // base URL for the transaction, NOT a post-payment return URL. Passing
+    // Atlas's `/pricing-success` URL there made Paddle return a payment link
+    // that pointed back at Atlas's own success page, so the "hosted checkout"
+    // fallback redirected the customer to a page that cannot take payment.
+    // The post-payment destination is delivered to the browser separately and
+    // applied by the Paddle.js overlay as `settings.successUrl`.
     body: JSON.stringify({
       items: [{ price_id: priceId, quantity: 1 }],
       custom_data: {
@@ -352,12 +423,6 @@ export async function createPaddleTransaction(
         atlas_internal_plan: plan,
         atlas_billing_interval: interval,
       },
-      // `checkout.url` is where Paddle returns the customer after payment.
-      // Paddle only fills in a hosted checkout URL when the seller has a
-      // default payment link configured; when it doesn't, Atlas opens the
-      // Paddle.js overlay with this transaction id instead, so a missing URL
-      // is never fatal.
-      ...(returnUrl ? { checkout: { url: returnUrl } } : {}),
     }),
   });
 
@@ -377,9 +442,22 @@ export async function createPaddleTransaction(
   const json = (await response.json()) as Record<string, unknown>;
   const data = (json.data as Record<string, unknown>) ?? json;
   const checkout = (data.checkout as Record<string, unknown>) ?? {};
-  const url =
+  const returned =
     (typeof checkout.url === "string" && checkout.url ? checkout.url : null) ??
     (typeof data.url === "string" && data.url ? data.url : null);
+
+  // Only a Paddle-served checkout surface is passed back to the browser. A
+  // payment link on the seller's own domain (which is what Paddle returns when
+  // the account's default payment link points at Atlas) is dropped: it is
+  // indistinguishable from Atlas's own success page and would silently
+  // redirect a paying customer to `/pricing-success`.
+  const url = isGenuinePaddleCheckoutUrl(returned) ? returned : null;
+  if (returned && !url) {
+    console.warn(
+      "[paddle] ignoring a non-Paddle checkout URL returned for a transaction",
+      { host: urlHostOnly(returned), surface: "rejected" },
+    );
+  }
 
   const transactionId = typeof data.id === "string" ? data.id : "";
   if (!transactionId) {

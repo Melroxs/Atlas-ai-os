@@ -66,7 +66,7 @@ synchronized by the `paddle-webhook` Edge Function. All Paddle values are
 | `PADDLE_SELLER_ID` | Supabase edge secrets | Optional | **Yes** | Vendor id (kept for configuration compatibility) |
 | `PADDLE_WEBHOOK_SECRET` | Supabase edge secrets | ✅ | **Yes** | Verifies webhook signatures (`Paddle-Signature` header) |
 | `ATLAS_APP_URL` | Supabase edge secrets | Optional | No | Public Atlas base URL for checkout success/cancel redirects (default `https://atlas-ai-os.com`) |
-| `PADDLE_STARTER_PRICE_ID_MONTHLY` | Supabase edge secrets | ✅ prod | No | Price id for Starter monthly (1-day/$10 trial configured on the price) |
+| `PADDLE_STARTER_PRICE_ID_MONTHLY` | Supabase edge secrets | ✅ prod | No | Price id for Starter monthly ($49, billed immediately — the live catalogue has no trial) |
 | `PADDLE_STARTER_PRICE_ID_ANNUAL` | Supabase edge secrets | ✅ prod | No | Price id for Starter annual |
 | `PADDLE_GROWTH_PRICE_ID_MONTHLY` | Supabase edge secrets | ✅ prod | No | Price id for Growth monthly |
 | `PADDLE_GROWTH_PRICE_ID_ANNUAL` | Supabase edge secrets | ✅ prod | No | Price id for Growth annual |

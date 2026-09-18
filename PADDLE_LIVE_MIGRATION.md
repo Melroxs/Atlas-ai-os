@@ -52,8 +52,20 @@ project — no Paddle connector/MCP is available here).
 No Paddle value belongs in a `VITE_` variable; the client token reaches the
 browser only through the `paddle-checkout` response.
 
-Canonical pricing that the live catalog must match: Starter $10 / $100,
-Pro (Growth) $40 / $400, Advanced (Scale) $120 / $1200.
+Canonical pricing that the live catalog must match — read back from the live
+account with `scripts/verify-paddle-live-readiness.mjs` (read-only
+`GET /prices/{id}`, all six active/recurring/USD):
+
+| Plan | Monthly | Annual |
+| --- | --- | --- |
+| Starter | $49 | $470 |
+| Pro (Growth) | $149 | $1430 |
+| Advanced (Scale) | $299 | $2870 |
+
+No live price carries a trial period, so Atlas must not advertise one. Paddle
+prices are immutable — a real price change means creating new prices and
+updating the six `PADDLE_*_PRICE_ID_*` variables, never editing an existing
+amount.
 
 ## Readiness check
 
@@ -75,9 +87,9 @@ nothing.
 1. Create a **live** API key (Developer tools → Authentication) and store it as
    `PADDLE_API_KEY`.
 2. Create/copy the **live** client-side token (`live_…`) → `PADDLE_CLIENT_TOKEN`.
-3. Live catalog: create the three products and six recurring prices at the
-   amounts above if they do not already exist. Never edit or archive a live
-   price that customers already use — create a new one and update the variable.
+3. Live catalog: the three products and six recurring prices already exist at
+   the amounts in the table above. Never edit or archive a live price that
+   customers already use — create a new one and update the variable.
 4. Notifications: reuse the existing live destination pointing at
    `https://<project-ref>.supabase.co/functions/v1/paddle-webhook`
    (events: `transaction.completed`, `transaction.payment_failed`,

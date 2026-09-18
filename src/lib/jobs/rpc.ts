@@ -12,6 +12,18 @@
 //   - Frontend pages (job status, observability dashboard)
 //   - Client-side orchestrators (evidence pipeline kickoff)
 //   - Tests
+//
+// AUTHORIZATION BOUNDARY (see 20260918_atlas_security_hardening.sql §3b).
+// The client is not the authority for job state:
+//   * createJob / createJobStep / getJob / listJobs / getJobEvents are
+//     tenant-guarded server-side and callable by an authenticated member;
+//   * resumeFromReview is guarded and is the Reviews page's human-decision path;
+//   * completeJob / failJob / completeStep / failStep / retryStep / cancelJob /
+//     awaitingReview are WORKER-OWNED — they are service_role only, because the
+//     intended caller is AtlasWorker over a service-role client
+//     (src/lib/platform/runtime.ts). Calling them from a browser session fails
+//     with 42501 by design;
+//   * getJobStats is INTERNAL_ONLY (platform_role super_admin / atlas_admin).
 // ---------------------------------------------------------------------------
 
 import type { SupabaseClient } from "@supabase/supabase-js";

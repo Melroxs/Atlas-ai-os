@@ -66,7 +66,7 @@ Its stated rationale — *"Row Level Security remains the real gate"* — is **w
 
 **Fix:** a fail-closed authorization layer (`atlas_is_trusted_server` / `atlas_caller_tenants` / `atlas_can_access_tenant` / `atlas_assert_tenant_access`), plus the reviewer identity now taken from `auth.uid()` — `coalesce(auth.uid(), p_reviewer_id)` keeps the server path working while making the parameter unusable for impersonation.
 
-### 2.5 MEDIUM — cross-tenant job access (partially fixed)
+### 2.5 MEDIUM — cross-tenant job access (partially fixed — **fully resolved in §7.2**)
 
 `atlas_jobs` is tenant-owned. `jobs_list_jobs`, `jobs_get_events` and `jobs_resume_from_review` were `SECURITY DEFINER` with no tenant scope. All three are now tenant-scoped. `jobs_resume_from_review` matters because the routed Reviews page calls it to re-queue or cancel a job.
 
@@ -127,7 +127,7 @@ The 62 new security tests are **structural** — they read the migration SQL and
 ## 4. REMAINING RISKS
 
 1. **Nothing here has been executed against a live database.** The migration is code-reviewed and structurally validated only. No RLS behaviour, no tenant-isolation behaviour, and no EXECUTE policy has been observed in Postgres. Everything database-side is **CODE VERIFIED / DB UNVERIFIED**.
-2. **17 unguarded `SECURITY DEFINER` functions remain reachable by `authenticated`.** The 14-function `jobs_*` queue family is the substantive part. They cannot simply be revoked — `src/pages/Reviews.tsx` is routed and calls `jobs_resume_from_review` — and they cannot be safely scoped without reading each body's own tenant source, which was not done. This needs a follow-up pass. `handle_new_user` is a trigger function (not meaningfully callable as an RPC); `org_seat_limit` returns a plan's seat count, no tenant data.
+2. ~~17 unguarded `SECURITY DEFINER` functions remain reachable by `authenticated`.~~ **SUPERSEDED by §7.2 (2026-09-19).** All 16 remaining functions were closed: the job enqueue/read surface is tenant-guarded in-body, the worker-owned lifecycle plus `jobs_dequeue` are service-role only, `jobs_stats` is internal-operator only, and `handle_new_user` / `ensure_profile` / `org_seat_limit` are service-only.
 3. **PlatformOps is deliberately left unwired** (see §5).
 4. **The `20260906_atlas_regulatory_intelligence.sql` divergence** identified in the earlier audit is untouched by this task and remains unresolved.
 5. **No live E2E** for Paddle, ElevenLabs, LinkedIn or the blog pipeline — no credentials, no browser, no microphone in this environment. No mocks were substituted.
@@ -156,6 +156,169 @@ Per instruction, this was investigated and **not** wired.
 The repaired commit is a strict improvement on `b1271b5d`: it compiles (29 → 0 typecheck errors), the full suite passes, the build succeeds, the critical anonymous-privilege escalation is closed, and the human-approval IDOR is closed. But it is **not production-ready**, because:
 
 1. **The security migration has never been executed.** Until it runs against a real database, the IDOR fixes and the seat authority are code-reviewed assertions, not verified behaviour. RLS and tenant isolation remain unproven against Postgres.
-2. **17 unguarded `SECURITY DEFINER` functions remain reachable by `authenticated`**, chiefly the `jobs_*` queue family.
+2. **17 unguarded `SECURITY DEFINER` functions remain reachable by `authenticated`** — **closed in §7.2**; see §7.8 for the current status.
 
 Both are followed by the PlatformOps decision and the unresolved `20260906` migration divergence. What is *done* — the repair, the blanket-grant removal, the credential/outreach/human-approval IDOR fixes, the seat authority, and the regression coverage that keeps them done — was done surgically, without redesign, without a parallel implementation, and without touching `main`.
+
+---
+
+# 7. 2026-09-18/19 — Job authorization + regulatory reconciliation
+
+This section **supersedes** the job-authorization status in §2.5 and §2.9 and the
+remaining-risk / production-status claims in §4.2, §5 and §6. Everything below is
+still **CODE VERIFIED / DB UNVERIFIED**: no migration in this task was executed
+against production.
+
+## 7.1 CHANGES MADE
+
+| File | Change |
+| --- | --- |
+| `supabase/migrations/20260918_atlas_security_hardening.sql` | Added §3b (job enqueue/read/lifecycle authorization), §5b helpers (`atlas_assert_trusted_server`, `atlas_is_internal_admin`, `atlas_assert_internal_admin`), extended `v_service_only`, extended the audit payload. |
+| `supabase/migrations/20260909_atlas_complimentary_access.sql` | `admin_prepare_user_deletion` no longer references the orphan `public.regulatory_contradictions`; the resolved-by column is resolved from the catalog against the canonical `atlas_regulatory_contradictions`. |
+| `supabase/migrations/20260919_atlas_regulatory_schema_reconciliation.sql` | **New.** Drops the five orphan unprefixed draft tables, creates the nine canonical `atlas_regulatory_*` tables (columns, indexes, RLS, `regulatory*` policies, 51-jurisdiction seed), and re-creates `admin_prepare_user_deletion` against the canonical schema. |
+| `src/lib/security/migration-privileges.test.ts` | Guard detector extended; ratchet allowlist is now empty; +36 tests for the job boundary and the regulatory reconciliation. Existing tests preserved. |
+
+No application/UI code, billing code, or schema parallel to an existing one was
+added. Remote `main`, preview, and deployments were not modified.
+
+## 7.2 JOBS AUTHORIZATION MODEL — function-by-function
+
+The job tables are tenant-owned, but every job RPC is `SECURITY DEFINER`, so the
+table RLS never applies to them. Each function now authorizes the caller itself.
+Identity always derives from `auth.uid()`; `p_user_id`/`p_tenant_id` never grant
+access on their own.
+
+**Authenticated + tenant member (or `super_admin`) — in-body guard, still granted to `authenticated`:**
+
+| Function | Decision |
+| --- | --- |
+| `jobs_create_job` | Identity from `auth.uid()`; `p_user_id` honoured only behind `atlas_is_trusted_server()`; `atlas_assert_tenant_access(p_tenant_id)`. Fixes the identity-spoof on the old `p_user_id` path. |
+| `jobs_create_step` | Resolves the job's tenant, then `atlas_assert_tenant_access(v_tenant)`. Also repairs a latent bug (old body wrote `returning id into p_step_id`, an undeclared variable). |
+| `jobs_get_job` | Resolves the job's tenant, then asserts; unknown id → `NULL`, foreign tenant → `42501`. |
+| `jobs_list_jobs`, `jobs_get_events` | Already tenant-guarded in §5b-vii (unchanged). |
+| `jobs_resume_from_review` | Kept authenticated because `src/pages/Reviews.tsx` is routed and calls it; already tenant-guarded in §5b-viii. |
+
+**Trusted server only (service_role / direct superuser) — asserted in-body AND revoked from every client role.** No authenticated application caller exists for any of these (`AtlasWorker` drives them through `createSupabaseWorkerRPC`, which is handed a service-role client):
+
+| Function | Decision |
+| --- | --- |
+| `jobs_dequeue` | `atlas_assert_trusted_server()` before draining. Intentionally tenant-agnostic — the worker is cross-tenant infrastructure — so the boundary is the authorization check, not a tenant predicate. |
+| `jobs_complete_job`, `jobs_complete_step`, `jobs_fail_job`, `jobs_fail_step`, `jobs_retry_step`, `jobs_cancel_job`, `jobs_unlock_stuck`, `jobs_awaiting_review` | The old bodies called `perform public.atlas_is_trusted_server();`, which discards the boolean and guarded nothing. Now a real assert, plus service-only EXECUTE. |
+
+**Internal operator only (`platform_role` `super_admin`/`atlas_admin`, or trusted server):**
+
+| Function | Decision |
+| --- | --- |
+| `jobs_stats` | INTERNAL_ONLY. Cross-tenant operational aggregate; guarded by `atlas_is_internal_admin()` in-body so ordinary tenant users get `42501`. Still granted to `authenticated` (internal operators need it) but guarded. |
+
+**Auth / tenancy internals:**
+
+| Function | Decision |
+| --- | --- |
+| `handle_new_user` | Trigger on `auth.users`; trigger invocation performs no EXECUTE check, so revoking it from client roles is safe and closes direct RPC invocation. Service-only. |
+| `ensure_profile` | Called only internally by `tenants_create_tenant()`; no client caller. Service-only. |
+| `org_seat_limit` | Pure lookup called only by `org_seat_status()`; no client caller. Service-only. |
+
+## 7.3 REGULATORY SCHEMA MODEL
+
+**Canonical (production) tables — nine, all prefixed:**
+`atlas_regulatory_jurisdictions`, `atlas_regulatory_sources`,
+`atlas_regulatory_source_versions`, `atlas_regulatory_propositions`,
+`atlas_regulatory_proposition_versions`, `atlas_regulatory_contradictions`,
+`atlas_regulatory_review_queue`, `atlas_regulatory_coverage`,
+`atlas_regulatory_acquisition_jobs`.
+
+This is the shape `src/lib/regulatory/store.ts` reads, `src/lib/regulatory/legacy.ts`
+types, `scripts/verify-regulatory-schema.ts` verifies, and
+`supabase/verification/20260906_atlas_regulatory_verification.sql` asserts
+(`wave`/`code`, `verification_state`, `resolution_status`).
+
+**The draft** `20260906_atlas_regulatory_intelligence.sql` creates five
+**unprefixed** tables (`regulatory_*`) that exist nowhere in production and that
+no code reads. It was **not** renamed to the production version
+`20260906192230`, and it is **not** marked applied anywhere.
+
+**Strategy:** `20260919_atlas_regulatory_schema_reconciliation.sql` drops the
+five orphan tables (child-first, `if exists`; a no-op in production) and creates
+the nine canonical tables with `if not exists` — a no-op where production
+already has them, the reproducible shape everywhere else. It also re-creates
+`admin_prepare_user_deletion` so environments that already applied the obsolete
+body are repaired without rewriting history. No regulatory data is deleted and
+no production table is renamed.
+
+## 7.4 SECURITY TEST RESULTS
+
+- Security suite: **101 passed / 0 failed** (was 65). The ratchet allowlist is
+  now empty and the 16 historically-unguarded functions are asserted closed.
+- Full suite: **2015 passed / 5 skipped / 1 failed** — the failure is the
+  pre-existing live-NVIDIA timeout in `src/lib/voice-runtime/phase8-live.test.ts`.
+- `bun tsc -b --noEmit`: 0 errors. `bun run build`: passes.
+- Structural searches: no blanket `EXECUTE` to `anon`/`PUBLIC`; no `grant … to
+  PUBLIC`; no unguarded authenticated-reachable `SECURITY DEFINER` function; no
+  reference to the orphan `regulatory_contradictions` outside the draft and its
+  reconciliation drop.
+
+## 7.5 REMAINING RISKS
+
+1. **DB UNVERIFIED.** Nothing here was executed against a database. Tenant
+   isolation, the trusted-server boundary and the internal-operator guard are
+   asserted from the SQL and the tests, not observed in Postgres.
+2. **Latent anon grants in `0004`/`0008`/`0014`.** Several older migrations
+   explicitly grant EXECUTE to `anon` (`archive_*`, `ingestion_patch_document`,
+   `recommendations_decide`). They are neutralised because
+   `20260918` runs last and blanket-revokes from `public, anon, authenticated`
+   before re-granting only the anon allowlist — but the guard is ordering +
+   revoke, so any change that drops the final revoke re-exposes them.
+3. **`jobs_create_job` for a trusted server** accepts a caller-supplied
+   `p_user_id` with no membership check (by design — the worker is trusted).
+   Only reachable with a service-role connection.
+4. **PlatformOps remains unwired** (below).
+5. No live E2E for the migration path; no browser, no production DB.
+
+## 7.6 DATABASE EXECUTION PLAN (not executed)
+
+Apply in lexicographic migration order, after the preflight checks:
+
+1. **Preflight** — confirm the nine canonical `atlas_regulatory_*` tables exist
+   and run `supabase/verification/20260906_atlas_regulatory_verification.sql`.
+   Confirm the five `regulatory_*` tables do **not** exist (if any exists,
+   stop: the drop in step 3 would remove data and must be reviewed).
+2. `20260909_atlas_complimentary_access.sql` — only if not already applied.
+3. `20260918_atlas_security_hardening.sql` — the last word on function
+   privileges; must run after every migration that creates a function.
+4. `20260919_atlas_regulatory_schema_reconciliation.sql` — runs after step 3;
+   drops the orphan tables, (re)creates the nine canonical tables, re-creates
+   `admin_prepare_user_deletion`.
+5. **Postflight** — re-run the regulatory verification; then, as each role,
+   confirm an `authenticated` (non-admin) caller gets `42501` from
+   `jobs_dequeue`, the worker-only lifecycle RPCs and `jobs_stats`, and that a
+   member can call `jobs_create_job`/`jobs_get_job` for its own tenant only.
+
+Do **not** run this against production during this task.
+
+## 7.7 PLATFORMOPS — still unwired (Phase 7)
+
+The server-side authorization boundary is prepared but `/dashboard/platform` is
+still not routed and no authenticated EXECUTE was granted.
+
+Per-RPC disposition:
+
+| RPC | Boundary | State |
+| --- | --- | --- |
+| `jobs_stats` | internal operator (`atlas_is_internal_admin`) | guarded in-function |
+| `jobs_list_jobs` | authenticated tenant member | tenant-guarded in-function |
+| `sources_list_due`, `schedules_list`, `content_list` | trusted server | service-only, **no in-function guard** |
+
+**Exact remaining dependency:** the three platform-engine RPCs above have no
+in-function authorization check and are therefore `service_role`-only. To wire
+PlatformOps safely: (1) add `atlas_assert_internal_admin()` to each; (2) wrap the
+route in `RequireInternalAuth` with a new `platform` section; (3) only then grant
+`authenticated`. Until then the route stays unwired.
+
+## 7.8 PRODUCTION STATUS
+
+**NOT READY — DB UNVERIFIED.** Every code/migration blocker identified in the
+earlier audit is now resolved in the repository (blanket grant removed, the 16
+unguarded functions closed, the regulatory divergence reconciled, the deletion
+path canonical). The remaining blocker is that none of it has been executed or
+observed against a database, and PlatformOps is deliberately still unwired.

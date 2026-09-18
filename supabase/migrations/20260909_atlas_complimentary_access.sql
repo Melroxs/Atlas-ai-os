@@ -556,6 +556,7 @@ set search_path = public
 as $$
 declare
   v_email text;
+  v_reg_col text;
 begin
   if not public.is_super_admin() then
     raise exception 'Access denied: super_admin required';
@@ -589,7 +590,29 @@ begin
   -- Direct auth.users references without cascade
   update public.pilot_applications set reviewed_by = null where reviewed_by = p_user_id;
   update public.atlas_audit_log set actor_id = null where actor_id = p_user_id;
-  update public.regulatory_contradictions set resolved_by_id = null where resolved_by_id = p_user_id;
+
+  -- Contradiction resolution authorship. Production carries the canonical
+  -- atlas_regulatory_contradictions table; the unprefixed table this used to
+  -- name does not exist there, which broke deletion preparation. The
+  -- resolved-by column name differs between schema eras, so resolve it from the
+  -- catalog and update only when the canonical table and one of its columns
+  -- actually exist. No data is deleted — the reference is only detached.
+  select c.column_name into v_reg_col
+  from information_schema.columns c
+  where c.table_schema = 'public'
+    and c.table_name = 'atlas_regulatory_contradictions'
+    and c.column_name in ('resolved_by_id', 'resolved_by')
+  order by case c.column_name when 'resolved_by_id' then 0 else 1 end
+  limit 1;
+
+  if v_reg_col is not null then
+    execute format(
+      'update public.atlas_regulatory_contradictions set %I = null where %I = $1',
+      v_reg_col,
+      v_reg_col
+    ) using p_user_id;
+  end if;
+
   delete from public.user_provisions
     where provisioned_by = p_user_id or provisioned_user = p_user_id;
 

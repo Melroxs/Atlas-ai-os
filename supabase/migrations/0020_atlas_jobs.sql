@@ -308,13 +308,39 @@ CREATE OR REPLACE FUNCTION jobs_create_job(
   p_parent_job_id uuid DEFAULT NULL,
   p_tags         text[] DEFAULT '{}'
 )
-RETURNS jsonb AS $$
-DECLARE
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+declare
+  v_tenant uuid;
+  v_user uuid := p_user_id;
   v_job_id uuid;
   v_deduplicated boolean := false;
   v_existing jsonb;
-BEGIN
-  -- Idempotency check: return existing active job if one exists.
+begin
+  -- Caller identity must ultimately derive from the authenticated session.
+  if v_user is null then
+    v_user := auth.uid();
+  end if;
+
+  if v_user is null then
+    raise exception 'Authenticated caller required.' using errcode = '42501';
+  end if;
+
+  -- Resolve the tenant from membership, not from the caller-supplied parameter.
+  if not exists (
+    select 1 from public.memberships m
+    where m."userId" = v_user
+      and m."tenantId" = p_tenant_id
+  ) then
+    if public.is_super_admin() is not true then
+      raise exception 'Tenant access denied' using errcode = '42501';
+    end if;
+  end if;
+
+  -- Idempotency check within the authorized tenant.
   SELECT id INTO v_job_id
   FROM atlas_jobs
   WHERE tenant_id = p_tenant_id
@@ -338,7 +364,7 @@ BEGIN
     idempotency_key, payload, max_attempts,
     scheduled_at, parent_job_id, tags
   ) VALUES (
-    p_tenant_id, p_user_id, p_job_type, 'pending', p_priority,
+    p_tenant_id, v_user, p_job_type, 'pending', p_priority,
     p_idempotency_key, p_payload, p_max_attempts,
     p_scheduled_at, p_parent_job_id, p_tags
   )
@@ -350,7 +376,7 @@ BEGIN
     'job_type', p_job_type,
     'priority', p_priority,
     'idempotency_key', p_idempotency_key
-  ), COALESCE(p_user_id::text, 'system'));
+  ), COALESCE(v_user::text, 'system'));
 
   -- Move to queued status.
   UPDATE atlas_jobs SET status = 'queued' WHERE id = v_job_id;
@@ -372,15 +398,31 @@ CREATE OR REPLACE FUNCTION jobs_create_step(
   p_input        jsonb DEFAULT '{}',
   p_max_attempts int DEFAULT 3
 )
-RETURNS jsonb AS $$
-DECLARE
-  v_step_id uuid;
-BEGIN
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+declare
+  v_tenant uuid;
+begin
+  -- Resolve the job's tenant and authorize the caller against it.
+  SELECT j.tenant_id INTO v_tenant
+  FROM atlas_jobs j
+  WHERE j.id = p_job_id
+  FOR SHARE;
+
+  IF v_tenant IS NULL THEN
+    raise exception 'Job not found' using errcode = '42501';
+  end if;
+
+  perform public.atlas_assert_tenant_access(v_tenant);
+
   INSERT INTO atlas_job_steps (job_id, step_type, sequence, input, max_attempts)
   VALUES (p_job_id, p_step_type, p_sequence, p_input, p_max_attempts)
-  RETURNING id INTO v_step_id;
+  RETURNING id INTO p_step_id;
 
-  RETURN jsonb_build_object('step_id', v_step_id);
+  RETURN jsonb_build_object('step_id', p_step_id);
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -392,47 +434,56 @@ CREATE OR REPLACE FUNCTION jobs_dequeue(
   p_job_types    text[] DEFAULT NULL,
   p_max_jobs     int DEFAULT 1
 )
-RETURNS jsonb AS $$
-DECLARE
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+declare
   v_jobs jsonb := '[]'::jsonb;
   v_row record;
   v_lock_timeout interval := interval '5 minutes';
-BEGIN
-  FOR v_row IN
-    SELECT j.id
-    FROM atlas_jobs j
-    WHERE j.status IN ('pending', 'queued')
-      AND (j.scheduled_at IS NULL OR j.scheduled_at <= now())
-      AND (p_job_types IS NULL OR j.job_type = ANY(p_job_types))
-    ORDER BY j.priority ASC, j.scheduled_at ASC NULLS FIRST, j.created_at ASC
-    LIMIT p_max_jobs
-    FOR UPDATE OF j SKIP LOCKED
-  LOOP
+begin
+  -- Workers are trusted background processes, not interactive users.
+  if not public.atlas_is_trusted_server() then
+    raise exception 'Worker dequeue requires a trusted server connection.' using errcode = '42501';
+  end if;
+
+  for v_row in
+    select j.id
+    from public.atlas_jobs j
+    where j.status in ('pending', 'queued')
+      and (j.scheduled_at is null or j.scheduled_at <= now())
+      and (p_job_types is null or j.job_type = any(p_job_types))
+    order by j.priority asc, j.scheduled_at asc nulls first, j.created_at asc
+    limit p_max_jobs
+    for update of j skip locked
+  loop
     -- Lock and start processing.
-    UPDATE atlas_jobs
-    SET status = 'processing',
+    update public.atlas_jobs
+    set status = 'processing',
         locked_by = p_worker_id,
         locked_at = now(),
         lock_expires_at = now() + v_lock_timeout,
-        started_at = CASE WHEN started_at IS NULL THEN now() ELSE started_at END,
+        started_at = case when started_at is null then now() else started_at end,
         attempt_count = attempt_count + 1
-    WHERE id = v_row.id
-    RETURNING id INTO v_row.id;
+    where id = v_row.id
+    returning id into v_row.id;
 
     -- Emit started event.
-    INSERT INTO atlas_job_events (job_id, event_type, payload, actor)
-    VALUES (v_row.id, 'job_started', jsonb_build_object('worker_id', p_worker_id), p_worker_id);
+    insert into public.atlas_job_events (job_id, event_type, payload, actor)
+    values (v_row.id, 'job_started', jsonb_build_object('worker_id', p_worker_id), p_worker_id);
 
     -- Emit attempt record.
-    INSERT INTO atlas_job_attempts (job_id, worker_id, attempt_number, status)
-    SELECT v_row.id, p_worker_id, j.attempt_count, 'running'
-    FROM atlas_jobs j WHERE j.id = v_row.id;
+    insert into public.atlas_job_attempts (job_id, worker_id, attempt_number, status)
+    select v_row.id, p_worker_id, j.attempt_count, 'running'
+    from public.atlas_jobs j where j.id = v_row.id;
 
     v_jobs := v_jobs || to_jsonb(v_row.id);
-  END LOOP;
+  end loop;
 
-  RETURN jsonb_build_object('jobs', v_jobs, 'count', jsonb_array_length(v_jobs));
-END;
+  return jsonb_build_object('jobs', v_jobs, 'count', jsonb_array_length(v_jobs));
+end;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ---------------------------------------------------------------------------
@@ -443,31 +494,37 @@ CREATE OR REPLACE FUNCTION jobs_complete_job(
   p_result   jsonb DEFAULT '{}',
   p_ai_metadata jsonb DEFAULT NULL
 )
-RETURNS jsonb AS $$
-BEGIN
-  UPDATE atlas_jobs
-  SET status = 'completed',
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+begin
+  perform public.atlas_is_trusted_server();
+
+  update public.atlas_jobs
+  set status = 'completed',
       result = p_result,
-      ai_metadata = COALESCE(p_ai_metadata, ai_metadata),
+      ai_metadata = coalesce(p_ai_metadata, ai_metadata),
       completed_at = now(),
-      locked_by = NULL,
-      locked_at = NULL,
-      lock_expires_at = NULL
-  WHERE id = p_job_id;
+      locked_by = null,
+      locked_at = null,
+      lock_expires_at = null
+  where id = p_job_id;
 
   -- Close the current attempt.
-  UPDATE atlas_job_attempts
-  SET status = 'completed',
+  update public.atlas_job_attempts
+  set status = 'completed',
       completed_at = now(),
-      duration_ms = EXTRACT(EPOCH FROM (now() - started_at)) * 1000
-  WHERE job_id = p_job_id
-    AND status = 'running';
+      duration_ms = extract(epoch from (now() - started_at)) * 1000
+  where job_id = p_job_id
+    and status = 'running';
 
-  INSERT INTO atlas_job_events (job_id, event_type, payload, actor)
-  VALUES (p_job_id, 'job_completed', jsonb_build_object('result_size', pg_column_size(p_result)), 'system');
+  insert into public.atlas_job_events (job_id, event_type, payload, actor)
+  values (p_job_id, 'job_completed', jsonb_build_object('result_size', pg_column_size(p_result)), 'system');
 
-  RETURN jsonb_build_object('ok', true);
-END;
+  return jsonb_build_object('ok', true);
+end;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ---------------------------------------------------------------------------
@@ -478,74 +535,80 @@ CREATE OR REPLACE FUNCTION jobs_fail_job(
   p_error    jsonb,
   p_retryable boolean DEFAULT true
 )
-RETURNS jsonb AS $$
-DECLARE
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+declare
   v_job record;
   v_next_scheduled timestamptz;
-BEGIN
-  SELECT * INTO v_job FROM atlas_jobs WHERE id = p_job_id FOR UPDATE;
+begin
+  perform public.atlas_is_trusted_server();
 
-  IF NOT FOUND THEN
-    RETURN jsonb_build_object('ok', false, 'error', 'job_not_found');
-  END IF;
+  select * into v_job from public.atlas_jobs where id = p_job_id for update;
+
+  if not found then
+    return jsonb_build_object('ok', false, 'error', 'job_not_found');
+  end if;
 
   -- Close the current attempt.
-  UPDATE atlas_job_attempts
-  SET status = 'failed',
+  update public.atlas_job_attempts
+  set status = 'failed',
       completed_at = now(),
       error = p_error,
-      duration_ms = EXTRACT(EPOCH FROM (now() - started_at)) * 1000
-  WHERE job_id = p_job_id
-    AND status = 'running';
+      duration_ms = extract(epoch from (now() - started_at)) * 1000
+  where job_id = p_job_id
+    and status = 'running';
 
   -- Decide: retry or fail permanently.
-  IF p_retryable
-     AND v_job.attempt_count < v_job.max_attempts
-  THEN
+  if p_retryable
+     and v_job.attempt_count < v_job.max_attempts
+  then
     -- Exponential backoff: base 15s * 2^(attempt-1), capped at 1 hour.
-    v_next_scheduled := now() + LEAST(
+    v_next_scheduled := now() + least(
       interval '15 seconds' * power(2, v_job.attempt_count - 1),
       interval '1 hour'
     );
 
-    UPDATE atlas_jobs
-    SET status = 'retrying',
+    update public.atlas_jobs
+    set status = 'retrying',
         error = p_error,
         scheduled_at = v_next_scheduled,
-        locked_by = NULL,
-        locked_at = NULL,
-        lock_expires_at = NULL
-    WHERE id = p_job_id;
+        locked_by = null,
+        locked_at = null,
+        lock_expires_at = null
+    where id = p_job_id;
 
-    INSERT INTO atlas_job_events (job_id, event_type, payload, actor)
-    VALUES (p_job_id, 'job_retrying', jsonb_build_object(
+    insert into public.atlas_job_events (job_id, event_type, payload, actor)
+    values (p_job_id, 'job_retrying', jsonb_build_object(
       'attempt', v_job.attempt_count,
       'max_attempts', v_job.max_attempts,
       'next_scheduled_at', v_next_scheduled,
       'error', p_error
     ), 'system');
 
-    RETURN jsonb_build_object('ok', true, 'retrying', true, 'next_scheduled_at', v_next_scheduled);
-  ELSE
+    return jsonb_build_object('ok', true, 'retrying', true, 'next_scheduled_at', v_next_scheduled);
+  else
     -- Permanent failure.
-    UPDATE atlas_jobs
-    SET status = 'failed',
+    update public.atlas_jobs
+    set status = 'failed',
         error = p_error,
         completed_at = now(),
-        locked_by = NULL,
-        locked_at = NULL,
-        lock_expires_at = NULL
-    WHERE id = p_job_id;
+        locked_by = null,
+        locked_at = null,
+        lock_expires_at = null
+    where id = p_job_id;
 
-    INSERT INTO atlas_job_events (job_id, event_type, payload, actor)
-    VALUES (p_job_id, 'job_failed', jsonb_build_object(
+    insert into public.atlas_job_events (job_id, event_type, payload, actor)
+    values (p_job_id, 'job_failed', jsonb_build_object(
       'attempt', v_job.attempt_count,
       'error', p_error
     ), 'system');
 
-    RETURN jsonb_build_object('ok', true, 'retrying', false);
-  END IF;
-END;
+    return jsonb_build_object('ok', true, 'retrying', false);
+  end if;
+end;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ---------------------------------------------------------------------------
@@ -556,24 +619,30 @@ CREATE OR REPLACE FUNCTION jobs_complete_step(
   p_output   jsonb DEFAULT '{}',
   p_ai_metadata jsonb DEFAULT NULL
 )
-RETURNS jsonb AS $$
-BEGIN
-  UPDATE atlas_job_steps
-  SET status = 'completed',
-      output = p_output,
-      ai_metadata = COALESCE(p_ai_metadata, ai_metadata),
-      completed_at = now()
-  WHERE id = p_step_id;
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+begin
+  perform public.atlas_is_trusted_server();
 
-  INSERT INTO atlas_job_events (job_id, step_id, event_type, payload, actor)
-  SELECT job_id, p_step_id, 'step_completed', jsonb_build_object(
+  update public.atlas_job_steps
+  set status = 'completed',
+      output = p_output,
+      ai_metadata = coalesce(p_ai_metadata, ai_metadata),
+      completed_at = now()
+  where id = p_step_id;
+
+  insert into public.atlas_job_events (job_id, step_id, event_type, payload, actor)
+  select job_id, p_step_id, 'step_completed', jsonb_build_object(
     'step_type', step_type,
     'sequence', sequence
   ), 'system'
-  FROM atlas_job_steps WHERE id = p_step_id;
+  from public.atlas_job_steps where id = p_step_id;
 
-  RETURN jsonb_build_object('ok', true);
-END;
+  return jsonb_build_object('ok', true);
+end;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ---------------------------------------------------------------------------
@@ -583,24 +652,30 @@ CREATE OR REPLACE FUNCTION jobs_fail_step(
   p_step_id  uuid,
   p_error    jsonb
 )
-RETURNS jsonb AS $$
-BEGIN
-  UPDATE atlas_job_steps
-  SET status = 'failed',
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+begin
+  perform public.atlas_is_trusted_server();
+
+  update public.atlas_job_steps
+  set status = 'failed',
       error = p_error,
       completed_at = now()
-  WHERE id = p_step_id;
+  where id = p_step_id;
 
-  INSERT INTO atlas_job_events (job_id, step_id, event_type, payload, actor)
-  SELECT job_id, p_step_id, 'step_failed', jsonb_build_object(
+  insert into public.atlas_job_events (job_id, step_id, event_type, payload, actor)
+  select job_id, p_step_id, 'step_failed', jsonb_build_object(
     'step_type', step_type,
     'sequence', sequence,
     'error', p_error
   ), 'system'
-  FROM atlas_job_steps WHERE id = p_step_id;
+  from public.atlas_job_steps where id = p_step_id;
 
-  RETURN jsonb_build_object('ok', true);
-END;
+  return jsonb_build_object('ok', true);
+end;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ---------------------------------------------------------------------------
@@ -609,25 +684,31 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE OR REPLACE FUNCTION jobs_retry_step(
   p_step_id uuid
 )
-RETURNS jsonb AS $$
-BEGIN
-  UPDATE atlas_job_steps
-  SET status = 'pending',
-      error = NULL,
-      started_at = NULL,
-      completed_at = NULL
-  WHERE id = p_step_id
-    AND status = 'failed';
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+begin
+  perform public.atlas_is_trusted_server();
 
-  INSERT INTO atlas_job_events (job_id, step_id, event_type, payload, actor)
-  SELECT job_id, p_step_id, 'step_started', jsonb_build_object(
+  update public.atlas_job_steps
+  set status = 'pending',
+      error = null,
+      started_at = null,
+      completed_at = null
+  where id = p_step_id
+    and status = 'failed';
+
+  insert into public.atlas_job_events (job_id, step_id, event_type, payload, actor)
+  select job_id, p_step_id, 'step_started', jsonb_build_object(
     'step_type', step_type,
     'retry', true
   ), 'system'
-  FROM atlas_job_steps WHERE id = p_step_id;
+  from public.atlas_job_steps where id = p_step_id;
 
-  RETURN jsonb_build_object('ok', true);
-END;
+  return jsonb_build_object('ok', true);
+end;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- ---------------------------------------------------------------------------
@@ -665,13 +746,29 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE OR REPLACE FUNCTION jobs_get_job(
   p_job_id uuid
 )
-RETURNS jsonb AS $$
-DECLARE
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+declare
+  v_tenant uuid;
   v_job jsonb;
   v_steps jsonb;
-BEGIN
+begin
+  -- Resolve the job's tenant and authorize the caller before reading anything.
+  SELECT j.tenant_id INTO v_tenant
+  FROM atlas_jobs j
+  WHERE j.id = p_job_id
+  FOR SHARE;
+
+  if v_tenant is not null then
+    perform public.atlas_assert_tenant_access(v_tenant);
+  end if;
+
   SELECT to_jsonb(j.*) INTO v_job
-  FROM atlas_jobs j WHERE j.id = p_job_id;
+  FROM atlas_jobs j WHERE j.id = p_job_id
+    and (v_tenant is null or public.atlas_can_access_tenant(j.tenant_id));
 
   IF v_job IS NULL THEN
     RETURN NULL;
@@ -679,7 +776,9 @@ BEGIN
 
   SELECT jsonb_agg(to_jsonb(s.*) ORDER BY s.sequence)
   INTO v_steps
-  FROM atlas_job_steps s WHERE s.job_id = p_job_id;
+  FROM atlas_job_steps s
+  WHERE s.job_id = p_job_id
+    and public.atlas_can_access_tenant(v_tenant);
 
   v_job := v_job || jsonb_build_object('steps', COALESCE(v_steps, '[]'::jsonb));
 

@@ -1467,8 +1467,9 @@ select public.schedules_upsert(
 -- default), where a new object is NOT reachable through the Data API without an
 -- explicit GRANT — the RPCs would fail with `permission denied` (42501).
 --
--- Row Level Security remains the real gate. `anon` has no uid, so it can only
--- ever satisfy the published-content / check-history read policies.
+-- Row Level Security is the gate for TABLE access below: the policies declared
+-- in this migration restrict `anon` to published blog content and check
+-- history, and `anon` has no uid, so no other row can pass.
 -- ============================================================================
 
 grant all on public.atlas_schedules to anon, authenticated, service_role;
@@ -1476,6 +1477,21 @@ grant all on public."authoritativeSourceChecks" to anon, authenticated, service_
 grant all on public."atlasContentItems" to anon, authenticated, service_role;
 grant all on public."atlasContentProvenance" to anon, authenticated, service_role;
 
-grant execute on all functions in schema public to anon, authenticated, service_role;
+-- REMOVED: `grant execute on all functions in schema public to anon, authenticated, service_role;`
+--
+-- That blanket EXECUTE grant was a privilege-escalation hole. Row Level Security
+-- is NOT the gate for a SECURITY DEFINER function: it runs with the definer's
+-- privileges and bypasses RLS, and several functions carry no authorization
+-- check of their own. With this grant in place an unauthenticated caller could
+-- call `tenants_activate_after_payment(<any tenant id>)` to activate paid access
+-- for any organization, or `email_accounts_get_credentials(<any id>)` to read
+-- another organization's encrypted mailbox credentials.
+--
+-- The same blanket pattern also exists in `0007_grants.sql` (`grant all on all
+-- routines ... to anon, authenticated;` plus an `alter default privileges` that
+-- re-applies it to every future function), so deleting this line alone is not
+-- sufficient. Function privileges for this schema are now set explicitly and
+-- authoritatively by `20260918_atlas_security_hardening.sql`, which sorts after
+-- this migration.
 
 notify pgrst, 'reload schema';

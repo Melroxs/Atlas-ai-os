@@ -1,6 +1,21 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 import { resolveBillingState } from "./provider";
-import { resolvePlanEntitlements, PLAN_ENTITLEMENTS } from "./plans";
+import {
+  resolvePlanEntitlements,
+  PLAN_ENTITLEMENTS,
+  ALL_INTERNAL_PLANS,
+} from "./plans";
+import {
+  normalizeSeatStatus,
+  evaluateSeatCapacity,
+  resolveOrgEntitlements,
+  canUseFeature,
+  planEntitlements,
+  fetchSeatStatus,
+} from "./entitlements";
 import type { OrganizationSubscription } from "./types";
 
 function sub(overrides: Partial<OrganizationSubscription>): OrganizationSubscription {
@@ -103,5 +118,221 @@ describe("entitlement gating (server-authoritative)", () => {
     );
     expect(state.plan).toBe("ATLAS_STARTER");
     expect(state.canUsePaidFeatures).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Runtime entitlement access (plan limits need real callers)
+// ---------------------------------------------------------------------------
+
+describe("resolveOrgEntitlements", () => {
+  it("resolves entitlements for an active paid plan", () => {
+    const e = resolveOrgEntitlements({
+      canUsePaidFeatures: true,
+      plan: "ATLAS_GROWTH",
+    });
+    expect(e).toEqual(PLAN_ENTITLEMENTS.ATLAS_GROWTH);
+    expect(e!.maxSeats).toBe(25);
+  });
+
+  it("fails closed when paid features are not granted", () => {
+    expect(
+      resolveOrgEntitlements({ canUsePaidFeatures: false, plan: "ATLAS_SCALE" }),
+    ).toBeNull();
+  });
+
+  it("fails closed for a missing billing state or plan", () => {
+    expect(resolveOrgEntitlements(null)).toBeNull();
+    expect(resolveOrgEntitlements(undefined)).toBeNull();
+    expect(resolveOrgEntitlements({ canUsePaidFeatures: true, plan: null })).toBeNull();
+  });
+
+  it("denies feature access without entitlements", () => {
+    expect(canUseFeature(null, "apiAccess")).toBe(false);
+    const starter = planEntitlements("ATLAS_STARTER");
+    expect(canUseFeature(starter, "apiAccess")).toBe(false);
+    expect(canUseFeature(starter, "sso")).toBe(false);
+    const growth = planEntitlements("ATLAS_GROWTH");
+    expect(canUseFeature(growth, "apiAccess")).toBe(true);
+    expect(canUseFeature(growth, "sso")).toBe(false);
+    expect(canUseFeature(planEntitlements("ATLAS_SCALE"), "sso")).toBe(true);
+  });
+});
+
+describe("evaluateSeatCapacity", () => {
+  it("allows while seats remain and reports remaining", () => {
+    expect(evaluateSeatCapacity({ maxSeats: 5, used: 4 })).toEqual({
+      allowed: true,
+      remaining: 1,
+    });
+  });
+
+  it("denies at and beyond the limit", () => {
+    expect(evaluateSeatCapacity({ maxSeats: 5, used: 5 })).toEqual({
+      allowed: false,
+      remaining: 0,
+    });
+    expect(evaluateSeatCapacity({ maxSeats: 5, used: 9 })).toEqual({
+      allowed: false,
+      remaining: 0,
+    });
+  });
+
+  it("treats a null limit as unlimited", () => {
+    expect(evaluateSeatCapacity({ maxSeats: null, used: 1000 })).toEqual({
+      allowed: true,
+      remaining: null,
+    });
+  });
+
+  it("clamps a negative usage count and never reports negative remaining", () => {
+    expect(evaluateSeatCapacity({ maxSeats: 1, used: -5 })).toEqual({
+      allowed: true,
+      remaining: 1,
+    });
+    expect(evaluateSeatCapacity({ maxSeats: 2, used: 99 }).remaining).toBe(0);
+  });
+});
+
+describe("normalizeSeatStatus (fail-closed)", () => {
+  it("accepts a server-allowed payload", () => {
+    expect(
+      normalizeSeatStatus({
+        plan: "ATLAS_STARTER",
+        used: 2,
+        limit: 5,
+        remaining: 3,
+        allowed: true,
+        reason: "within_limit",
+      }),
+    ).toEqual({
+      plan: "ATLAS_STARTER",
+      used: 2,
+      limit: 5,
+      remaining: 3,
+      allowed: true,
+      reason: "within_limit",
+    });
+  });
+
+  it("denies malformed payloads", () => {
+    const bad: unknown[] = [
+      null,
+      undefined,
+      0,
+      "yes",
+      {},
+      { allowed: true },
+      { allowed: true, reason: "made_up" },
+    ];
+    for (const payload of bad) {
+      expect(normalizeSeatStatus(payload).allowed).toBe(false);
+    }
+  });
+
+  it("cannot be tricked by an allowed flag on a denial reason", () => {
+    expect(normalizeSeatStatus({ allowed: true, reason: "seat_limit_reached" }).allowed).toBe(
+      false,
+    );
+    expect(normalizeSeatStatus({ allowed: true, reason: "no_plan" }).allowed).toBe(false);
+    expect(normalizeSeatStatus({ allowed: true, reason: "not_a_member" }).allowed).toBe(false);
+  });
+
+  it("keeps the intentional super_admin / complimentary bypasses", () => {
+    expect(normalizeSeatStatus({ allowed: true, reason: "super_admin" }).allowed).toBe(true);
+    expect(normalizeSeatStatus({ allowed: true, reason: "complimentary" }).allowed).toBe(true);
+    expect(normalizeSeatStatus({ allowed: true, reason: "unlimited" }).allowed).toBe(true);
+  });
+});
+
+describe("fetchSeatStatus (fails closed)", () => {
+  it("denies without a client or a tenant", async () => {
+    expect((await fetchSeatStatus(null, "t")).allowed).toBe(false);
+    expect(
+      (await fetchSeatStatus({ rpc: async () => ({ data: null, error: null }) }, null)).allowed,
+    ).toBe(false);
+  });
+
+  it("denies on an RPC error response", async () => {
+    const s = await fetchSeatStatus(
+      {
+        rpc: async () => ({
+          data: { allowed: true, reason: "within_limit" },
+          error: { message: "boom" },
+        }),
+      },
+      "t",
+    );
+    expect(s.allowed).toBe(false);
+  });
+
+  it("denies when the RPC throws", async () => {
+    const s = await fetchSeatStatus(
+      {
+        rpc: async () => {
+          throw new Error("network");
+        },
+      },
+      "t",
+    );
+    expect(s.allowed).toBe(false);
+  });
+
+  it("returns the server payload for the caller's tenant", async () => {
+    const s = await fetchSeatStatus(
+      {
+        rpc: async (fn, args) => {
+          expect(fn).toBe("org_seat_status");
+          expect(args).toEqual({ p_tenant: "t1" });
+          return {
+            data: {
+              plan: "ATLAS_GROWTH",
+              used: 1,
+              limit: 25,
+              remaining: 24,
+              allowed: true,
+              reason: "within_limit",
+            },
+            error: null,
+          };
+        },
+      },
+      "t1",
+    );
+    expect(s.allowed).toBe(true);
+    expect(s.limit).toBe(25);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Seat-limit parity guard
+//
+// Seat limits are ENFORCED server-side (`plan_seat_limits` in SQL, consumed by
+// public.org_seat_status) and DISPLAYED from src/lib/billing/plans.ts (Deno Edge
+// Functions cannot import from src/). They must never drift, so this test parses
+// the migration and asserts the numbers agree.
+// ---------------------------------------------------------------------------
+
+describe("seat-limit parity (SQL enforcement vs TS display)", () => {
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const sql = readFileSync(
+    resolve(HERE, "../../../supabase/migrations/20260918_atlas_security_hardening.sql"),
+    "utf8",
+  );
+
+  /** Parse `('PLAN', <n|null>)` out of the seed block. */
+  function seededMaxSeats(plan: string): number | null {
+    const marker = `('${plan}',`;
+    const line = sql.split("\n").find((l) => l.includes(marker));
+    if (!line) throw new Error(`plan_seat_limits seed missing for ${plan}`);
+    const rest = line.slice(line.indexOf(marker) + marker.length);
+    const value = rest.slice(0, rest.indexOf(")")).trim();
+    return value === "null" ? null : Number(value);
+  }
+
+  it("seeds a seat limit identical to PLAN_ENTITLEMENTS for every plan", () => {
+    for (const plan of ALL_INTERNAL_PLANS) {
+      expect(seededMaxSeats(plan)).toBe(PLAN_ENTITLEMENTS[plan].maxSeats);
+    }
   });
 });

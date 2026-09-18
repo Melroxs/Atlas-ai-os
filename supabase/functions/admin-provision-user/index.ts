@@ -326,6 +326,72 @@ async function handleInvite(ctx: AdminContext, body: Record<string, unknown>) {
     .maybeSingle();
   if (orgError || !org) return fail("Organization not found.", orgError?.message);
 
+  // ── Plan seat entitlement (server-side, tenant-aware, fail-closed) ────────
+  // The plan's seat limit is enforced HERE, before any Auth invitation is sent,
+  // so an organization can never be provisioned past its plan. The
+  // authoritative status comes from the `org_seat_status` RPC, which applies
+  // the intentional super_admin and complimentary-access bypasses.
+  //
+  // `ctx.user` (not `ctx.admin`) is required: the RPC resolves the caller from
+  // the JWT, and a service-role client has no auth.uid().
+  //
+  // Adding a user who is already a member of this organization is not a new
+  // seat, so it is not blocked.
+  const { data: memberProfile } = await ctx.admin
+    .from("profiles")
+    .select("_id")
+    .eq("email", email)
+    .maybeSingle();
+
+  let alreadyMember = false;
+  if (memberProfile?._id) {
+    const { data: membership } = await ctx.admin
+      .from("memberships")
+      .select("_id")
+      .eq("tenantId", tenantId)
+      .eq("userId", memberProfile._id)
+      .maybeSingle();
+    alreadyMember = Boolean(membership);
+  }
+
+  if (!alreadyMember) {
+    const { data: seatData, error: seatError } = await ctx.user.rpc("org_seat_status", {
+      p_tenant: tenantId,
+    });
+    if (seatError) {
+      // Fail closed: an unverifiable seat limit must not authorize a new seat.
+      return fail(
+        "Could not verify this organization's plan seat limit. Please try again.",
+        seatError.message,
+      );
+    }
+
+    const seat = (seatData ?? null) as {
+      allowed?: boolean;
+      reason?: string;
+      limit?: number | null;
+      used?: number;
+    } | null;
+
+    if (seat?.allowed !== true) {
+      const reason = seat?.reason ?? "unknown";
+      if (reason === "seat_limit_reached") {
+        return fail(
+          `This organization has reached its plan seat limit (${seat?.used ?? 0} of ${seat?.limit ?? 0} seats in use). Upgrade the plan or remove a member first.`,
+        );
+      }
+      if (reason === "no_plan") {
+        return fail(
+          "This organization has no active plan, so no additional seats are available.",
+        );
+      }
+      if (reason === "not_a_member") {
+        return fail("Your account is not a member of this organization.");
+      }
+      return fail(`Plan seats are unavailable for this organization (${reason}).`);
+    }
+  }
+
   // Resolve or create the Auth user
   const { data: existingUsers, error: listError } =
     await ctx.admin.auth.admin.listUsers({ filter: `email = "${email}"` });

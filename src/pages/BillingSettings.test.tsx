@@ -55,8 +55,10 @@ describe("BillingSettings placeholder UI", () => {
 
     render(wrapInRouter(<BillingSettings />));
 
+    // The return path must be the route BillingSettings is actually mounted on
+    // (src/main.tsx → /dashboard/billing), otherwise sign-in lands on a 404.
     expect(navigate).toHaveBeenCalledWith(
-      "/auth?returnTo=/settings/billing",
+      "/auth?returnTo=/dashboard/billing",
     );
   });
 

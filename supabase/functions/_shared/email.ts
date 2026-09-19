@@ -19,8 +19,9 @@
 // SVG logo is a gradient mark that cannot be reliably hotlinked by email
 // clients; per the brand spec a text-based header is preferred).
 //
-// Paddle / billing templates do NOT calculate trial behavior — Paddle remains
-// authoritative for dates, amounts, and subscription state.
+// Billing templates do NOT calculate dates, amounts or subscription state —
+// Stripe remains authoritative for all of them (Atlas only renders the values
+// the verified webhook recovers from the Stripe API).
 // ---------------------------------------------------------------------------
 
 // ═══════════════════════════════════════════════════════════════════════════

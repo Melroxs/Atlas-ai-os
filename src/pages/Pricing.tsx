@@ -1,82 +1,105 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Check, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
 import logo from "@/assets/logo.svg";
 import { ThemeToggle } from "@/components/atlas-ui";
+import {
+  allPricingPlans,
+  checkoutReturnTo,
+  type PricingPlanData,
+} from "@/lib/billing/checkout";
+import { resolvePlanEntitlements } from "@/lib/billing/plans";
+import type { InternalPlan } from "@/lib/billing/types";
 
-const PLANS = [
+/**
+ * Display-only marketing lines. Limits, storage, AI tier and feature flags are
+ * derived from the canonical plan entitlement contract (src/lib/billing/plans)
+ * so the page can never advertise a limit the product does not enforce.
+ */
+const MARKETING_LINES: Partial<Record<InternalPlan, string[]>> = {
+  ATLAS_SCALE: ["Custom integrations", "Custom deployment"],
+};
+
+const AI_TIER_LABEL: Record<string, string> = {
+  basic: "Basic AI intelligence",
+  advanced: "Advanced AI intelligence",
+  enterprise: "Enterprise AI intelligence",
+};
+
+function planFeatures(plan: InternalPlan): string[] {
+  const entitlements = resolvePlanEntitlements(plan);
+  if (!entitlements) return [];
+  const features: string[] = [
+    entitlements.maxSeats === null
+      ? "Unlimited team members"
+      : `Up to ${entitlements.maxSeats} team members`,
+    entitlements.maxStorageGb === null
+      ? "Unlimited document storage"
+      : `${entitlements.maxStorageGb} GB document storage`,
+    AI_TIER_LABEL[entitlements.aiTier] ?? "AI intelligence",
+    entitlements.prioritySupport ? "Priority support" : "Email support",
+    entitlements.multipleOrganizations ? "Multiple organizations" : "Single organization",
+  ];
+  if (entitlements.customWorkflows) features.push("Custom workflows");
+  if (entitlements.apiAccess) features.push("API access");
+  if (entitlements.sso) features.push("SSO & advanced security");
+  if (entitlements.sla) features.push("SLA guarantee");
+  features.push(...(MARKETING_LINES[plan] ?? []));
+  return features;
+}
+
+const POPULAR_PLAN: InternalPlan = "ATLAS_GROWTH";
+
+const FAQ = [
   {
-    name: "Starter",
-    description: "For small teams getting started with intelligence.",
-    monthlyPrice: 49,
-    annualPrice: 470, // ~$39/mo billed annually
-    features: [
-      "Up to 5 team members",
-      "10 GB document storage",
-      "Basic AI intelligence",
-      "Email support",
-      "Single organization",
-    ],
-    cta: "Get Started",
-    popular: false,
+    q: "Can I switch plans later?",
+    a: "Yes. Use Manage Billing in Atlas to open the Stripe billing portal, where you can upgrade or downgrade your plan. The change is reflected in Atlas automatically once Stripe confirms it.",
   },
   {
-    name: "Growth",
-    description: "For growing teams that need full intelligence capabilities.",
-    monthlyPrice: 149,
-    annualPrice: 1430, // ~$119/mo billed annually
-    features: [
-      "Up to 25 team members",
-      "100 GB document storage",
-      "Advanced AI intelligence",
-      "Priority support",
-      "Multiple organizations",
-      "Custom workflows",
-      "API access",
-    ],
-    cta: "Get Started",
-    popular: true,
+    q: "Is there a free trial?",
+    a: "No. Atlas has no free trial, no introductory period and no setup fee: you pay the plan price shown here when you subscribe, and it renews on your chosen billing interval until you cancel.",
   },
   {
-    name: "Scale",
-    description: "For large organizations with heavier claim volume and multi-team workflows.",
-    monthlyPrice: 299,
-    annualPrice: 2870, // ~$239/mo billed annually
-    features: [
-      "Unlimited team members",
-      "Unlimited document storage",
-      "Enterprise AI intelligence",
-      "Dedicated support",
-      "Custom integrations",
-      "SSO & advanced security",
-      "SLA guarantee",
-      "Custom deployment",
-    ],
-    cta: "Get Started",
-    popular: false,
+    q: "What payment methods do you accept?",
+    a: "Payments are processed securely by Stripe. All major credit and debit cards are supported, along with the local payment methods Stripe offers in your region.",
+  },
+  {
+    q: "What happens when my subscription renews?",
+    a: "Your card is charged the plan price on the billing interval you chose, and your subscription continues until you cancel. See the Refund Policy for details.",
+  },
+  {
+    q: "How do I cancel or update my card?",
+    a: "Open the Stripe billing portal from Manage Billing in your Atlas billing settings — cancellation, payment method updates and invoices are handled there.",
   },
 ];
 
 export default function Pricing() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [billing, setBilling] = useState<"monthly" | "annual">("monthly");
 
-  const handleGetStarted = (plan: typeof PLANS[0]) => {
-    // Navigate to auth with plan info and explicit signup intent.
-    // The returnTo carries the plan + billing so Checkout receives them
-    // after Auth redirects back (URLSearchParams properly encodes the
-    // nested query string as a single value).
-    const checkoutReturnTo = `/checkout?plan=${encodeURIComponent(plan.name.toLowerCase())}&billing=${encodeURIComponent(billing)}`;
+  // A cancelled Stripe checkout returns here with ?checkout=cancelled.
+  const checkoutCancelled = searchParams.get("checkout") === "cancelled";
+
+  const plans = allPricingPlans(billing);
+
+  const handleGetStarted = (plan: PricingPlanData) => {
+    // Carry plan + interval through auth so checkout resumes after sign-up.
     const params = new URLSearchParams({
       mode: "signup",
-      plan: plan.name.toLowerCase(),
-      billing,
-      returnTo: checkoutReturnTo,
+      plan: plan.slug,
+      interval: billing,
+      returnTo: checkoutReturnTo({ plan: plan.slug, interval: billing }),
     });
     navigate(`/auth?${params.toString()}`);
   };
+
+  const intervalLabel = (plan: PricingPlanData) =>
+    billing === "monthly"
+      ? `$${plan.intervalPrice}/month`
+      : `$${plan.intervalPrice}/year`;
 
   return (
     <div className="min-h-screen bg-background">
@@ -108,9 +131,16 @@ export default function Pricing() {
             Choose your plan
           </h1>
           <p className="mt-4 text-lg text-muted-foreground max-w-2xl mx-auto">
-            Start with a plan that fits your team. Every plan starts with a
-            1-day trial for $10 — then your plan's regular price applies.
+            Start with a plan that fits your team. No trial, no setup fee — you pay
+            the plan price shown here and can cancel whenever you like.
           </p>
+
+          {checkoutCancelled && (
+            <div className="mx-auto mt-6 max-w-xl rounded-lg border border-border/70 bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+              Checkout was cancelled — nothing was charged. You can pick a plan again
+              whenever you're ready.
+            </div>
+          )}
 
           {/* Billing Toggle */}
           <div className="mt-8 inline-flex items-center gap-3 rounded-lg border border-border/60 bg-muted/30 p-1">
@@ -137,87 +167,84 @@ export default function Pricing() {
               )}
             >
               Annual
-              <span className="ml-1.5 text-xs text-emerald-600 dark:text-emerald-400">Save 20%</span>
+              <span className="ml-1.5 text-xs text-emerald-600 dark:text-emerald-400">Save 17%</span>
             </button>
           </div>
         </div>
 
         {/* Plans Grid */}
         <div className="grid gap-6 lg:grid-cols-3">
-          {PLANS.map((plan) => (
-            <div
-              key={plan.name}
-              className={cn(
-                "relative rounded-2xl border bg-card/60 p-8 transition-all",
-                plan.popular
-                  ? "border-teal-400/50 shadow-lg shadow-teal-400/10"
-                  : "border-border/70 hover:border-teal-400/30"
-              )}
-            >
-              {plan.popular && (
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-teal-400 px-4 py-1 text-xs font-semibold text-teal-950">
-                  Most Popular
-                </div>
-              )}
-              {plan.monthlyPrice !== null && (
-                <div className="absolute -top-3 right-4 rounded-full border border-teal-400/40 bg-teal-400/10 px-3 py-1 text-[11px] font-medium text-teal-700 dark:text-teal-300">
-                  $10 · 1-day trial
-                </div>
-              )}
+          {plans.map((plan) => {
+            const popular = plan.internalPlan === POPULAR_PLAN;
+            return (
+              <div
+                key={plan.slug}
+                className={cn(
+                  "relative rounded-2xl border bg-card/60 p-8 transition-all",
+                  popular
+                    ? "border-teal-400/50 shadow-lg shadow-teal-400/10"
+                    : "border-border/70 hover:border-teal-400/30"
+                )}
+              >
+                {popular && (
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-teal-400 px-4 py-1 text-xs font-semibold text-teal-950">
+                    Most Popular
+                  </div>
+                )}
+                {billing === "annual" && (
+                  <div className="absolute -top-3 right-4 rounded-full border border-teal-400/40 bg-teal-400/10 px-3 py-1 text-[11px] font-medium text-teal-700 dark:text-teal-300">
+                    2 months free
+                  </div>
+                )}
 
-              <div className="mb-6">
-                <h3 className="text-xl font-semibold text-foreground">{plan.name}</h3>
-                <p className="mt-1 text-sm text-muted-foreground">{plan.description}</p>
-              </div>
+                <div className="mb-6">
+                  <h3 className="text-xl font-semibold text-foreground">
+                    {plan.displayName.replace("Atlas ", "")}
+                  </h3>
+                  <p className="mt-1 text-sm text-muted-foreground">{plan.description}</p>
+                </div>
 
-              <div className="mb-8">
-                {plan.monthlyPrice !== null ? (
+                <div className="mb-8">
                   <div className="flex items-baseline gap-1">
                     <span className="text-4xl font-bold text-foreground">
-                      ${billing === "monthly" ? plan.monthlyPrice : Math.round(plan.annualPrice! / 12)}
+                      ${billing === "monthly" ? plan.price : Math.round(plan.intervalPrice / 12)}
                     </span>
                     <span className="text-sm text-muted-foreground">/mo</span>
                   </div>
-                ) : (
-                  <div className="text-4xl font-bold text-foreground">Custom</div>
-                )}
-                {billing === "annual" && plan.annualPrice !== null && (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Billed ${plan.annualPrice} annually
-                  </p>
-                )}
-              </div>
+                  {billing === "annual" && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Billed ${plan.intervalPrice} annually
+                    </p>
+                  )}
+                </div>
 
-              <ul className="mb-8 space-y-3">
-                {plan.features.map((feature) => (
-                  <li key={feature} className="flex items-start gap-3 text-sm text-muted-foreground">
-                    <Check className="mt-0.5 size-4 shrink-0 text-teal-600 dark:text-teal-300" />
-                    {feature}
-                  </li>
-                ))}
-              </ul>
+                <ul className="mb-8 space-y-3">
+                  {planFeatures(plan.internalPlan).map((feature) => (
+                    <li
+                      key={feature}
+                      className="flex items-start gap-3 text-sm text-muted-foreground"
+                    >
+                      <Check className="mt-0.5 size-4 shrink-0 text-teal-600 dark:text-teal-300" />
+                      {feature}
+                    </li>
+                  ))}
+                </ul>
 
-              {plan.monthlyPrice !== null && (
                 <p className="mb-3 text-center text-xs text-muted-foreground">
-                  Start your 1-day trial for $10. After the trial, you'll be
-                  billed {billing === "monthly" ? `$${plan.monthlyPrice}/month` : `$${plan.annualPrice} annually`}.
+                  Billed {intervalLabel(plan)}. Cancel anytime from your Atlas billing
+                  settings.
                 </p>
-              )}
 
-              <Button
-                onClick={() => handleGetStarted(plan)}
-                className={cn(
-                  "w-full",
-                  plan.popular
-                    ? "bg-teal-400 text-teal-950 hover:bg-teal-300"
-                    : ""
-                )}
-                variant={plan.popular ? "default" : "outline"}
-              >
-                {plan.cta}
-              </Button>
-            </div>
-          ))}
+                <Button
+                  onClick={() => handleGetStarted(plan)}
+                  className={cn("w-full", popular ? "bg-teal-400 text-teal-950 hover:bg-teal-300" : "")}
+                  variant={popular ? "default" : "outline"}
+                >
+                  Get Started
+                </Button>
+              </div>
+            );
+          })}
         </div>
 
         {/* Subscription agreement note */}
@@ -241,24 +268,7 @@ export default function Pricing() {
         <div className="mt-20 max-w-3xl mx-auto">
           <h2 className="text-2xl font-semibold text-center mb-8">Frequently asked questions</h2>
           <div className="space-y-6">
-            {            [
-              {
-                q: "Can I switch plans later?",
-                a: "Yes, you can upgrade or downgrade your plan at any time through Paddle, and changes are reflected in your subscription automatically.",
-              },
-              {
-                q: "Is there a free trial?",
-                a: "No — every plan starts with a 1-day trial for $10. You're charged $10 at checkout, and the plan's regular price applies once the trial ends.",
-              },
-              {
-                q: "What payment methods do you accept?",
-                a: "Payments are processed securely by Paddle. All major credit cards are supported, along with other local payment methods Paddle offers in your region.",
-              },
-              {
-                q: "What happens when my trial ends?",
-                a: "Your card is charged the plan's regular price on the billing interval you chose, and your subscription continues until you cancel. See the Refund Policy for details.",
-              },
-            ].map((faq) => (
+            {FAQ.map((faq) => (
               <div key={faq.q} className="rounded-xl border border-border/60 bg-card/40 p-6">
                 <h3 className="font-semibold text-foreground">{faq.q}</h3>
                 <p className="mt-2 text-sm text-muted-foreground leading-relaxed">{faq.a}</p>

@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
  * Subscription language reflects the actual Atlas billing model:
  *   - Plans: Atlas Starter, Atlas Growth, Atlas Scale
  *   - Intervals: monthly or annual
- *   - Provider: Paddle (Merchant of Record), per src/lib/billing/*
+ *   - Provider: Stripe (payment processor), per src/lib/billing/*
  * No prices, limits, or features are stated here beyond the plan names —
  * those live in the product's pricing surface and are not repeated here.
  */

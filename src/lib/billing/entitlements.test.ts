@@ -22,20 +22,25 @@ function sub(overrides: Partial<OrganizationSubscription>): OrganizationSubscrip
   const now = Date.now();
   return {
     organization_id: "org-1",
-    billing_provider: "paddle",
-    provider_customer_id: "ctm_1",
+    billing_provider: "stripe",
+    provider_customer_id: "cus_1",
     provider_subscription_id: "sub_1",
-    provider_price_id: "pri_1",
+    provider_price_id: "price_1",
     internal_plan: "ATLAS_STARTER",
     billing_interval: "monthly",
     status: "active",
+    payment_status: "paid",
     trial_start: null,
     trial_end: null,
     current_period_start: now,
     current_period_end: now + 30 * 24 * 3600 * 1000,
     next_billed_at: now + 30 * 24 * 3600 * 1000,
     cancel_at: null,
+    cancel_at_period_end: false,
     canceled_at: null,
+    latest_invoice_id: null,
+    latest_invoice_at: null,
+    provider_event_at: now,
     created_at: now,
     updated_at: now,
     ...overrides,
@@ -79,7 +84,7 @@ describe("entitlement gating (server-authoritative)", () => {
     }
   });
 
-  it("grants paid features during a paid Paddle trial", () => {
+  it("grants paid features during the paid Stripe trial", () => {
     const state = resolveBillingState(
       sub({ status: "trialing", trial_end: Date.now() + 24 * 3600 * 1000 }),
     );
@@ -88,10 +93,12 @@ describe("entitlement gating (server-authoritative)", () => {
     expect(state.trialEnd).not.toBeNull();
   });
 
-  it("does not grant paid features for past_due", () => {
-    const state = resolveBillingState(sub({ status: "past_due" }));
-    expect(state.isActive).toBe(false);
-    expect(state.canUsePaidFeatures).toBe(false);
+  it("does not grant paid features for past_due / unpaid / incomplete", () => {
+    for (const status of ["past_due", "unpaid", "incomplete", "incomplete_expired"] as const) {
+      const state = resolveBillingState(sub({ status }));
+      expect(state.isActive).toBe(false);
+      expect(state.canUsePaidFeatures).toBe(false);
+    }
   });
 
   it("does not grant paid features for canceled / paused / unknown", () => {
@@ -100,6 +107,24 @@ describe("entitlement gating (server-authoritative)", () => {
       expect(state.isActive).toBe(false);
       expect(state.canUsePaidFeatures).toBe(false);
     }
+  });
+
+  it("reports Stripe as the provider and exposes the stored Stripe identifiers", () => {
+    const state = resolveBillingState(sub({}));
+    expect(state.provider).toBe("stripe");
+    expect(state.providerCustomerId).toBe("cus_1");
+    expect(state.providerSubscriptionId).toBe("sub_1");
+    expect(state.accessSource).toBe("stripe");
+    expect(state.cancelAtPeriodEnd).toBe(false);
+  });
+
+  it("surfaces a pending cancellation and no next charge", () => {
+    const state = resolveBillingState(
+      sub({ cancel_at_period_end: true, cancel_at: Date.now() + 86400000, next_billed_at: null }),
+    );
+    expect(state.isActive).toBe(true);
+    expect(state.cancelAtPeriodEnd).toBe(true);
+    expect(state.nextBilledAt).toBeNull();
   });
 
   it("grants nothing when there is no subscription record", () => {

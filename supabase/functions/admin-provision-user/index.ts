@@ -10,7 +10,7 @@
 //     enforced here, in the admin_* RPCs (is_super_admin()), and by RLS —
 //     never by hidden UI buttons.
 //   - Service-role writes happen ONLY server-side (this Edge Function).
-//     Resend / Supabase / Paddle secrets are never exposed to the browser.
+//     Resend / Supabase / Stripe secrets are never exposed to the browser.
 //   - The legacy `provision` action is preserved (Users & Access page), now
 //     gated to super_admin like everything else.
 //   - New-user invitations NEVER assign platform admin roles; the

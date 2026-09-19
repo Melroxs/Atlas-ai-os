@@ -8,10 +8,10 @@ import type { ReactNode } from "react";
  *   - Plans bill monthly or annually (src/lib/billing/plans.ts)
  *   - Subscriptions renew automatically at the applicable interval
  *   - Cancellation is handled through the billing management portal
- *     (Paddle customer portal, linked from Atlas billing settings as
- *     "Manage billing" — src/pages/BillingSettings.tsx) and by contacting
+ *     (Stripe billing portal, opened from Atlas billing settings as
+ *     "Manage Billing" — src/pages/BillingSettings.tsx) and by contacting
  *     support
- *   - Paddle processes payments as Merchant of Record (per BillingSettings)
+ *   - Stripe processes payments as Atlas's payment processor (per BillingSettings)
  * No exact retry schedules, refund guarantees, or downgrade mechanics are
  * stated because they are not implemented in the repository.
  */
@@ -124,10 +124,10 @@ export default function Refunds() {
 
       <Section n="8" title="Payment Provider">
         <P>
-          Paddle may process payments and related billing transactions on Atlas's behalf. Paddle
-          acts as the Merchant of Record for Atlas subscriptions, handling payment processing,
-          invoicing, tax handling, and customer billing management. Payment-card details are
-          handled by Paddle and are not stored by Atlas.
+          Stripe processes payments and related billing transactions on Atlas's behalf, including
+          payment processing, invoicing, tax handling, and the customer billing portal used for
+          plan changes and cancellations. Payment-card details are handled by Stripe and are not
+          stored by Atlas.
         </P>
       </Section>
 

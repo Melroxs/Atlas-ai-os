@@ -1,36 +1,67 @@
 // ---------------------------------------------------------------------------
 // Atlas Billing — public barrel (browser-safe)
 //
-// Consumers import from here rather than drilling into provider-specific
-// files. Today that means Paddle, but the surface is provider-agnostic.
+// Consumers import from here rather than drilling into individual modules.
 //
-// NOTE: this barrel is imported by browser pages and therefore must stay
-// browser-safe. The Paddle adapter (./paddle) is server-side only — it uses
-// Node's crypto for webhook signature verification and reads PADDLE_* secrets
-// from process.env. Server entry points (edge functions / workers / scripts)
-// must import { PADDLE_ADAPTER, paddleAdapterInit, canBuildPaddleCheckout }
-// directly from "@/lib/billing/paddle" instead of this barrel.
+// NOTE: this barrel is imported by browser pages and must stay browser-safe.
+// The Stripe provider implementation is server-only (Deno Edge Functions):
+//   supabase/functions/_shared/stripe.ts
+//   supabase/functions/_shared/stripe-webhook.ts
+//   supabase/functions/stripe-checkout | stripe-webhook | stripe-customer-portal
+// Those read STRIPE_* secrets from the environment and must never be imported
+// into the client bundle.
 // ---------------------------------------------------------------------------
 
 export {
-  BillingProviderAdapter,
-  ProviderSubscription,
-  setActiveAdapter,
-  hasActiveAdapter,
-  getActiveAdapter,
-  isBillingProviderConfigured,
   resolveBillingState,
+  hasManageableSubscription,
 } from "./provider";
 export {
-  InternalPlan,
-  BillingProvider,
-  SubscriptionStatus,
-  BillingInterval,
-  OrganizationSubscription,
-  ProcessedWebhookEvent,
-  BillingState,
-  BillingWebhookEvent,
   BILLING_PROVIDERS,
   INTERNAL_PLANS,
   SUBSCRIPTION_STATUSES,
 } from "./types";
+export type {
+  AtlasBillingState,
+  BillingInterval,
+  BillingProvider,
+  BillingState,
+  InternalPlan,
+  OrganizationSubscription,
+  PaymentStatus,
+  ProcessedWebhookEvent,
+  SubscriptionStatus,
+} from "./types";
+export {
+  ALL_INTERNAL_PLANS,
+  INTERNAL_PLAN_SLUGS,
+  PLAN_ENTITLEMENTS,
+  PLAN_METADATA,
+  billingIntervalForStripePriceId,
+  configuredStripePrices,
+  intervalForInput,
+  internalPlanForStripePriceId,
+  planAndIntervalForStripePriceId,
+  planForSlug,
+  planSlug,
+  purchasablePlans,
+  resolvePlanEntitlements,
+  stripePriceEnvKey,
+  stripePriceId,
+} from "./plans";
+export {
+  allPricingPlans,
+  checkoutReturnTo,
+  isActiveBillingState,
+  normalizeCheckoutRequest,
+  pricingPlanData,
+  startCheckout,
+} from "./checkout";
+export type {
+  CheckoutRequest,
+  CheckoutStartResult,
+  NormalizedCheckoutRequest,
+  PricingPlanData,
+  StartCheckoutInput,
+} from "./checkout";
+export type { PlanEntitlements } from "./plans";

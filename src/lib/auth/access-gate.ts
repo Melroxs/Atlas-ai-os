@@ -79,12 +79,12 @@ export interface AccessProfileLike {
   billing_state?: string | null;
   /**
    * Server-computed source of the effective access decision:
-   *   'paddle'         — active Paddle subscription (active/trialing)
+   *   'stripe'         — active Stripe subscription (active/trialing)
    *   'complimentary'  — active complimentary grant
    *   null             — no active entitlement
    * Never supplied by the client; comes from users_current_user (definer).
    */
-  access_source?: "paddle" | "complimentary" | null;
+  access_source?: "stripe" | "complimentary" | null;
   /**
    * The active complimentary grant (server-computed) when access_source is
    * 'complimentary'. Exposed only for display (expiration, reason).
@@ -153,7 +153,8 @@ export function evaluateAtlasAccess(
       return { allowed: true, reason: "active" };
     case "past_due":
       // Grace period: customer has paid before, subscription is past due
-      // but Paddle may still be retrying. Allow access.
+      // but Stripe may still be retrying. Allow access (the same grace
+      // semantics `tenants.billing_state` uses for past_due).
       return { allowed: true, reason: "past_due" };
     case "pending_checkout":
       return { allowed: false, reason: "pending_checkout" };
@@ -178,14 +179,14 @@ export function evaluateAtlasAccess(
 
 /**
  * The server-computed source of effective access:
- * 'paddle' | 'complimentary' | null. UI-only — authorization comes from
+ * 'stripe' | 'complimentary' | null. UI-only — authorization comes from
  * evaluateAtlasAccess, never from this value.
  */
 export function getEffectiveAccessSource(
   profile: AccessProfileLike | null | undefined,
-): "paddle" | "complimentary" | null {
+): "stripe" | "complimentary" | null {
   const s = profile?.access_source;
-  return s === "paddle" || s === "complimentary" ? s : null;
+  return s === "stripe" || s === "complimentary" ? s : null;
 }
 
 /** True when the caller's effective access comes from a complimentary grant. */

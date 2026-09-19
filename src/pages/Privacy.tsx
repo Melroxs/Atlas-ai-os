@@ -12,7 +12,7 @@ import type { ReactNode } from "react";
  *   - AI functionality may process submitted information (src/lib/ai-runtime,
  *     src/lib/agents) — vendors are not named because production usage is
  *     not confirmed
- *   - payments are processed by Paddle (src/lib/billing/paddle.ts,
+ *   - payments are processed by Stripe (supabase/functions/_shared/stripe.ts,
  *     src/pages/BillingSettings.tsx)
  *   - theme preference + auth session are stored in browser local storage
  * No claims are made about specific regulations, certifications, or
@@ -138,10 +138,10 @@ export default function Privacy() {
 
       <Section n="5" title="Payment Processing">
         <P>
-          Subscription payments are processed through Paddle or another payment provider used by
-          Atlas. Payment-card details are handled by the payment provider and are not stored by
-          Atlas. Atlas retains only the subscription identifiers and billing state needed to
-          resolve your access to the Service.
+          Subscription payments are processed through Stripe. Payment-card details are handled by
+          Stripe and are not stored by Atlas. Atlas retains only the Stripe customer and
+          subscription identifiers and the billing state needed to resolve your access to the
+          Service.
         </P>
       </Section>
 

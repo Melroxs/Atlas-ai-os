@@ -1,24 +1,25 @@
 /**
- * Checkout page — ensures the Atlas organization exists, then opens the real
- * Paddle checkout for the selected plan.
+ * Checkout page — ensures the Atlas organization exists, then starts a
+ * server-side Stripe Checkout Session and redirects the customer to Stripe.
  *
  * Flow:
- *   1. User arrives from /auth with ?plan=starter&billing=monthly&company=Name
+ *   1. User arrives from /auth or /pricing with ?plan=starter&interval=month
  *   2. Page ensures a tenant exists via tenants_init_for_checkout (idempotent)
- *   3. Calls the paddle-checkout Edge Function with plan + billing + tenant_id.
- *      The server resolves the canonical Paddle price id from the plan +
- *      interval — the browser never sends a price, an amount or a currency.
- *   4. Opens Paddle checkout:
- *        - Paddle.js overlay with the server-created transaction id (default)
- *        - hosted checkout URL redirect when no client-side token is set
- *   5. After payment, the verified paddle-webhook synchronizes subscription
- *      state into Supabase
- *   6. Paddle returns the customer to /pricing-success, which polls the
- *      authoritative server billing state before granting access
+ *   3. Calls the `stripe-checkout` Edge Function with plan + interval ONLY.
+ *      The server authenticates the user, authorizes the organization, resolves
+ *      the Stripe Price id from the canonical catalog and creates the Checkout
+ *      Session. The browser never sends a price, an amount or a currency.
+ *   4. Redirects to the Stripe-hosted checkout URL.
+ *   5. Stripe returns the customer to /pricing-success, which polls the
+ *      server-authored billing state. The redirect itself is NEVER proof of
+ *      payment — access is granted only by the verified stripe-webhook.
  *
- * The browser never holds Paddle secrets: the API key and the webhook secret
- * stay in the Edge Function. Only the publishable client-side token reaches
- * this page.
+ * Handling of the awkward cases:
+ *   - user closes/cancels Stripe checkout → Stripe redirects to /pricing
+ *   - network failure / server error → inline error with retry
+ *   - duplicate click → a single attempt per mount (startedRef) plus the
+ *     server's bucketed idempotency key and its active-subscription check
+ *   - organization already subscribed → 409 → route to Manage Billing instead
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -28,20 +29,9 @@ import { api } from "@/lib/api";
 import { useMutation } from "@/hooks/use-supabase";
 import { Loader2 } from "lucide-react";
 import { getSupabaseClient, resolvedSupabaseUrl } from "@/lib/supabase";
-import type { BillingInterval } from "@/lib/billing/types";
-import { initializePaddle, type Paddle } from "@paddle/paddle-js";
-
-/** What the paddle-checkout Edge Function returns to the browser. */
-interface CheckoutSession {
-  transactionId?: string;
-  /** Publishable client-side token for the Paddle.js overlay. */
-  clientToken?: string | null;
-  environment?: "sandbox" | "live";
-  /** Hosted checkout URL; null when no default payment link is configured. */
-  url?: string | null;
-  successUrl?: string;
-  cancelUrl?: string;
-}
+import { startCheckout } from "@/lib/billing/checkout";
+import { intervalForInput, planForSlug } from "@/lib/billing/plans";
+import type { BillingInterval, InternalPlan } from "@/lib/billing/types";
 
 export default function Checkout() {
   const navigate = useNavigate();
@@ -49,190 +39,108 @@ export default function Checkout() {
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const initForCheckout = useMutation(api.tenants.initForCheckout);
 
-  const plan = searchParams.get("plan") || "starter";
-  const billing = (searchParams.get("billing") || "monthly") as BillingInterval;
+  // `interval` is the current parameter; `billing` is accepted for links that
+  // predate the Stripe migration.
+  const rawPlan = searchParams.get("plan") || "starter";
+  const rawInterval = searchParams.get("interval") || searchParams.get("billing") || "month";
   const companyName = searchParams.get("company") || "";
 
+  const plan: InternalPlan | null = planForSlug(rawPlan);
+  const interval: BillingInterval | null = intervalForInput(rawInterval);
+
   const [error, setError] = useState<string | null>(null);
+  const [alreadySubscribed, setAlreadySubscribed] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [phase, setPhase] = useState<"init" | "checkout" | "paying">("init");
+  const [phase, setPhase] = useState<"init" | "checkout" | "redirecting">("init");
 
-  // Guards against React's double-invoked effects and against creating a
-  // second Paddle transaction when the component re-renders.
+  // Guards React's double-invoked effects: one checkout attempt per mount.
   const startedRef = useRef(false);
-  const paddleRef = useRef<Paddle | null>(null);
 
-  const openPaddleCheckout = useCallback(
-    async (session: CheckoutSession) => {
-      const { transactionId, clientToken, environment, url, successUrl } = session;
+  const beginCheckout = useCallback(async () => {
+    if (!plan || !interval) {
+      setError("That plan or billing interval is not available.");
+      setLoading(false);
+      return;
+    }
 
-      // Preferred: Paddle.js overlay against the server-created transaction.
-      // This does not depend on a hosted checkout URL, which Paddle only
-      // returns when the seller has a default payment link configured.
-      if (clientToken && transactionId) {
-        const paddle =
-          paddleRef.current ??
-          (await initializePaddle({
-            token: clientToken,
-            environment: environment === "live" ? "production" : "sandbox",
-            eventCallback: (event) => {
-              // `name` is a string enum, so compare on the string value.
-              const name = String(event.name ?? "");
-              if (name === "checkout.closed") {
-                // The customer cancelled: nothing is charged and no access is
-                // granted. Send them back to pricing with an honest message.
-                navigate("/pricing");
-              }
-              if (name === "checkout.completed" && successUrl) {
-                window.location.href = successUrl;
-              }
-            },
-          })) ??
-          null;
-
-        if (paddle) {
-          paddleRef.current = paddle;
-          setPhase("paying");
-          setLoading(false);
-          paddle.Checkout.open({
-            transactionId,
-            settings: successUrl ? { successUrl } : undefined,
-          });
-          return;
-        }
-      }
-
-      // Fallback: Paddle's hosted checkout page.
-      if (url) {
-        window.location.href = url;
+    try {
+      // --- Phase 1: ensure the organization exists (idempotent) ---
+      setPhase("init");
+      const orgName = companyName.trim() || user?.name?.trim() || "My Organization";
+      const initResult = await initForCheckout({ name: orgName });
+      const tenantId = initResult?.tenantId;
+      if (!tenantId) {
+        setError("Could not create organization. Please try again.");
+        setLoading(false);
         return;
       }
 
-      setError(
-        "We couldn't open the payment window. Please try again, or contact support if it keeps happening.",
-      );
+      // --- Phase 2: server-side Stripe Checkout Session ---
+      setPhase("checkout");
+      const supabase = getSupabaseClient();
+      if (!supabase) {
+        setError("Billing is unavailable right now. Please try again shortly.");
+        setLoading(false);
+        return;
+      }
+
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        navigate("/auth");
+        return;
+      }
+
+      const result = await startCheckout({
+        plan,
+        interval,
+        accessToken: session.access_token,
+        functionsBaseUrl: resolvedSupabaseUrl,
+        anonKey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
+        tenantId,
+        companyName: orgName,
+      });
+
+      if (!result.ok) {
+        setAlreadySubscribed(result.alreadySubscribed);
+        setError(result.message);
+        setLoading(false);
+        return;
+      }
+
+      // --- Phase 3: hand off to Stripe's hosted checkout ---
+      setPhase("redirecting");
+      window.location.assign(result.url);
+    } catch {
+      setError("Checkout couldn't be started. Please check your connection and try again.");
       setLoading(false);
-    },
-    [navigate],
-  );
+    }
+  }, [plan, interval, companyName, user, initForCheckout, navigate]);
 
   useEffect(() => {
     if (authLoading) return;
+
     if (!isAuthenticated) {
-      navigate(
-        `/auth?returnTo=${encodeURIComponent(`/checkout?plan=${plan}&billing=${billing}&company=${encodeURIComponent(companyName)}`)}`,
-      );
+      const returnTo = `/checkout?plan=${encodeURIComponent(rawPlan)}&interval=${encodeURIComponent(rawInterval)}&company=${encodeURIComponent(companyName)}`;
+      navigate(`/auth?returnTo=${encodeURIComponent(returnTo)}`);
       return;
     }
+
     if (startedRef.current) return;
     startedRef.current = true;
-
-    const createCheckout = async () => {
-      try {
-        // --- Phase 1: Ensure tenant exists (idempotent) ---
-        setPhase("init");
-
-        const orgName = companyName.trim() || user?.name?.trim() || "My Organization";
-        const initResult = await initForCheckout({ name: orgName });
-        const tenantId = initResult?.tenantId;
-
-        if (!tenantId) {
-          setError("Could not create organization. Please try again.");
-          setLoading(false);
-          return;
-        }
-
-        console.info(
-          "[checkout] Organization ready:",
-          tenantId,
-          initResult?.alreadyExisted ? "(existing)" : "(new)",
-        );
-
-        // --- Phase 2: Create the Paddle transaction (server-side) ---
-        setPhase("checkout");
-
-        const supabase = getSupabaseClient();
-        if (!supabase) {
-          setError("Billing is unavailable right now. Please try again shortly.");
-          setLoading(false);
-          return;
-        }
-
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        if (!session?.access_token) {
-          navigate("/auth");
-          return;
-        }
-
-        const response = await fetch(`${resolvedSupabaseUrl}/functions/v1/paddle-checkout`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            "Content-Type": "application/json",
-            apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
-          },
-          body: JSON.stringify({
-            tenantId,
-            plan,
-            billing,
-            companyName: orgName,
-          }),
-        });
-
-        const result = (await response.json().catch(() => null)) as
-          | (CheckoutSession & { error?: string })
-          | null;
-
-        if (!response.ok) {
-          const serverMsg =
-            result && typeof result === "object" && typeof result.error === "string"
-              ? result.error
-              : null;
-          let msg: string;
-          if (serverMsg) {
-            msg = serverMsg;
-          } else if (response.status === 404) {
-            msg =
-              "The billing service isn't available yet. Please contact support so we can finish setting it up.";
-          } else if (response.status === 401 || response.status === 403) {
-            msg = "Your session expired. Please sign in again to continue.";
-          } else {
-            msg = "Could not start checkout. Please try again in a moment.";
-          }
-          setError(msg);
-          setLoading(false);
-          return;
-        }
-
-        if (!result) {
-          setError("Could not start checkout. Please try again in a moment.");
-          setLoading(false);
-          return;
-        }
-
-        await openPaddleCheckout(result);
-      } catch {
-        setError("Checkout couldn't be started. Please check your connection and try again.");
-        setLoading(false);
-      }
-    };
-
-    createCheckout();
+    beginCheckout();
   }, [
     authLoading,
     isAuthenticated,
-    plan,
-    billing,
+    rawPlan,
+    rawInterval,
     companyName,
     navigate,
-    initForCheckout,
-    user,
-    openPaddleCheckout,
+    beginCheckout,
   ]);
 
-  if (authLoading || loading || phase === "paying") {
+  if (authLoading || loading || phase === "redirecting") {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-4 text-center">
@@ -243,14 +151,14 @@ export default function Checkout() {
                 ? "Setting up your organization…"
                 : phase === "checkout"
                   ? "Preparing your secure checkout…"
-                  : "Complete your payment in the checkout window."}
+                  : "Taking you to Stripe…"}
             </p>
             <p className="text-xs text-muted-foreground">
               {phase === "init"
                 ? "Creating your Atlas workspace and team ownership."
                 : phase === "checkout"
-                  ? "Payments are handled securely by Paddle."
-                  : "Your subscription starts as soon as the payment is confirmed."}
+                  ? "Payments are processed securely by Stripe."
+                  : "Complete your payment on Stripe's secure page."}
             </p>
           </div>
         </div>
@@ -266,13 +174,23 @@ export default function Checkout() {
             <p className="text-sm text-rose-600 dark:text-rose-300">{error}</p>
           </div>
           <div className="flex gap-3 justify-center">
-            <button
-              type="button"
-              onClick={() => navigate("/pricing")}
-              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-            >
-              Back to Pricing
-            </button>
+            {alreadySubscribed ? (
+              <button
+                type="button"
+                onClick={() => navigate("/dashboard/billing")}
+                className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+              >
+                Manage Billing
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => navigate("/pricing")}
+                className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+              >
+                Back to Pricing
+              </button>
+            )}
             <button
               type="button"
               onClick={() => window.location.reload()}

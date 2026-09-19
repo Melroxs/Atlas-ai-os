@@ -565,7 +565,7 @@ export default function SuperAdminOrgs() {
                     <Gift className="size-4 text-amber-500" /> Complimentary Access
                   </CardTitle>
                   <CardDescription>
-                    Atlas-controlled entitlement — independent of Paddle billing.
+                    Atlas-controlled entitlement — independent of Stripe billing.
                   </CardDescription>
                 </div>
                 <Button
@@ -744,8 +744,8 @@ export default function SuperAdminOrgs() {
           <DialogHeader>
             <DialogTitle>Grant Complimentary Access</DialogTitle>
             <DialogDescription>
-              Grants Atlas access independent of Paddle billing. Complimentary
-              access never creates Paddle records.
+              Grants Atlas access independent of Stripe billing. Complimentary
+              access never creates Stripe records.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">

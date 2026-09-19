@@ -50,53 +50,67 @@ Same set, plus locally:
 - `.env.local` with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` from
   `supabase start` (or your project's API keys).
 
-## Paddle billing variables
+## Stripe billing variables
 
-Atlas uses **Paddle Billing** as the payment provider. Checkout is created
-server-side by the `paddle-checkout` Edge Function; subscription state is
-synchronized by the `paddle-webhook` Edge Function. All Paddle values are
-**server-only** (Edge Function secrets / production environment) — never
-`VITE_` prefixed, never in the browser bundle.
+Atlas uses **Stripe Billing** as its only payment provider. Checkout is created
+server-side by the `stripe-checkout` Edge Function, subscription state is
+synchronized by the `stripe-webhook` Edge Function, and self-service billing is
+opened by `stripe-customer-portal`. All Stripe values are **server-only** (Edge
+Function secrets) — never `VITE_` prefixed, never in the browser bundle. There
+is no Stripe.js integration: Checkout is Stripe-hosted, so no publishable key
+is required.
 
 | Variable | Environment | Required | Secret | Purpose |
 |---|---|---|---|---|
-| `PADDLE_ENVIRONMENT` | Supabase edge secrets + prod | ✅ | No | `sandbox` or `live` (production MUST be `live`) |
-| `PADDLE_API_KEY` | Supabase edge secrets | ✅ | **Yes** | Server API key for creating transactions |
-| `PADDLE_CLIENT_TOKEN` | Supabase edge secrets | Optional | No | Client token; only needed for the Paddle.js overlay checkout |
-| `PADDLE_SELLER_ID` | Supabase edge secrets | Optional | **Yes** | Vendor id (kept for configuration compatibility) |
-| `PADDLE_WEBHOOK_SECRET` | Supabase edge secrets | ✅ | **Yes** | Verifies webhook signatures (`Paddle-Signature` header) |
-| `ATLAS_APP_URL` | Supabase edge secrets | Optional | No | Public Atlas base URL for checkout success/cancel redirects (default `https://atlas-ai-os.com`) |
-| `PADDLE_STARTER_PRICE_ID_MONTHLY` | Supabase edge secrets | ✅ prod | No | Price id for Starter monthly ($49, billed immediately — the live catalogue has no trial) |
-| `PADDLE_STARTER_PRICE_ID_ANNUAL` | Supabase edge secrets | ✅ prod | No | Price id for Starter annual |
-| `PADDLE_GROWTH_PRICE_ID_MONTHLY` | Supabase edge secrets | ✅ prod | No | Price id for Growth monthly |
-| `PADDLE_GROWTH_PRICE_ID_ANNUAL` | Supabase edge secrets | ✅ prod | No | Price id for Growth annual |
-| `PADDLE_SCALE_PRICE_ID_MONTHLY` | Supabase edge secrets | ✅ prod | No | Price id for Scale monthly |
-| `PADDLE_SCALE_PRICE_ID_ANNUAL` | Supabase edge secrets | ✅ prod | No | Price id for Scale annual |
-| `PADDLE_WEBHOOK_ENFORCE_IP_ALLOWLIST` | Supabase edge secrets | Optional | No | Set to `1` to reject webhook deliveries whose sender IP is not in Paddle's published list (`https://api.paddle.com/ips`, fetched + cached, not hard-coded). Leave unset if the host rewrites source IPs; signature verification is always mandatory regardless. |
+| `STRIPE_SECRET_KEY` | Supabase edge secrets (test + live) | ✅ | **Yes** | Stripe API secret key (`sk_test_…` / `sk_live_…`) used by all three functions |
+| `STRIPE_WEBHOOK_SECRET` | Supabase edge secrets (test + live) | ✅ | **Yes** | Verifies the `Stripe-Signature` header (HMAC-SHA256 over `<t>.<rawBody>`) |
+| `STRIPE_PRICE_STARTER_MONTHLY` | Supabase edge secrets | ✅ | No | Starter monthly Price id — $10/month |
+| `STRIPE_PRICE_STARTER_YEARLY` | Supabase edge secrets | ✅ | No | Starter annual Price id — $100/year |
+| `STRIPE_PRICE_GROWTH_MONTHLY` | Supabase edge secrets | ✅ | No | Growth monthly Price id — $40/month |
+| `STRIPE_PRICE_GROWTH_YEARLY` | Supabase edge secrets | ✅ | No | Growth annual Price id — $400/year |
+| `STRIPE_PRICE_SCALE_MONTHLY` | Supabase edge secrets | ✅ | No | Scale monthly Price id — $120/month |
+| `STRIPE_PRICE_SCALE_YEARLY` | Supabase edge secrets | ✅ | No | Scale annual Price id — $1,200/year |
+| `STRIPE_API_VERSION` | Supabase edge secrets | Optional | No | Pins the `Stripe-Version` header; unset ⇒ the account default is used |
+| `ATLAS_APP_URL` | Supabase edge secrets | ✅ | No | Public Atlas base URL for checkout success/cancel + portal return URLs (default `https://atlas-ai-os.com`) |
+| `SUPABASE_URL` | Supabase edge secrets (auto) | ✅ | No | Provided to Edge Functions by the platform |
+| `SUPABASE_SECRET_KEYS` / `SUPABASE_SERVICE_ROLE_KEY` | Supabase edge secrets (auto) | ✅ | **Yes** | Service-role client used to write billing rows / the webhook ledger. Auto-provided |
 
-Price ids are **not** secrets (they are catalog identifiers), but they are
-kept server-side so the plan → price mapping stays authoritative and the six
-price ids are not scattered through the frontend bundle.
+Price ids are **not** secrets (they are catalog identifiers), but they are kept
+server-side so the plan → price mapping stays authoritative and the six price
+ids are never shipped in the frontend bundle.
+
+Atlas sells **no trials**: no `STRIPE_TRIAL_PRICE_ID`, no
+`STRIPE_TRIAL_PERIOD_DAYS`, no trial on the Checkout Session. A legacy
+`trialing` subscription created outside Atlas is still handled (it maps to paid
+access), but Atlas itself never creates one.
+
+Stale names that earlier Paddle/Stripe attempts left in the Edge secret store
+and that **no code reads** — delete them once the six canonical names above are
+configured: `STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID`,
+`STRIPE_PROFESSIONAL_ANNUAL_PRICE_ID`, `STRIPE_STARTER_MONTHLY_PRICE_ID`,
+`STRIPE_STARTER_ANNUAL_PRICE_ID` (these use the old `<PLAN>_PRICE_ID_<INTERVAL>`
+spelling, not `STRIPE_PRICE_<PLAN>_<INTERVAL>`).
 
 Deployment notes:
-- `paddle-checkout` deploys with default JWT verification (caller must be
-  authenticated).
-- `paddle-webhook` deploys with `--no-verify-jwt` (Paddle does not send a
-  Supabase JWT); the signature header is verified inside the function.
-- Point the Paddle notification destination at
-  `https://<ref>.supabase.co/functions/v1/paddle-webhook`.
-- Webhook security stack: mandatory HMAC signature verification (5-min replay
-  window), idempotent event ledger, out-of-order guard, and an **optional**
-  sender-IP allowlist (`PADDLE_WEBHOOK_ENFORCE_IP_ALLOWLIST=1`) that checks the
-  caller against `https://api.paddle.com/ips` (current list: 6 IPv4 /32s).
-  Verify the source IPs your hosting provider presents before enabling; the
-  check fails open if the list cannot be fetched.
+- `stripe-checkout` and `stripe-customer-portal` deploy with default JWT
+  verification (caller must be authenticated and authorized for the org).
+- `stripe-webhook` deploys with `verify_jwt = false` (Stripe does not send a
+  Supabase JWT); the Stripe signature is verified inside the function, and the
+  function refuses to run without `STRIPE_WEBHOOK_SECRET`.
+- Point the Stripe webhook endpoint at
+  `https://<ref>.supabase.co/functions/v1/stripe-webhook`.
+- Webhook security stack: mandatory signature verification with a 5-minute
+  replay tolerance, a durable per-event idempotency ledger, an out-of-order
+  watermark per lifecycle, and a single entitlement reconciliation path.
 
 ## Notes
 
 - **Never** put secrets in `.env.example` (it is committed to GitHub).
-- The committed `.env.example` template is managed by the platform guard;
-  the Paddle variable list above is the canonical reference.
+- The committed `.env.example` template is managed by the platform guard and
+  lists only the two `VITE_` variables the browser needs; the Stripe variable
+  list above is the canonical reference, and every Stripe value belongs in
+  Supabase Edge Function secrets (or the platform Keys UI), never in a
+  `VITE_` variable.
 - All database access is via RLS-gated Postgres RPCs — there are no backend
   database credentials in the frontend.
 - Storage (file uploads) uses Supabase Storage buckets with tenant-scoped

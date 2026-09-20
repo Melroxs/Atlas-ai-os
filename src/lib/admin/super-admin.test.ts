@@ -123,10 +123,10 @@ describe("complimentaryGrantStatus", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Effective access — paid Paddle OR complimentary = access
+// Effective access — paid Stripe OR complimentary = access
 // ---------------------------------------------------------------------------
 describe("computeEffectiveAccess", () => {
-  it("grants access via an active Paddle subscription", () => {
+  it("grants access via an active Stripe subscription", () => {
     expect(
       computeEffectiveAccess({
         subscriptionStatus: "active",
@@ -134,7 +134,7 @@ describe("computeEffectiveAccess", () => {
         tenantBillingState: "active",
         nowMs: NOW,
       }),
-    ).toEqual({ allowed: true, billingState: "active", source: "paddle" });
+    ).toEqual({ allowed: true, billingState: "active", source: "stripe" });
     expect(
       computeEffectiveAccess({
         subscriptionStatus: "trialing",
@@ -142,10 +142,10 @@ describe("computeEffectiveAccess", () => {
         tenantBillingState: "active",
         nowMs: NOW,
       }).source,
-    ).toBe("paddle");
+    ).toBe("stripe");
   });
 
-  it("grants access via complimentary access with NO Paddle subscription", () => {
+  it("grants access via complimentary access with NO Stripe subscription", () => {
     const result = computeEffectiveAccess({
       subscriptionStatus: null,
       complimentaryGrant: { status: "active", expires_at: NOW + 30 * 86400000 },
@@ -155,12 +155,12 @@ describe("computeEffectiveAccess", () => {
     expect(result).toEqual({ allowed: true, billingState: "active", source: "complimentary" });
   });
 
-  it("complimentary access survives Paddle cancellation / payment failure / pause", () => {
-    for (const paddleState of ["cancelled", "payment_failed", "suspended", "unknown", null]) {
+  it("complimentary access survives Stripe cancellation / payment failure / pause", () => {
+    for (const stripeState of ["cancelled", "payment_failed", "suspended", "unknown", null]) {
       const result = computeEffectiveAccess({
-        subscriptionStatus: paddleState === null ? null : "cancelled",
+        subscriptionStatus: stripeState === null ? null : "cancelled",
         complimentaryGrant: { status: "active", expires_at: null },
-        tenantBillingState: paddleState,
+        tenantBillingState: stripeState,
         nowMs: NOW,
       });
       expect(result.allowed).toBe(true);
@@ -170,7 +170,7 @@ describe("computeEffectiveAccess", () => {
 
   it("denies expired complimentary access even if status is still 'active'", () => {
     // Expired grant + no other entitlement -> denied. (A stale tenant
-    // billing_state='active' would only exist while a Paddle subscription is
+    // billing_state='active' would only exist while a Stripe subscription is
     // genuinely active, which is handled by the subscription branch above.)
     expect(
       computeEffectiveAccess({
@@ -201,7 +201,7 @@ describe("computeEffectiveAccess", () => {
     ).toBe(false);
   });
 
-  it("denies when there is neither Paddle nor complimentary access", () => {
+  it("denies when there is neither Stripe nor complimentary access", () => {
     expect(
       computeEffectiveAccess({
         subscriptionStatus: "cancelled",

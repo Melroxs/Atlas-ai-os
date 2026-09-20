@@ -536,7 +536,7 @@ export const api = {
     // RPCs are NOT registered here (and their DB EXECUTE was revoked from
     // client roles in migration 20260908) — a client must never be able to
     // flip its own billing_state. Billing state is written only by the
-    // verified Paddle webhook via billing_apply_state.
+    // verified Stripe webhook via billing_apply_state.
     inviteMember: def<Obj>("tenants_invite_member", "mutation"),
     claimInvites: def<{ claimed: number }>("tenants_claim_invites", "mutation"),
     updateMemberRole: def<{ ok: boolean }>("tenants_update_member_role", "mutation"),

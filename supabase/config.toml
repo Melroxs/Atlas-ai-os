@@ -374,18 +374,26 @@ allow_dynamic_registration = false
 # ---------------------------------------------------------------------------
 # Edge Function auth (JWT verification)
 #
-#   paddle-checkout — default verify_jwt = true (the caller must send a
-#                     Supabase JWT; the function also re-checks it).
-#   paddle-webhook  — verify_jwt = false: Paddle does NOT send a Supabase
-#                     JWT. The function verifies Paddle's own Paddle-Signature
-#                     header (HMAC over ts:rawBody) instead, then runs with
-#                     the service role. Never deploy it with JWT verification.
+#   stripe-checkout         — verify_jwt = true (the caller must send a
+#                             Supabase JWT; the function re-checks it and
+#                             re-authorizes the organization membership).
+#   stripe-customer-portal  — verify_jwt = true (same authorization chain).
+#   stripe-webhook          — verify_jwt = false: Stripe does NOT send a
+#                             Supabase JWT. The function verifies Stripe's own
+#                             `Stripe-Signature` header (HMAC-SHA256 over
+#                             `<t>.<rawBody>` with STRIPE_WEBHOOK_SECRET)
+#                             instead, then runs with the service role. Never
+#                             deploy it with JWT verification — and never
+#                             deploy it without signature verification.
 # ---------------------------------------------------------------------------
 
-[functions.paddle-checkout]
+[functions.stripe-checkout]
 verify_jwt = true
 
-[functions.paddle-webhook]
+[functions.stripe-customer-portal]
+verify_jwt = true
+
+[functions.stripe-webhook]
 verify_jwt = false
 
 [edge_runtime]

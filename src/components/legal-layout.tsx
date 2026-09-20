@@ -8,9 +8,10 @@ import { cn } from "@/lib/utils";
  * Public legal/policy page shell (Terms, Privacy, Refunds).
  *
  * These pages are deliberately public: no auth, no app shell, no billing
- * gating — Paddle verification requires them to be reachable without signing
- * in. They share the Atlas visual language (teal accents, muted prose, sticky
- * header) and a footer that cross-links all three policy pages.
+ * gating — Stripe requires the Terms, Privacy and Refund policies to be
+ * reachable without signing in. They share the Atlas visual language (teal
+ * accents, muted prose, sticky header) and a footer that cross-links all three
+ * policy pages.
  */
 
 const LEGAL_LINKS = [

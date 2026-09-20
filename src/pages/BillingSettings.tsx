@@ -1,25 +1,43 @@
+/**
+ * Billing settings — the authoritative billing view.
+ *
+ * Every value on this page comes from Atlas (billing_get_state, written by the
+ * verified stripe-webhook). The page never infers paid status from a URL
+ * parameter, localStorage, frontend state or a successful navigation, and it
+ * never contacts Stripe directly: "Manage Billing" asks the
+ * stripe-customer-portal Edge Function for a portal URL.
+ */
+
+import { useState } from "react";
 import { useNavigate } from "react-router";
 import { useAuth } from "@/hooks/use-auth";
 import { api } from "@/lib/api";
 import { useQuery } from "@/hooks/use-supabase";
 import { Button } from "@/components/ui/button";
-import { Loader2, Smile } from "lucide-react";
+import { CreditCard, Loader2, Smile } from "lucide-react";
 import type { Obj } from "@/lib/api";
+import { getSupabaseClient, resolvedSupabaseUrl } from "@/lib/supabase";
+import { openBillingPortal } from "@/lib/billing/checkout";
 
 interface BillingStateShape {
   isActive: boolean;
   plan?: string | null;
   status?: string;
+  paymentStatus?: string;
   billingInterval?: string | null;
   provider?: string;
   providerCustomerId?: string | null;
   providerSubscriptionId?: string | null;
   trialStart?: number | null;
   trialEnd?: number | null;
+  currentPeriodStart?: number | null;
   currentPeriodEnd?: number | null;
   nextBilledAt?: number | null;
   cancelAt?: number | null;
+  cancelAtPeriodEnd?: boolean;
   canceledAt?: number | null;
+  accessSource?: "stripe" | "complimentary" | null;
+  complimentary?: { expires_at?: number | null; reason?: string } | null;
 }
 
 function planDisplayName(plan?: string | null): string {
@@ -32,17 +50,41 @@ function planDisplayName(plan?: string | null): string {
 function statusLabel(state?: BillingStateShape | null): string {
   switch (state?.status) {
     case "trialing":
-      return state?.isActive ? "Trial" : "Trial ended";
+      // Defensive: Atlas never creates a trial, but a subscription created
+      // outside Atlas (Stripe dashboard/support) must still render correctly.
+      return state?.isActive ? "Trialing" : "Trial ended";
     case "active":
       return state?.isActive ? "Active" : "Inactive";
     case "past_due":
-      return "Past due";
+      return "Past due — grace period";
+    case "unpaid":
+      return "Unpaid";
+    case "incomplete":
+      return "Payment incomplete";
+    case "incomplete_expired":
+      return "Expired";
     case "paused":
       return "Paused";
     case "canceled":
       return "Canceled";
     default:
       return "Not active";
+  }
+}
+
+/** Honest payment-issue copy. Returns null when there is nothing to flag. */
+function paymentIssueLabel(state?: BillingStateShape | null): string | null {
+  switch (state?.paymentStatus) {
+    case "failed":
+      return "The last payment failed. Stripe will retry — update your card in Manage Billing to avoid interruption.";
+    case "requires_action":
+      return "Your bank needs to authenticate the last payment. Finish it in Manage Billing.";
+    case "pending":
+      return "A payment is pending confirmation.";
+    default:
+      return state?.status === "past_due"
+        ? "A payment is overdue. Stripe is retrying — update your card in Manage Billing."
+        : null;
   }
 }
 
@@ -58,6 +100,8 @@ function formatDate(ms: number | null | undefined): string | null {
 export default function BillingSettings() {
   const navigate = useNavigate();
   const { isAuthenticated, isLoading: authLoading } = useAuth();
+  const [portalError, setPortalError] = useState<string | null>(null);
+  const [openingPortal, setOpeningPortal] = useState(false);
 
   // tenants_get_my_workspace serializes rows with their real column names:
   // tenants._id and memberships."tenantId" (quoted camelCase).
@@ -85,7 +129,7 @@ export default function BillingSettings() {
     // Never wait on the workspace query here: without a session the RPC
     // cannot resolve, so an unauthenticated visitor must be redirected
     // immediately (RequireAuth normally handles this; this is the fallback).
-    navigate("/auth?returnTo=/settings/billing");
+    navigate("/auth?returnTo=/dashboard/billing");
     return null;
   }
 
@@ -98,6 +142,40 @@ export default function BillingSettings() {
       </main>
     );
   }
+
+  const complimentary = state?.accessSource === "complimentary";
+  const hasBillingProfile = Boolean(state?.providerCustomerId);
+  const billingInterval = state?.billingInterval ?? null;
+  const issue = paymentIssueLabel(state);
+
+  const handleManageBilling = async () => {
+    setPortalError(null);
+    setOpeningPortal(true);
+    try {
+      const supabase = getSupabaseClient();
+      const {
+        data: { session },
+      } = (await supabase?.auth.getSession()) ?? { data: { session: null } };
+      if (!session?.access_token) {
+        navigate("/auth?returnTo=/dashboard/billing");
+        return;
+      }
+      const result = await openBillingPortal({
+        accessToken: session.access_token,
+        functionsBaseUrl: resolvedSupabaseUrl,
+        anonKey: import.meta.env.VITE_SUPABASE_ANON_KEY as string,
+      });
+      if (!result.ok) {
+        setPortalError(result.message);
+        return;
+      }
+      window.location.assign(result.url);
+    } catch {
+      setPortalError("Billing management couldn't be opened. Please try again.");
+    } finally {
+      setOpeningPortal(false);
+    }
+  };
 
   return (
     <main className="min-h-screen bg-background">
@@ -127,6 +205,21 @@ export default function BillingSettings() {
           Manage your Atlas subscription, billing, and payment method.
         </p>
 
+        {complimentary && (
+          <div className="mt-6 rounded-xl border border-teal-400/30 bg-teal-400/10 p-4">
+            <p className="text-sm font-medium text-teal-700 dark:text-teal-300">
+              This organization has complimentary Atlas access
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              No subscription or payment is required
+              {state?.complimentary?.expires_at
+                ? ` until ${formatDate(state.complimentary.expires_at)}`
+                : ""}
+              . Adding a paid plan is optional.
+            </p>
+          </div>
+        )}
+
         <div className="mt-8 rounded-xl border border-border/60 bg-card/40 p-6">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -144,17 +237,15 @@ export default function BillingSettings() {
 
           <div className="mt-6 space-y-3 text-sm">
             <div className="flex justify-between text-muted-foreground">
-              <span>Provider</span>
-              <span className="text-foreground font-medium">
-                {state?.provider === "paddle" ? "Paddle" : state?.provider ?? "—"}
-              </span>
+              <span>Billing provider</span>
+              <span className="text-foreground font-medium">Stripe</span>
             </div>
 
-            {state?.billingInterval && (
+            {billingInterval && (
               <div className="flex justify-between text-muted-foreground">
                 <span>Billing interval</span>
                 <span className="text-foreground font-medium capitalize">
-                  {state.billingInterval}
+                  {billingInterval}
                 </span>
               </div>
             )}
@@ -166,27 +257,28 @@ export default function BillingSettings() {
               </div>
             )}
 
-            {state?.isActive && (
-              <>
-                {state.nextBilledAt && (
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>Next billing date</span>
-                    <span className="text-foreground">{formatDate(state.nextBilledAt)}</span>
-                  </div>
-                )}
-                {!state.nextBilledAt && state.currentPeriodEnd && (
-                  <div className="flex justify-between text-muted-foreground">
-                    <span>Current period ends</span>
-                    <span className="text-foreground">{formatDate(state.currentPeriodEnd)}</span>
-                  </div>
-                )}
-              </>
+            {state?.isActive && state.cancelAtPeriodEnd && (
+              <div className="flex justify-between text-muted-foreground">
+                <span>Cancels on</span>
+                <span className="text-foreground">
+                  {formatDate(state.cancelAt ?? state.currentPeriodEnd) ?? "period end"}
+                </span>
+              </div>
             )}
 
-            {state?.cancelAt && (
+            {state?.isActive && !state.cancelAtPeriodEnd && (state.nextBilledAt || state.currentPeriodEnd) && (
               <div className="flex justify-between text-muted-foreground">
-                <span>Cancellation effective</span>
-                <span className="text-foreground">{formatDate(state.cancelAt)}</span>
+                <span>Next billing date</span>
+                <span className="text-foreground">
+                  {formatDate(state.nextBilledAt ?? state.currentPeriodEnd)}
+                </span>
+              </div>
+            )}
+
+            {!state?.isActive && state?.canceledAt && (
+              <div className="flex justify-between text-muted-foreground">
+                <span>Canceled on</span>
+                <span className="text-foreground">{formatDate(state.canceledAt)}</span>
               </div>
             )}
 
@@ -200,15 +292,41 @@ export default function BillingSettings() {
             )}
           </div>
 
+          {issue && (
+            <div className="mt-5 rounded-lg border border-amber-400/40 bg-amber-400/10 px-4 py-3">
+              <p className="text-sm text-amber-700 dark:text-amber-300">{issue}</p>
+            </div>
+          )}
+
+          {portalError && (
+            <div className="mt-5 rounded-lg border border-rose-400/30 bg-rose-400/10 px-4 py-3">
+              <p className="text-sm text-rose-600 dark:text-rose-300">{portalError}</p>
+            </div>
+          )}
+
           <div className="mt-6 flex flex-wrap gap-3">
-            <Button variant="outline" size="sm" asChild>
-              <a href="/dashboard/settings">
-                Back to settings
-              </a>
-            </Button>
-            {!state?.isActive && (
+            {hasBillingProfile && (
               <Button
                 size="sm"
+                onClick={handleManageBilling}
+                disabled={openingPortal}
+                className="gap-2 shadow-none"
+              >
+                {openingPortal ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <CreditCard className="size-4" />
+                )}
+                Manage Billing
+              </Button>
+            )}
+            <Button variant="outline" size="sm" asChild>
+              <a href="/dashboard/settings">Back to settings</a>
+            </Button>
+            {!state?.isActive && !complimentary && (
+              <Button
+                size="sm"
+                variant="outline"
                 onClick={() => navigate("/pricing")}
                 className="shadow-none"
               >
@@ -223,20 +341,20 @@ export default function BillingSettings() {
             About Atlas billing
           </h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Atlas billing is powered by Paddle. Payment processing, invoices,
-            tax handling, and customer billing management are handled by Paddle
-            as the Merchant of Record.
+            Atlas subscriptions are billed through Stripe. Payment processing,
+            invoices, receipts, tax handling, plan changes and cancellations are
+            handled in the Stripe billing portal, opened from Manage Billing.
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            Atlas stores only the subscription identifiers and billing state
-            needed to resolve access. No card details are stored in Atlas.
+            Atlas stores only the Stripe customer and subscription identifiers and
+            the billing state needed to resolve access. No card details are ever
+            stored in Atlas, and paid access is granted only after Stripe confirms
+            the subscription through a verified webhook.
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            New subscriptions are billed at the plan's price on the selected
-            billing interval and renew automatically until cancelled.
-            Cancellations and payment-method updates are handled through
-            Paddle's checkout and the billing emails Paddle sends — a
-            self-service customer portal is not yet wired into Atlas.
+            Atlas subscriptions bill at the plan price on the selected billing
+            interval — no trial, no setup fee. You can cancel at any time from the
+            billing portal and keep access until the end of the period you paid for.
           </p>
         </div>
 

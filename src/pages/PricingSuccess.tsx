@@ -1,8 +1,8 @@
 /**
- * Pricing success page — shown when Paddle redirects back after checkout.
+ * Pricing success page — shown when Stripe redirects back after checkout.
  *
  * We NEVER assume payment succeeded just because the user returned: the page
- * polls Atlas's server-side billing state (written by the verified Paddle
+ * polls Atlas's server-side billing state (written by the verified Stripe
  * webhook) until the subscription appears. Possible outcomes:
  *   - "Activating your Atlas subscription…"  (webhook still in flight)
  *   - "Your Atlas trial is active."          (trialing / active confirmed)
@@ -58,10 +58,11 @@ export type CheckoutConfirmationStatus = "activating" | "confirmed" | "unconfirm
  * state.
  *
  * The success page never grants access directly: confirmation is ONLY true
- * when the verified Paddle webhook has written an active/trialing
+ * when the verified Stripe webhook has written an active/trialing
  * subscription that `billing_get_state` reports back. A redirect back from
- * Paddle, or any client-side shape ({plan, status}) that lacks the server
- * `isActive` flag, is never treated as payment success.
+ * Stripe (including its session_id query parameter), or any client-side shape
+ * ({plan, status}) that lacks the server `isActive` flag, is never treated as
+ * payment success.
  */
 export function resolveCheckoutConfirmation(
   billing: { isActive?: boolean } | null | undefined,
@@ -175,13 +176,13 @@ export default function PricingSuccess() {
             <div className="space-y-2">
               <h1 className="text-2xl font-semibold tracking-tight text-foreground">
                 {showActivating
-                  ? "Activating your Atlas subscription…"
+                  ? "Payment submitted. Your subscription is being activated."
                   : "We couldn't confirm your subscription yet."}
               </h1>
               <p className="text-muted-foreground leading-relaxed">
                 {showActivating
-                  ? "Your payment is being confirmed with our billing provider. This usually takes a few seconds — hold tight."
-                  : "Your payment may still be processing. Refresh in a moment, or contact support if this persists."}
+                  ? "Stripe is confirming your payment and Atlas is waiting for the verified webhook before it activates your plan. This usually takes a few seconds — hold tight."
+                  : "Your payment may still be processing. Refresh in a moment, or contact support if this persists. No access is granted until Stripe's webhook is verified."}
               </p>
             </div>
           </>

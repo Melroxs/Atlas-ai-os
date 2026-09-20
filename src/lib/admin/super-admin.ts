@@ -118,14 +118,14 @@ export function complimentaryGrantStatus(grant: GrantLike | null | undefined, no
 // Effective access (mirrors users_current_user / billing_get_state)
 // ---------------------------------------------------------------------------
 // The authoritative rule:
-//   ACTIVE PAID PADDLE ACCESS  OR  ACTIVE COMPLIMENTARY ACCESS  =  ACCESS
-// Complimentary is independent of Paddle: a Paddle cancellation / payment
+//   ACTIVE PAID STRIPE ACCESS  OR  ACTIVE COMPLIMENTARY ACCESS  =  ACCESS
+// Complimentary is independent of Stripe: a Stripe cancellation / payment
 // failure / pause / trial state must never revoke it.
 
 export interface EffectiveAccessInput {
   subscriptionStatus: string | null | undefined; // organization_subscriptions.status
   complimentaryGrant: GrantLike | null | undefined; // resolved active grant
-  tenantBillingState: string | null | undefined; // tenants.billing_state (Paddle-driven)
+  tenantBillingState: string | null | undefined; // tenants.billing_state (Stripe-driven)
   nowMs: number;
 }
 
@@ -133,7 +133,7 @@ export interface EffectiveAccess {
   allowed: boolean;
   /** effective billing_state the frontend gate sees */
   billingState: string | null;
-  source: "paddle" | "complimentary" | null;
+  source: "stripe" | "complimentary" | null;
 }
 
 export function computeEffectiveAccess(input: EffectiveAccessInput): EffectiveAccess {
@@ -144,9 +144,9 @@ export function computeEffectiveAccess(input: EffectiveAccessInput): EffectiveAc
     return { allowed: true, billingState: "active", source: "complimentary" };
   }
   if (subActive) {
-    return { allowed: true, billingState: "active", source: "paddle" };
+    return { allowed: true, billingState: "active", source: "stripe" };
   }
-  // No entitlement: surface the Paddle-driven tenant state (fail-closed for
+  // No entitlement: surface the Stripe-driven tenant state (fail-closed for
   // anything unknown). past_due remains a grace-period allow like before.
   const state = input.tenantBillingState ?? null;
   return {

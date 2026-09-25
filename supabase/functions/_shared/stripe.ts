@@ -522,6 +522,14 @@ export interface StripeSubscription {
   metadata?: Record<string, string> | null;
   items?: {
     data?: Array<{
+      /**
+       * API version 2026-08-26.dahlia moved the billing period onto each
+       * subscription item; the top-level `current_period_*` fields are absent
+       * from those payloads. Both shapes are read (see `subscriptionPeriod` in
+       * stripe-webhook.ts) so neither version silently persists NULL periods.
+       */
+      current_period_start?: number | null;
+      current_period_end?: number | null;
       price?: {
         id?: string;
         active?: boolean;

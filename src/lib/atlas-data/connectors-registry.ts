@@ -43,7 +43,13 @@ export interface ConnectorDefinition {
     | "payments"
     | "development"
     | "productivity"
-    | "uploads";
+    | "uploads"
+    // Restoration-industry families (MASTER #1 integration foundation).
+    | "estimating"
+    | "field_evidence"
+    | "property_intelligence"
+    | "storage"
+    | "other";
   authType: ConnectorAuthType;
   implementationStatus: ImplementationStatus;
   capabilities: ConnectorCapability[];
@@ -76,7 +82,14 @@ export const CONNECTOR_REGISTRY: ConnectorDefinition[] = [
     name: "Google Drive",
     category: "document_storage",
     authType: "oauth2",
-    implementationStatus: "implemented",
+    // HONESTY CORRECTION (MASTER #1 audit): this entry previously claimed
+    // "implemented", but no Drive client exists in this repository — there is no
+    // `connections-sync-google-drive` function, and
+    // `connections-run-due-syncs/source/index.ts` states the same thing in its
+    // own honesty note. A connector counts as implemented only when real client
+    // code (OAuth flow + sync or test path) is present. It is not, so this is
+    // now correctly reported as roadmap.
+    implementationStatus: "planned",
     capabilities: ["read", "polling", "sync_documents", "search"],
     requiredEnvVars: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
     oauthScopes: ["https://www.googleapis.com/auth/drive.readonly"],
@@ -220,6 +233,115 @@ export const CONNECTOR_REGISTRY: ConnectorDefinition[] = [
     setupInstructions:
       "Register an OAuth app in GitHub Developer settings, set GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET in your project Keys, and authorize at https://github.com/login/oauth/authorize.",
     docsUrl: "https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps",
+  },
+
+  // -----------------------------------------------------------------------
+  // Restoration-industry business systems (MASTER #1 registry entries).
+  //
+  // Every entry below is `planned`: the provider identity, authentication type
+  // and capabilities are recorded so the foundation can address them, but NO
+  // client code exists yet, so the UI must never show them as connected. Where
+  // the provider gates API access behind a partner agreement, that requirement
+  // is stated instead of guessed — `setupInstructions` is the honest blocker,
+  // not a fake implementation.
+  // -----------------------------------------------------------------------
+  {
+    id: "whatsapp",
+    name: "WhatsApp Business",
+    category: "communication",
+    authType: "api_key",
+    implementationStatus: "planned",
+    capabilities: ["read", "write", "webhook", "search"],
+    requiredEnvVars: ["WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET", "WHATSAPP_VERIFY_TOKEN"],
+    description:
+      "Customer conversations in WhatsApp — inbound messages and media become claim evidence, outbound replies stay governed by Atlas approvals.",
+    setupInstructions:
+      "Create a Meta app with the WhatsApp Business (Cloud API) product, then set WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_APP_SECRET / WHATSAPP_VERIFY_TOKEN in your project Keys and register the webhook URL. Client roadmap: inbound message ingestion, media download into evidence, approved outbound replies.",
+    docsUrl: "https://developers.facebook.com/docs/whatsapp/cloud-api",
+  },
+  {
+    id: "jobnimbus",
+    name: "JobNimbus",
+    category: "crm",
+    authType: "api_key",
+    implementationStatus: "planned",
+    capabilities: ["read", "write", "polling", "webhook"],
+    requiredEnvVars: ["JOBNIMBUS_API_KEY"],
+    description:
+      "Jobs, contacts, tasks and documents from JobNimbus map onto Atlas jobs, customers and work items — the CRM stays the system of record for sales, Atlas for intelligence.",
+    setupInstructions:
+      "Generate an API key in JobNimbus (Settings → API) and set JOBNIMBUS_API_KEY in your project Keys. Client roadmap: job/contact sync, document retrieval, task creation. Webhook verification requires the account's webhook signing configuration.",
+    docsUrl: "https://documenter.getpostman.com/view/3919598/S11PpG4x",
+  },
+  {
+    id: "companycam",
+    name: "CompanyCam",
+    category: "field_evidence",
+    authType: "oauth2",
+    implementationStatus: "planned",
+    capabilities: ["read", "webhook", "polling"],
+    requiredEnvVars: ["COMPANYCAM_CLIENT_ID", "COMPANYCAM_CLIENT_SECRET"],
+    description:
+      "Project photos and annotations flow into Atlas evidence, tied to the claim and property they document.",
+    setupInstructions:
+      "Request a CompanyCam API application from CompanyCam developer support, set COMPANYCAM_CLIENT_ID / COMPANYCAM_CLIENT_SECRET in your project Keys, and register the Atlas OAuth callback. Client roadmap: project + photo sync with webhook freshness.",
+    docsUrl: "https://docs.companycam.com/",
+  },
+  {
+    id: "xactimate",
+    name: "Xactimate / XactAnalysis",
+    category: "estimating",
+    authType: "api_key",
+    implementationStatus: "planned",
+    capabilities: ["read", "polling"],
+    requiredEnvVars: ["XACTIMATE_API_KEY", "XACTIMATE_CLIENT_ID"],
+    description:
+      "Estimates, line items and XactAnalysis assignment/claim data — the estimate becomes structured evidence for supplement and completeness analysis.",
+    setupInstructions:
+      "UNRESOLVED PROVIDER REQUIREMENT: Xactware API access is partner-gated and is not self-service. Atlas cannot connect until a XactAnalysis/Xactimate API agreement and credentials are issued by Xactware. Record the granted credential names here once issued; do not guess endpoints.",
+    docsUrl: "https://www.xactware.com/en-us/products/",
+  },
+  {
+    id: "eagleview",
+    name: "EagleView",
+    category: "property_intelligence",
+    authType: "api_key",
+    implementationStatus: "planned",
+    capabilities: ["read", "polling"],
+    requiredEnvVars: ["EAGLEVIEW_CLIENT_ID", "EAGLEVIEW_CLIENT_SECRET"],
+    description:
+      "Roof measurements and aerial reports become property evidence — measurements Atlas can cite instead of re-deriving.",
+    setupInstructions:
+      "UNRESOLVED PROVIDER REQUIREMENT: EagleView API access requires a partner/enterprise agreement (API credentials are issued by EagleView). Record the issued credential names here; do not guess endpoints.",
+    docsUrl: "https://www.eagleview.com/",
+  },
+  {
+    id: "hover",
+    name: "HOVER",
+    category: "property_intelligence",
+    authType: "oauth2",
+    implementationStatus: "planned",
+    capabilities: ["read", "polling"],
+    requiredEnvVars: ["HOVER_CLIENT_ID", "HOVER_CLIENT_SECRET"],
+    description:
+      "3D property models, measurements and photo sets — high-fidelity property evidence for scope validation.",
+    setupInstructions:
+      "UNRESOLVED PROVIDER REQUIREMENT: HOVER API access is issued through a HOVER partnership/API agreement. Record the granted credential names here once issued; do not guess endpoints.",
+    docsUrl: "https://hover.to/",
+  },
+  {
+    id: "acculynx",
+    name: "AccuLynx",
+    category: "crm",
+    authType: "oauth2",
+    implementationStatus: "planned",
+    capabilities: ["read", "write", "webhook", "polling"],
+    requiredEnvVars: ["ACCULYNX_CLIENT_ID", "ACCULYNX_CLIENT_SECRET"],
+    description:
+      "Jobs, contacts, documents and financials from AccuLynx map onto Atlas jobs and customers for cross-system intelligence.",
+    setupInstructions:
+      "UNRESOLVED PROVIDER REQUIREMENT: AccuLynx API access requires an application approved by AccuLynx. Record the granted client credentials here once issued; do not guess endpoints.",
+    docsUrl: "https://api.acculynx.com/",
   },
 ];
 

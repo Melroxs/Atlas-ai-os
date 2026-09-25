@@ -12,3 +12,12 @@ Allow: /
 
 User-agent: *
 Allow: /
+
+# Dashboard, auth and admin surfaces are private; they are also gated by
+# authentication, so they are disallowed explicitly rather than relied upon.
+Disallow: /dashboard
+Disallow: /auth
+Disallow: /setup
+Disallow: /checkout
+
+Sitemap: https://atlas-ai-os.com/sitemap.xml

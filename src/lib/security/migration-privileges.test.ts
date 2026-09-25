@@ -623,16 +623,31 @@ describe("jobs/auth authorization boundary (ratchet)", () => {
     expect(config).toMatch(/#\s*\[auth\.hook\.custom_access_token\]/);
   });
 
-  it("leaves the job queue with no server-side entry point (no edge function calls it)", () => {
+  it("leaves the job queue with exactly one sanctioned server-side entry point", () => {
     const functionsDir = resolve(HERE, "../../../supabase/functions");
     const files = walk(functionsDir).filter((f) => f.endsWith(".ts"));
     const jobNames = [...FUNCS.keys()].filter((n) => n.startsWith("jobs_"));
+
+    // 2026-09-22: integrations-webhook became the FIRST sanctioned server-side
+    // producer — a signature-verified provider delivery enqueues one
+    // `integration.process_event` job for the connection's own tenant. It calls
+    // jobs_create_job as service_role (the trusted-server path the hardening
+    // added), with the tenant id taken from Atlas's own connection row, never
+    // from the request. It is the ONLY allowed edge caller: any other file
+    // appearing here means the job queue gained an unreviewed server entry
+    // point and the SERVICE_ONLY analysis for the jobs_* family must be
+    // revisited before merging.
+    const SANCTIONED_SERVER_PRODUCERS = new Set([
+      "integrations-webhook/index.ts",
+    ]);
+
     const offenders = files.filter((f) => {
+      if (SANCTIONED_SERVER_PRODUCERS.has(f.slice(functionsDir.length + 1))) {
+        return false;
+      }
       const src = readFileSync(f, "utf8");
       return jobNames.some((n) => new RegExp(`\\b${n}\\b`).test(src));
     });
-    // If this ever fails, the worker gained a server-side caller and the
-    // SERVICE_ONLY analysis for the jobs_* family must be revisited.
     expect(offenders).toEqual([]);
   });
 

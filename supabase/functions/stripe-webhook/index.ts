@@ -162,11 +162,22 @@ function createSupabaseBillingStore(
       return data ? rowFromDb(data as Record<string, unknown>) : null;
     },
 
+    // The write is a server-side function, not a client upsert, so the merge of
+    // the incoming snapshot over the stored row happens under a row lock: a
+    // concurrent delivery that read a stale snapshot cannot roll newer billing
+    // fields backwards (see migration 20260921 and `mergeSubscriptionWrite`).
     async saveSubscription(row) {
-      const { error } = await client
-        .from("organization_subscriptions")
-        .upsert(rowToDb(row), { onConflict: "organization_id" });
+      const { data, error } = await client.rpc("billing_upsert_subscription", {
+        p_organization_id: row.organizationId,
+        p_row: rowToDb(row),
+      });
       if (error) throw new Error(`subscription save failed: ${error.message}`);
+      const applied = data as { subscription_applied?: boolean } | null;
+      if (applied && applied.subscription_applied === false) {
+        console.warn("[stripe-webhook] stale subscription snapshot merged, not applied", {
+          organization_id: row.organizationId,
+        });
+      }
     },
 
     async setBillingState(organizationId, billingState) {

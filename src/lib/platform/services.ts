@@ -61,6 +61,8 @@ export function createSupabasePlatformServices(
         p.getContent(supabase, contentId) as ReturnType<PlatformServices["content"]["get"]>,
       create: (input) => p.createContent(supabase, input),
       transition: (input) => p.transitionContent(supabase, input),
+      review: (input) => p.reviewContent(supabase, input),
+      publish: (input) => p.publishContent(supabase, input),
     },
     jobs: createJobsPort(supabase),
     fetch: options.fetcher ?? createHttpSourceFetcher(),

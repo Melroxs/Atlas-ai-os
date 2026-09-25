@@ -396,6 +396,16 @@ verify_jwt = true
 [functions.stripe-webhook]
 verify_jwt = false
 
+# Integration platform: the provider calls this, so it authenticates with its
+# own signature (verified in-function) — never with a Supabase JWT.
+[functions.integrations-webhook]
+verify_jwt = false
+
+# Browser-called: start/callback of the OAuth flow. The caller is always an
+# authenticated Atlas user; the callback itself is provider-redirected.
+[functions.integrations-oauth]
+verify_jwt = true
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.

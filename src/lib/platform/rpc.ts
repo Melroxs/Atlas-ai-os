@@ -395,3 +395,65 @@ export async function publicContentList(
     await rpcCall(supabase, "content_public_list", { limit }),
   );
 }
+
+/**
+ * Admin pipeline listing (migration 20260920). The database applies the admin
+ * guard; a non-admin gets a 42501 refusal rather than an empty list.
+ */
+export async function adminListContent(
+  supabase: SupabaseClient,
+  status: string | null,
+  limit = 100,
+): Promise<Array<Record<string, unknown>>> {
+  const result = await rpcCall(supabase, "content_admin_list", {
+    p_status: status,
+    p_limit: limit,
+  });
+  return asArray<Record<string, unknown>>(result);
+}
+
+/** Human review decision: REVIEW -> APPROVED / REJECTED / NEEDS_CHANGES. */
+export async function reviewContent(
+  supabase: SupabaseClient,
+  input: {
+    contentId: string;
+    decision: "approved" | "rejected" | "needs_changes" | "in_review";
+    note?: string | null;
+  },
+): Promise<{ ok: boolean; status?: string; approvalStatus?: string; error?: string }> {
+  return (await rpcCall(supabase, "content_review_decide", {
+    p_content_id: input.contentId,
+    p_decision: input.decision,
+    p_note: input.note ?? null,
+  })) as { ok: boolean; status?: string; approvalStatus?: string; error?: string };
+}
+
+/** The single publish path (migration 20260920). */
+export async function publishContent(
+  supabase: SupabaseClient,
+  input: {
+    contentId: string;
+    slug?: string | null;
+    baseUrl?: string | null;
+    actorUserId?: string | null;
+  },
+): Promise<{
+  ok: boolean;
+  slug?: string;
+  canonicalUrl?: string | null;
+  error?: string;
+  detail?: string;
+}> {
+  return (await rpcCall(supabase, "content_publish_blog", {
+    p_content_id: input.contentId,
+    p_slug: input.slug ?? null,
+    p_base_url: input.baseUrl ?? null,
+    p_actor: input.actorUserId ?? null,
+  })) as {
+    ok: boolean;
+    slug?: string;
+    canonicalUrl?: string | null;
+    error?: string;
+    detail?: string;
+  };
+}

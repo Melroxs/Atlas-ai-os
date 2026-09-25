@@ -13,10 +13,15 @@
 // Guarantees:
 //   * Every event id is processed at most once (durable ledger).
 //   * Duplicate delivery can never create a second subscription, a second
-//     entitlement, or corrupt state: all writes are full-state upserts keyed
-//     by organization, and the ledger row is written last.
+//     entitlement, or corrupt state: one row per organization, every field
+//     family watermark-guarded so a stale snapshot cannot roll it back, and the
+//     ledger row is written last.
 //   * Out-of-order deliveries are ignored per watermark (subscription state
-//     and invoice state have separate watermarks).
+//     and invoice state have separate watermarks), and deliveries that ARE
+//     accepted still cannot roll a newer field backwards: the persisted row is
+//     the watermark merge of this event's snapshot over the stored row
+//     (`mergeSubscriptionWrite`, mirrored atomically in SQL by
+//     `billing_upsert_subscription`).
 //   * Unknown event types / unknown prices never change entitlement.
 //   * Entitlement is NEVER granted because a checkout redirect happened, and
 //     never granted from `checkout.session.completed` alone — the subscription
@@ -185,6 +190,28 @@ function toMs(seconds: number | null | undefined): number | null {
   return seconds * 1000;
 }
 
+/**
+ * Billing period bounds for a subscription.
+ *
+ * API version 2026-08-26.dahlia moved `current_period_start` / `current_period_end`
+ * off the Subscription object and onto each subscription item. A Stripe test
+ * payment on that version delivered `current_period_start: undefined` at the top
+ * level while `items.data[0].current_period_start` was populated — reading only
+ * the documented-then-removed top-level field stored NULL periods, which is why
+ * the billing UI could show an active plan with no renewal date. Read the top
+ * level first (older API versions), then the item (current versions).
+ */
+function subscriptionPeriod(subscription: StripeSubscription | null | undefined): {
+  start: number | null;
+  end: number | null;
+} {
+  const item = subscription?.items?.data?.[0] ?? null;
+  return {
+    start: toMs(subscription?.current_period_start) ?? toMs(item?.current_period_start),
+    end: toMs(subscription?.current_period_end) ?? toMs(item?.current_period_end),
+  };
+}
+
 export interface ReconcileResult {
   row: SubscriptionRow;
   billingState: AtlasBillingState;
@@ -251,6 +278,8 @@ export function reconcileAtlasEntitlement(input: ReconcileInput): ReconcileResul
     ? idOf(subscription.latest_invoice) ?? input.latestInvoiceId ?? existing?.latestInvoiceId ?? null
     : input.latestInvoiceId ?? existing?.latestInvoiceId ?? null;
 
+  const period = subscriptionPeriod(subscription);
+
   const row: SubscriptionRow = {
     organizationId,
     billingProvider: "stripe",
@@ -261,16 +290,19 @@ export function reconcileAtlasEntitlement(input: ReconcileInput): ReconcileResul
     billingInterval,
     status,
     paymentStatus: input.paymentStatus,
+    // Computed above; without this assignment `latest_invoice_id` was never
+    // persisted (the column stayed NULL for every subscription), which also
+    // made the invoice-identity half of the stale-write guard unobservable.
+    latestInvoiceId,
     trialStart: toMs(subscription?.trial_start) ?? existing?.trialStart ?? null,
     trialEnd: toMs(subscription?.trial_end) ?? existing?.trialEnd ?? null,
-    currentPeriodStart:
-      toMs(subscription?.current_period_start) ?? existing?.currentPeriodStart ?? null,
-    currentPeriodEnd: toMs(subscription?.current_period_end) ?? existing?.currentPeriodEnd ?? null,
+    currentPeriodStart: period.start ?? existing?.currentPeriodStart ?? null,
+    currentPeriodEnd: period.end ?? existing?.currentPeriodEnd ?? null,
     // A subscription set to cancel at period end has no next charge.
     nextBilledAt: subscription
       ? subscription.cancel_at_period_end === true
         ? null
-        : (toMs(subscription.current_period_end) ?? existing?.nextBilledAt ?? null)
+        : (period.end ?? existing?.nextBilledAt ?? null)
       : (existing?.nextBilledAt ?? null),
     cancelAt: toMs(subscription?.cancel_at) ?? existing?.cancelAt ?? null,
     cancelAtPeriodEnd: subscription
@@ -305,6 +337,109 @@ export function reconcileAtlasEntitlement(input: ReconcileInput): ReconcileResul
     : `Entitlement reconciled: status=${status} billing_state=${billingState} plan=${internalPlan ?? "none"} interval=${billingInterval ?? "none"}`;
 
   return { row, billingState, changed, unresolvedPrice, note };
+}
+
+// ---------------------------------------------------------------------------
+// Stale-write guard — concurrent deliveries for the same subscription
+// ---------------------------------------------------------------------------
+
+/**
+ * Merge a freshly computed row over the row currently stored.
+ *
+ * The persistence write used to be an unconditional full-row upsert. Stripe
+ * delivers several events for one subscription concurrently — a real test
+ * checkout delivered `customer.subscription.created`, `invoice.paid` and
+ * `invoice.finalized` with an identical `event_at`, handled within the same
+ * second — so two handlers read the SAME pre-existing row and the write that
+ * landed LAST won, even when its snapshot was the older one. Observed on the
+ * live test subscription: the subscription-state handler carries no invoice
+ * information, landed last, and reset `payment_status` to 'unknown' with
+ * `latest_invoice_at` / `latest_invoice_id` NULL, discarding an invoice outcome
+ * Stripe had already reported. The stored result was a function of arrival
+ * order, which is not a property any billing record may have.
+ *
+ * The merge is keyed on the two watermarks the processor already maintains, and
+ * each field family follows its own:
+ *
+ *   subscription family (status, plan, interval, price, customer, subscription
+ *     id, trial, period, cancel fields)
+ *       -> applied only when the incoming subscription watermark is at least
+ *          the stored one
+ *   invoice family (payment_status, latest_invoice_id/latest_invoice_at)
+ *       -> applied only when the incoming invoice watermark is at least the
+ *          stored one, and a known outcome is never replaced by 'unknown'
+ *   watermarks -> monotonic: they only ever move forward
+ *
+ * The identical rule runs inside the database under a row lock
+ * (`billing_upsert_subscription`, migration 20260921). THAT is what makes the
+ * decision atomic between two genuinely concurrent webhook invocations; this
+ * pure function is the unit-testable mirror of it and keeps the row the
+ * processor reports identical to the row actually stored.
+ */
+export function mergeSubscriptionWrite(
+  existing: SubscriptionRow | null,
+  incoming: SubscriptionRow,
+): SubscriptionRow {
+  if (!existing) return incoming;
+
+  // In-process this is true for every path that reaches persistence (strictly
+  // older subscription events are rejected before this point, and invoice +
+  // checkout events carry the stored subscription watermark forward). It is
+  // load-bearing for the SQL mirror, where the competing writer is another
+  // invocation that has already advanced the stored watermark.
+  const subscriptionWins =
+    (incoming.providerEventAt ?? 0) >= (existing.providerEventAt ?? 0);
+  const invoiceWins = (incoming.latestInvoiceAt ?? 0) >= (existing.latestInvoiceAt ?? 0);
+
+  // 'unknown' means "this event carried no invoice information" — it is never a
+  // statement that an invoice outcome was reversed, so it must not overwrite
+  // evidence Stripe already gave us.
+  const paymentStatus: AtlasPaymentStatus = invoiceWins
+    ? incoming.paymentStatus !== "unknown"
+      ? incoming.paymentStatus
+      : (existing.paymentStatus ?? "unknown")
+    : existing.paymentStatus;
+
+  return {
+    // Row identity is fixed: a later event can never re-point the record.
+    organizationId: existing.organizationId,
+    billingProvider: existing.billingProvider,
+
+    providerCustomerId: subscriptionWins
+      ? incoming.providerCustomerId
+      : existing.providerCustomerId,
+    providerSubscriptionId: subscriptionWins
+      ? incoming.providerSubscriptionId
+      : existing.providerSubscriptionId,
+    providerPriceId: subscriptionWins ? incoming.providerPriceId : existing.providerPriceId,
+    internalPlan: subscriptionWins ? incoming.internalPlan : existing.internalPlan,
+    billingInterval: subscriptionWins ? incoming.billingInterval : existing.billingInterval,
+    status: subscriptionWins ? incoming.status : existing.status,
+    trialStart: subscriptionWins ? incoming.trialStart : existing.trialStart,
+    trialEnd: subscriptionWins ? incoming.trialEnd : existing.trialEnd,
+    currentPeriodStart: subscriptionWins
+      ? incoming.currentPeriodStart
+      : existing.currentPeriodStart,
+    currentPeriodEnd: subscriptionWins ? incoming.currentPeriodEnd : existing.currentPeriodEnd,
+    nextBilledAt: subscriptionWins ? incoming.nextBilledAt : existing.nextBilledAt,
+    cancelAt: subscriptionWins ? incoming.cancelAt : existing.cancelAt,
+    cancelAtPeriodEnd: subscriptionWins
+      ? incoming.cancelAtPeriodEnd
+      : existing.cancelAtPeriodEnd,
+    canceledAt: subscriptionWins ? incoming.canceledAt : existing.canceledAt,
+
+    paymentStatus,
+    // A non-null invoice id is never dropped by a delivery that carries none.
+    latestInvoiceId: invoiceWins
+      ? (incoming.latestInvoiceId ?? existing.latestInvoiceId)
+      : existing.latestInvoiceId,
+    latestInvoiceAt: invoiceWins ? incoming.latestInvoiceAt : existing.latestInvoiceAt,
+
+    providerEventAt: subscriptionWins ? incoming.providerEventAt : existing.providerEventAt,
+
+    createdAt: existing.createdAt,
+    updatedAt: Math.max(incoming.updatedAt, existing.updatedAt),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -600,20 +735,28 @@ export async function processStripeWebhook(
     fallbackSubscriptionId: providerSubscriptionId,
   });
 
-  // ---- 7. Persist (full-state upsert + entitlement + idempotency ledger) --
+  // ---- 7. Persist (watermark-merged write + entitlement + ledger) --------
   // Order matters: state first, ledger LAST. If any write fails the caller
   // answers 5xx, Stripe retries, and the retry re-applies the same full state
   // (idempotent) instead of being swallowed as a duplicate.
-  await store.saveSubscription(reconciled.row);
-  await store.setBillingState(organizationId, reconciled.billingState);
+  //
+  // The persisted row is the watermark merge of this event's snapshot over the
+  // stored row, so an invocation that read a stale snapshot cannot roll the
+  // record backwards if it lands last. The entitlement is derived from the
+  // MERGED status, so `tenants.billing_state` and the subscription record can
+  // never disagree. The database re-applies the same rule atomically under a row
+  // lock (billing_upsert_subscription).
+  const row = mergeSubscriptionWrite(existing, reconciled.row);
+  await store.saveSubscription(row);
+  await store.setBillingState(organizationId, resolveAtlasBillingState(row.status));
 
   const result: WebhookResult = reconciled.unresolvedPrice ? "ignored" : "processed";
   const entry: AuditEntry = {
     organizationId,
     providerEventId: eventId,
     eventType,
-    providerCustomerId: reconciled.row.providerCustomerId,
-    providerSubscriptionId: reconciled.row.providerSubscriptionId,
+    providerCustomerId: row.providerCustomerId,
+    providerSubscriptionId: row.providerSubscriptionId,
     result,
     note: reconciled.note,
     providerEventAt: eventAt,
@@ -629,8 +772,8 @@ export async function processStripeWebhook(
     organizationId,
     eventId,
     eventType,
-    providerCustomerId: reconciled.row.providerCustomerId,
-    providerSubscriptionId: reconciled.row.providerSubscriptionId,
+    providerCustomerId: row.providerCustomerId,
+    providerSubscriptionId: row.providerSubscriptionId,
   };
 }
 

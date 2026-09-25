@@ -30,7 +30,7 @@ import {
   planFollowOnWork,
   shouldProcessChange,
 } from "./change-detection";
-import { buildLinkedInDraft, validateContentDraft } from "./content";
+import { buildLinkedInDraft, validateContentDraft, validatePublishable } from "./content";
 import type {
   ContentItem,
   ContentStatus,
@@ -103,6 +103,28 @@ export interface ContentPort {
     failureReason?: string | null;
     draftJobId?: string | null;
   }): Promise<{ ok: boolean; status?: string; error?: string }>;
+  /** Human review decision (REVIEW -> APPROVED / REJECTED / NEEDS_CHANGES). */
+  review(input: {
+    contentId: string;
+    decision: "approved" | "rejected" | "needs_changes" | "in_review";
+    note?: string | null;
+  }): Promise<{ ok: boolean; status?: string; approvalStatus?: string; error?: string }>;
+  /**
+   * The one publish path. Validates, assigns the slug and records publication.
+   * Requires the item to be human-approved already; it never approves.
+   */
+  publish(input: {
+    contentId: string;
+    slug?: string | null;
+    baseUrl?: string | null;
+    actorUserId?: string | null;
+  }): Promise<{
+    ok: boolean;
+    slug?: string;
+    canonicalUrl?: string | null;
+    error?: string;
+    detail?: string;
+  }>;
 }
 
 export interface JobsPort {
@@ -542,23 +564,135 @@ export const handleContentWriteLinkedin: (services: PlatformServices) => JobHand
   };
 
 // ---------------------------------------------------------------------------
-// Content — publishing (deliberately NOT implemented in this phase)
+// Content — publishing
+//
+// Blog publishing is now real: it validates the article, requires a prior
+// human approval (enforced again inside the database function), assigns a
+// unique readable slug and records the publication. It never generates and
+// never approves.
 // ---------------------------------------------------------------------------
 
-function publishingNotImplemented(target: string): JobHandler {
-  return async (): Promise<HandlerResult> => ({
-    success: false,
-    error: createJobError(
-      "NOT_IMPLEMENTED",
-      `Publishing to ${target} is not implemented. Content stays in the approved state until a human publishes it.`,
-      { target },
-      false,
-    ),
-  });
+export function handleContentPublishBlog(services: PlatformServices): JobHandler {
+  return async (ctx: JobExecutionContext): Promise<HandlerResult> => {
+    const payload = ctx.job.payload ?? {};
+    const contentId = str(payload.content_id);
+    if (!contentId) return validationFailure("content_id is required.", {});
+
+    const item = await services.content.get(contentId);
+    if (!item) {
+      return {
+        success: false,
+        error: createJobError("NOT_FOUND", `Content ${contentId} not found.`, {
+          content_id: contentId,
+        }, false),
+      };
+    }
+
+    // Re-check the whole publication gate here so a bad article fails with a
+    // visible, actionable reason instead of a database exception.
+    const validation = validatePublishable(item as ContentItem);
+    if (!validation.ok) {
+      return validationFailure(
+        `Publication blocked: ${validation.errors.join(" ")}`,
+        { content_id: contentId, errors: validation.errors },
+      );
+    }
+
+    const baseUrl = str(payload.base_url) ?? str(payload.baseUrl) ?? "";
+    const result = await services.content.publish({
+      contentId,
+      slug: str(payload.slug),
+      baseUrl,
+      // The worker runs as a trusted server process, so the database requires
+      // an explicit, admin-verified actor for this path.
+      actorUserId: str(payload.actor_user_id) ?? null,
+    });
+
+    if (!result.ok) {
+      const retryable = result.error === "slug_conflict" || result.error === undefined;
+      return {
+        success: false,
+        error: createJobError(
+          result.error === "not_approved" ? "CONFLICT" : "VALIDATION",
+          result.detail ?? `Publication failed: ${result.error ?? "unknown reason"}.`,
+          { content_id: contentId, code: result.error ?? null },
+          retryable,
+        ),
+      };
+    }
+
+    return {
+      success: true,
+      result: {
+        content_id: contentId,
+        status: "published",
+        slug: result.slug,
+        canonical_url: result.canonicalUrl ?? null,
+        warnings: validation.warnings,
+      },
+    };
+  };
 }
 
-export const handleContentPublishBlog = publishingNotImplemented("atlas_blog");
-export const handleContentPublishLinkedin = publishingNotImplemented("linkedin");
+/**
+ * LinkedIn distribution.
+ *
+ * Atlas has no LinkedIn credentials and no LinkedIn client in this repository.
+ * Rather than quietly succeed, this handler reports the exact configuration
+ * state: with no credentials it fails as NOT_CONFIGURED and leaves the derived
+ * post in the drafted state, so the item is visible as "waiting on config"
+ * instead of being reported as posted.
+ */
+export function handleContentPublishLinkedin(services: PlatformServices): JobHandler {
+  return async (ctx: JobExecutionContext): Promise<HandlerResult> => {
+    const payload = ctx.job.payload ?? {};
+    const contentId = str(payload.content_id);
+    if (!contentId) return validationFailure("content_id is required.", {});
+
+    const item = await services.content.get(contentId);
+    if (!item) {
+      return {
+        success: false,
+        error: createJobError("NOT_FOUND", `Content ${contentId} not found.`, {
+          content_id: contentId,
+        }, false),
+      };
+    }
+
+    const configured = str(payload.linkedin_access_token) !== null || payload.linkedin_configured === true;
+
+    if (!configured) {
+      // Record the real state on the item so operators can see why nothing was
+      // distributed. This is NOT a success and must never be reported as one.
+      await services.content.transition({
+        contentId,
+        status: "failed",
+        failureReason:
+          "NOT_CONFIGURED: LinkedIn distribution is not configured for this environment (no LinkedIn credentials). The article remains published; the post stays undelivered.",
+        note: "LinkedIn distribution skipped: NOT_CONFIGURED",
+      });
+      return {
+        success: false,
+        error: createJobError(
+          "NOT_CONFIGURED",
+          "LinkedIn distribution is not configured for this environment. No post was created.",
+          { content_id: contentId, platform: "linkedin", status: "NOT_CONFIGURED" },
+          false,
+        ),
+      };
+    }
+
+    return {
+      success: false,
+      error: createJobError(
+        "NOT_IMPLEMENTED",
+        "No LinkedIn publisher exists in this repository. Configure a server-side publisher before enabling this job.",
+        { content_id: contentId, platform: "linkedin" },
+        false,
+      ),
+    };
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -577,8 +711,8 @@ export function createPlatformHandlers(
     { jobType: "content_write_blog", handler: handleContentWriteBlog(services) },
     { jobType: "content_review", handler: handleContentReview(services) },
     { jobType: "content_write_linkedin", handler: handleContentWriteLinkedin(services) },
-    { jobType: "content_publish_blog", handler: handleContentPublishBlog },
-    { jobType: "content_publish_linkedin", handler: handleContentPublishLinkedin },
+    { jobType: "content_publish_blog", handler: handleContentPublishBlog(services) },
+    { jobType: "content_publish_linkedin", handler: handleContentPublishLinkedin(services) },
   ];
 }
 

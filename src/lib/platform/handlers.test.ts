@@ -462,12 +462,16 @@ describe("content_write_linkedin", () => {
 });
 
 describe("publishing handlers", () => {
-  it("are explicitly NOT implemented and never retry", async () => {
+  // Publishing is now implemented (see src/lib/platform/content-publish.test.ts
+  // for the full gate: approval, length, provenance, slug and the
+  // LinkedIn NOT_CONFIGURED contract). What this file pins is the universal
+  // rule every publishing handler must obey: a malformed job never reports
+  // success and never retries forever.
+  it("never succeed without a content id, and never retry", async () => {
     const h = makeHarness();
     for (const jobType of ["content_publish_blog", "content_publish_linkedin"]) {
       const result = await h.handlers.get(jobType)!(makeCtx({}));
       expect(result.success).toBe(false);
-      expect(result.error?.code).toBe("NOT_IMPLEMENTED");
       expect(result.error?.retryable).toBe(false);
     }
   });

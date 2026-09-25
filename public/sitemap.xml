@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Atlas sitemap.
+
+  Atlas is a client-rendered SPA, so this file lists the routes that exist
+  independently of any generated content. Published blog articles are NOT
+  enumerated here: their slugs live in the database and change as content is
+  published. Article URLs are discoverable from /blog (linked, canonicalised
+  and emitted as BlogPosting structured data); generating an article-level
+  sitemap requires a server-rendered endpoint.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://atlas-ai-os.com/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://atlas-ai-os.com/blog</loc>
+    <changefreq>daily</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://atlas-ai-os.com/pricing</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://atlas-ai-os.com/pilot</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://atlas-ai-os.com/terms</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://atlas-ai-os.com/privacy</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+</urlset>

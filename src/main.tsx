@@ -22,6 +22,9 @@ const Pilot = lazy(() => import("./pages/Pilot.tsx"));
 const Pricing = lazy(() => import("./pages/Pricing.tsx"));
 const Checkout = lazy(() => import("./pages/Checkout.tsx"));
 const PricingSuccess = lazy(() => import("./pages/PricingSuccess.tsx"));
+const Blog = lazy(() => import("./pages/Blog.tsx"));
+const BlogPost = lazy(() => import("./pages/BlogPost.tsx"));
+const BlogAdmin = lazy(() => import("./pages/BlogAdmin.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
 const Setup = lazy(() => import("./pages/Setup.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
@@ -194,6 +197,8 @@ createRoot(document.getElementById("root")!).render(
               <Route path="/privacy" element={<Privacy />} />
               <Route path="/refunds" element={<Refunds />} />
               <Route path="/pricing-success" element={<PricingSuccess />} />
+              <Route path="/blog" element={<Blog />} />
+              <Route path="/blog/:slug" element={<BlogPost />} />
               <Route path="/checkout" element={<Checkout />} />
               <Route
                 path="/auth"
@@ -446,6 +451,14 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <ProtectedLayout>
                     <BillingSettings />
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/blog"
+                element={
+                  <ProtectedLayout>
+                    <BlogAdmin />
                   </ProtectedLayout>
                 }
               />

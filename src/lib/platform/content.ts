@@ -359,3 +359,154 @@ export function groupProvenanceByContent(
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Publication gate
+//
+// Runs BEFORE the database publish call. The database is still authoritative
+// (content_transition raises unless approvalStatus = 'approved'), but this gate
+// is what stops a generated draft from ever reaching that call: an article
+// with no body, no provenance, placeholder text or a leaked credential is
+// refused here so the failure is explicit and retryable.
+// ---------------------------------------------------------------------------
+
+export interface PublishValidation {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+/** Minimum publishable article length (words of body text). */
+export const MIN_PUBLISHABLE_WORDS = 200;
+
+/** Text that must never reach a published article. */
+const PLACEHOLDER_PATTERNS: Array<{ re: RegExp; label: string }> = [
+  { re: /\bTODO\b/, label: "a TODO marker" },
+  { re: /\bFIXME\b/, label: "a FIXME marker" },
+  { re: /\blorem ipsum\b/i, label: "lorem ipsum filler" },
+  { re: /\bplaceholder\b/i, label: "the word \"placeholder\"" },
+  { re: /\bas an AI language model\b/i, label: "model boilerplate" },
+  { re: /\b(insert|add) (your|the) [a-z ]+ here\b/i, label: "an unfilled template slot" },
+];
+
+/** Credential / internal material that must never be published. */
+const LEAK_PATTERNS: Array<{ re: RegExp; label: string }> = [
+  { re: /sk_(live|test)_[A-Za-z0-9]{10,}/, label: "a Stripe secret key" },
+  { re: /whsec_[A-Za-z0-9]{10,}/, label: "a webhook signing secret" },
+  { re: /re_[A-Za-z0-9]{16,}/, label: "a provider API key" },
+  { re: /service_role/i, label: "a service-role reference" },
+  { re: /eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\./, label: "a JWT" },
+  { re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/, label: "a private key" },
+  { re: /\b(password|api[_-]?key)\s*[:=]\s*\S+/i, label: "an inline credential" },
+];
+
+function scanPatterns(
+  haystack: string,
+  patterns: Array<{ re: RegExp; label: string }>,
+  into: string[],
+  prefix: string,
+): void {
+  for (const { re, label } of patterns) {
+    if (re.test(haystack)) into.push(`${prefix}${label}.`);
+  }
+}
+
+/**
+ * Decide whether a content item may be published to the public blog.
+ *
+ * Nothing here is a substitute for the database gate — the item must already
+ * be human-approved before this returns ok.
+ */
+export function validatePublishable(
+  item: Pick<
+    ContentItem,
+    | "contentType"
+    | "status"
+    | "approvalStatus"
+    | "title"
+    | "summary"
+    | "body"
+    | "slug"
+    | "sourceIds"
+    | "knowledgeIds"
+  >,
+  opts: { minWords?: number } = {},
+): PublishValidation {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const minWords = opts.minWords ?? MIN_PUBLISHABLE_WORDS;
+
+  if (item.contentType !== "blog") {
+    errors.push("Only blog articles can be published to the Atlas blog.");
+  }
+  if (item.approvalStatus !== "approved") {
+    errors.push("The article must be approved by a human before publishing.");
+  }
+  if (item.status !== "approved") {
+    errors.push(`The article must be in the approved state (currently "${item.status}").`);
+  }
+
+  const title = (item.title ?? "").trim();
+  if (title.length < 8) {
+    errors.push("A published article needs a descriptive title.");
+  }
+
+  const body = (item.body ?? "").trim();
+  if (body.length === 0) {
+    errors.push("A published article needs a body. Atlas will not publish an empty article.");
+  } else {
+    const words = body.split(/\s+/).filter(Boolean).length;
+    if (words < minWords) {
+      errors.push(
+        `The article body is ${words} words; at least ${minWords} are required to publish.`,
+      );
+    }
+    // Empty sections: a heading immediately followed by another heading.
+    const lines = body.split("\n").map((l) => l.trim());
+    const hasEmptySection = lines.some((line, i) => {
+      if (!/^#{1,6}\s+\S/.test(line)) return false;
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[j] === "") continue;
+        return /^#{1,6}\s+\S/.test(lines[j]);
+      }
+      return false;
+    });
+    if (hasEmptySection) errors.push("The article contains a heading with no content beneath it.");
+    if (/\[\]\(|\((?:\s*)\)/.test(body)) {
+      errors.push("The article contains an empty link.");
+    }
+    if (/\[[^\]]*\]\(\s*(?!https?:\/\/|\/|#)[^)]+\)/.test(body)) {
+      warnings.push("The article contains a relative or non-http link; verify it resolves publicly.");
+    }
+
+    const haystack = `${title}\n${item.summary ?? ""}\n${body}`;
+    scanPatterns(haystack, PLACEHOLDER_PATTERNS, errors, "The article contains " );
+    scanPatterns(haystack, LEAK_PATTERNS, errors, "The article appears to contain " );
+
+    if (body.length < 600) {
+      warnings.push("The article is short; verify it covers the topic completely.");
+    }
+  }
+
+  if (!hasCompleteProvenance(item)) {
+    errors.push(
+      "Published content must carry at least one authoritative source and one knowledge item.",
+    );
+  }
+
+  const slug = (item.slug ?? "").trim() || slugify(title);
+  if (!slug) {
+    errors.push("A readable slug could not be derived from the title.");
+  }
+
+  if (!item.summary?.trim()) {
+    warnings.push("No summary supplied; the SEO description falls back to the article body.");
+  }
+
+  return { ok: errors.length === 0, errors, warnings };
+}
+
+/** The canonical URL a published article will live at, given a base URL. */
+export function publishedArticlePath(slug: string): string {
+  return `/blog/${slug}`;
+}

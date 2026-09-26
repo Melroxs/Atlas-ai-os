@@ -16,7 +16,9 @@
     "format": "prettier --write .",
     "preview": "vite preview",
     "email:preview": "bun scripts/email-preview.ts",
-    "atlas:ai:evaluate": "node scripts/atlas-ai-evaluate.mjs"
+    "atlas:ai:evaluate": "node scripts/atlas-ai-evaluate.mjs",
+    "stripe:listen": "npx @stripe/cli@1.52.0 listen --forward-to https://ibxvzxblyhzwokljkslt.supabase.co/functions/v1/stripe-webhook",
+    "stripe:trigger": "npx @stripe/cli@1.52.0 trigger checkout.session.completed"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

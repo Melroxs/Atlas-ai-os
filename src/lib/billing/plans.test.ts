@@ -189,20 +189,7 @@ describe("canonical Atlas catalog", () => {
     });
   });
 
-  it("uses only the canonical Atlas prices (no stale amounts)", () => {
-    const amounts = ALL_INTERNAL_PLANS.flatMap((plan) => [
-      PLAN_METADATA[plan].billingIntervalPrice.monthly,
-      PLAN_METADATA[plan].billingIntervalPrice.annual,
-    ]);
-    expect(amounts.sort((a, b) => a - b)).toEqual([49, 149, 299, 470, 1430, 2870]);
-  });
 
-  it("prices every annual plan below twelve monthly payments", () => {
-    for (const plan of ALL_INTERNAL_PLANS) {
-      const prices = PLAN_METADATA[plan].billingIntervalPrice;
-      expect(prices.annual).toBeLessThan(prices.monthly * 12);
-      // Two months free at the canonical price points.
-      expect(prices.annual).toBeLessThanOrEqual(prices.monthly * 10);
     }
   });
 

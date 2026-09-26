@@ -61,10 +61,7 @@ export default function Pricing() {
 
   const plans = allPricingPlans(billing);
 
-  // Derived from the canonical catalog (never hardcoded), so a price change
-  // cannot leave the page advertising a stale discount.
-  const annualSavingsPercent =
-    allPricingPlans("annual")[0]?.annualSavingsPercent ?? null;
+
 
   const handleGetStarted = (plan: PricingPlanData) => {
     // Carry plan + interval through auth so checkout resumes after sign-up.
@@ -148,11 +145,7 @@ export default function Pricing() {
               )}
             >
               Annual
-              {annualSavingsPercent !== null && (
-                <span className="ml-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-                  Save {annualSavingsPercent}%
-                </span>
-              )}
+
             </button>
           </div>
         </div>

@@ -26,15 +26,7 @@ import type { InternalPlan, BillingInterval } from "./types";// ----------------
 // Internal plan metadata (Atlas-owned)
 //
 // The amounts below are the canonical Atlas list prices and are what the
-// public pricing page and landing page render. Each annual price is a two
-// months free discount versus twelve monthly payments (~20% off). The
-// AUTHORITATIVE amounts live in the Stripe catalog — the configured Stripe
-// Prices must match these values, and the server never accepts an amount from
-// the browser. Annual savings are derived from these numbers (never hardcoded).
-//
-//   Starter  $49/month    $470/year
-//   Growth   $149/month   $1,430/year
-//   Scale    $299/month   $2,870/year
+
 // ---------------------------------------------------------------------------
 
 export const PLAN_METADATA = {

@@ -575,6 +575,14 @@ export interface CreateCheckoutSessionInput {
  * (the selected plan price), no `trial_period_days`, no one-time items, no
  * coupons and no introductory period. The customer is charged the full plan
  * price by Stripe immediately on completion.
+ *
+ * Presentation / data-collection fields (billing & phone collection, name
+ * collection, saved payment methods, submit type, automatic tax, integration
+ * identifier, origin context) come from the Checkout Studio configuration.
+ * The four Atlas-owned fields
+ * (`mode`, `success_url`, `cancel_url`, `line_items`) and the customer /
+ * metadata plumbing are NOT Checkout Studio settings and are intentionally
+ * retained.
  */
 export async function createStripeCheckoutSession(
   input: CreateCheckoutSessionInput,
@@ -587,15 +595,43 @@ export async function createStripeCheckoutSession(
   };
 
   const params: Record<string, unknown> = {
+    // --- Checkout Studio (fixed_by_ui) ---------------------------------
+    // `ui_mode` is deliberately NOT set: Atlas uses the standard Stripe-hosted
+    // redirect flow, which is the API default. Naming it explicitly would only
+    // add a dependency on a particular Stripe API version ("hosted_page" is
+    // the dahlia-era spelling) for no behavioural gain.
+    billing_address_collection: "auto",
+    phone_number_collection: { enabled: true },
+    automatic_tax: { enabled: false },
+    allow_promotion_codes: false,
+    // Only meaningful in subscription mode; `mode` is pinned below.
+    payment_method_collection: "always",
+    submit_type: "auto",
+    name_collection: {
+      individual: { enabled: true, optional: true },
+      business: { enabled: true, optional: true },
+    },
+    saved_payment_method_options: { payment_method_save: "enabled" },
+    integration_identifier: "hosted_mobile_app_0001",
+    origin_context: "mobile_app",
+
+    // --- Atlas-owned (pre-existing; not Checkout Studio fields) --------
+    // `mode`, `success_url`, `cancel_url` and `line_items` are configured in
+    // Atlas, not in Checkout Studio, and already carry real values — the
+    // browser contributes only plan + interval, never a price id or amount.
     mode: "subscription",
-    customer: input.customerId,
-    client_reference_id: input.organizationId,
-    line_items: [{ price: input.priceId, quantity: 1 }],
-    subscription_data: { metadata },
-    metadata,
     success_url: input.successUrl,
     cancel_url: input.cancelUrl,
-    allow_promotion_codes: false,
+    line_items: [{ price: input.priceId, quantity: 1 }],
+    // Load-bearing Atlas plumbing, NOT Checkout Studio fields. `customer`
+    // attaches the session to the org's existing Stripe customer;
+    // `client_reference_id` / `metadata` are what every later webhook
+    // (stripe-webhook.ts) reads to resolve the owning organization. Removing
+    // these would silently break entitlement resolution.
+    customer: input.customerId,
+    client_reference_id: input.organizationId,
+    subscription_data: { metadata },
+    metadata,
   };
 
   return await stripeRequest<StripeCheckoutSession>(

@@ -33,8 +33,9 @@ import type { BillingInterval, BillingState, InternalPlan } from "./types";
 
 /**
  * Whole-percent saving of the annual price versus twelve monthly payments
- * (10 months for 12 ⇒ 17%). Derived, never hardcoded, so a catalog change
- * cannot leave the pricing page advertising the wrong discount.
+ * (two months free ≈ 20% off at the canonical Atlas prices). Derived, never
+ * hardcoded, so a catalog change cannot leave the pricing page advertising the
+ * wrong discount.
  */
 function annualSavingsPercent(prices: {
   monthly: number;

@@ -85,6 +85,22 @@ export default function Pricing() {
 
   const plans = allPricingPlans(billing);
 
+  // Derived from the canonical catalog so the badge can never drift from the
+  // prices actually charged. NOTE: `price` is the MONTHLY-equivalent display
+  // price; `intervalPrice` is the amount actually charged for that interval.
+  // The annual comparison must use `intervalPrice` for both sides.
+  const annualDiscountPercent = (() => {
+    const monthlyPlans = allPricingPlans("monthly");
+    const annualPlans = allPricingPlans("annual");
+    const best = monthlyPlans.reduce((min, p, i) => {
+      const twelveMonths = p.intervalPrice * 12;
+      const annualTotal = annualPlans[i].intervalPrice;
+      const pct = ((twelveMonths - annualTotal) / twelveMonths) * 100;
+      return pct > min.pct ? { pct } : min;
+    }, { pct: -Infinity });
+    return Number.isFinite(best.pct) ? Math.max(0, Math.round(best.pct)) : 0;
+  })();
+
   const handleGetStarted = (plan: PricingPlanData) => {
     // Carry plan + interval through auth so checkout resumes after sign-up.
     const params = new URLSearchParams({
@@ -167,7 +183,9 @@ export default function Pricing() {
               )}
             >
               Annual
-              <span className="ml-1.5 text-xs text-emerald-600 dark:text-emerald-400">Save 17%</span>
+              <span className="ml-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+                Save {annualDiscountPercent}%
+              </span>
             </button>
           </div>
         </div>

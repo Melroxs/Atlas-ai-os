@@ -44,21 +44,21 @@ describe("pricing plan data", () => {
     expect(pricingPlanData("ATLAS_STARTER", "monthly")).toMatchObject({
       slug: "starter",
       displayName: "Atlas Starter",
-      price: 10,
-      intervalPrice: 10,
+      price: 49,
+      intervalPrice: 49,
       compareAtPrice: null,
       annualSavingsPercent: null,
     });
     expect(pricingPlanData("ATLAS_STARTER", "annual")).toMatchObject({
-      price: 10,
-      intervalPrice: 100,
-      compareAtPrice: 10,
-      annualSavingsPercent: 17,
+      price: 49,
+      intervalPrice: 470,
+      compareAtPrice: 49,
+      annualSavingsPercent: 20,
     });
-    expect(pricingPlanData("ATLAS_GROWTH", "monthly").intervalPrice).toBe(40);
-    expect(pricingPlanData("ATLAS_GROWTH", "annual").intervalPrice).toBe(400);
-    expect(pricingPlanData("ATLAS_SCALE", "monthly").intervalPrice).toBe(120);
-    expect(pricingPlanData("ATLAS_SCALE", "annual").intervalPrice).toBe(1200);
+    expect(pricingPlanData("ATLAS_GROWTH", "monthly").intervalPrice).toBe(149);
+    expect(pricingPlanData("ATLAS_GROWTH", "annual").intervalPrice).toBe(1430);
+    expect(pricingPlanData("ATLAS_SCALE", "monthly").intervalPrice).toBe(299);
+    expect(pricingPlanData("ATLAS_SCALE", "annual").intervalPrice).toBe(2870);
   });
 
   it("advertises no trial anywhere in the pricing contract", () => {
@@ -66,7 +66,12 @@ describe("pricing plan data", () => {
       for (const plan of allPricingPlans(interval)) {
         const serialized = JSON.stringify(plan);
         expect(serialized).not.toMatch(/trial/i);
-        expect(serialized).not.toContain("49");
+        // No trial field may exist on the browser-visible pricing contract.
+        // (An arbitrary price substring is deliberately NOT asserted here —
+        // display prices are intentionally public; only price IDS are secret.)
+        for (const key of Object.keys(plan)) {
+          expect(key.toLowerCase()).not.toMatch(/trial/);
+        }
       }
     }
   });

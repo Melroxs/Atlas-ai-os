@@ -27,15 +27,15 @@ import type { InternalPlan, BillingInterval } from "./types";
 // ---------------------------------------------------------------------------
 // Internal plan metadata (Atlas-owned)
 //
-// The amounts below are the canonical Atlas list prices (10) and are what the
-// public pricing page renders. Each annual price is ten monthly payments (two
-// months free, ~17% off). The AUTHORITATIVE amounts live in the Stripe
+// The amounts below are the canonical Atlas list prices and are what the
+// public pricing page renders. Each annual price is discounted ~20% against
+// twelve monthly payments. The AUTHORITATIVE amounts live in the Stripe
 // catalog — the configured Stripe Prices must match these values, and the
 // server never accepts an amount from the browser.
 //
-//   Starter  $10/month   $100/year
-//   Growth   $40/month   $400/year
-//   Scale   $120/month  $1,200/year
+//   Starter  $49/month    $470/year
+//   Growth  $149/month  $1,430/year
+//   Scale   $299/month  $2,870/year
 // ---------------------------------------------------------------------------
 
 export const PLAN_METADATA = {
@@ -46,8 +46,8 @@ export const PLAN_METADATA = {
     description:
       "For small restoration teams getting started with AI workforce intelligence.",
     billingIntervalPrice: {
-      monthly: 10,
-      annual: 100,
+      monthly: 49,
+      annual: 470,
     },
   },
   ATLAS_GROWTH: {
@@ -57,8 +57,8 @@ export const PLAN_METADATA = {
     description:
       "For growing teams that need the full AI workforce across claims, supplements, estimating, recovery, project management, and customer success.",
     billingIntervalPrice: {
-      monthly: 40,
-      annual: 400,
+      monthly: 149,
+      annual: 1430,
     },
   },
   ATLAS_SCALE: {
@@ -68,8 +68,8 @@ export const PLAN_METADATA = {
     description:
       "For larger operations with heavier claim volume and multi-team workflows.",
     billingIntervalPrice: {
-      monthly: 120,
-      annual: 1200,
+      monthly: 299,
+      annual: 2870,
     },
   },
 } as const;

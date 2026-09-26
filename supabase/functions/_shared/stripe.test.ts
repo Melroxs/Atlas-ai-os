@@ -514,6 +514,56 @@ describe("customer + checkout session creation", () => {
     );
   });
 
+  it("sends every Checkout Studio field on the wire in Stripe's form encoding", async () => {
+    const { calls } = mockFetch(() =>
+      jsonResponse({ id: "cs_studio", url: "https://checkout.stripe.com/c/pay/cs_studio" }),
+    );
+
+    await createStripeCheckoutSession({
+      organizationId: "org-42",
+      plan: "ATLAS_STARTER",
+      interval: "monthly",
+      priceId: PRICE_IDS.starterMonthly,
+      customerId: "cus_1",
+      successUrl: "https://atlas-ai-os.com/pricing-success?session_id={CHECKOUT_SESSION_ID}",
+      cancelUrl: "https://atlas-ai-os.com/pricing?checkout=cancelled",
+    });
+
+    const parsed = form(String(calls[0].init.body));
+
+    // fixed_by_ui
+    expect(parsed.billing_address_collection).toBe("auto");
+    expect(parsed["phone_number_collection[enabled]"]).toBe("true");
+    expect(parsed["automatic_tax[enabled]"]).toBe("false");
+    expect(parsed.allow_promotion_codes).toBe("false");
+    expect(parsed.payment_method_collection).toBe("always");
+    expect(parsed.submit_type).toBe("auto");
+    expect(parsed["name_collection[individual][enabled]"]).toBe("true");
+    expect(parsed["name_collection[individual][optional]"]).toBe("true");
+    expect(parsed["name_collection[business][enabled]"]).toBe("true");
+    expect(parsed["name_collection[business][optional]"]).toBe("true");
+    expect(parsed["saved_payment_method_options[payment_method_save]"]).toBe("enabled");
+    expect(parsed.integration_identifier).toBe("hosted_mobile_app_0001");
+    expect(parsed.origin_context).toBe("mobile_app");
+
+    // `ui_mode` is intentionally NOT sent: Atlas uses the default hosted
+    // redirect flow, and naming it would tie checkout to one Stripe API
+    // version for no behavioural gain.
+    expect(parsed).not.toHaveProperty("ui_mode");
+
+    // sample_only: Atlas' real values must survive untouched.
+    expect(parsed.mode).toBe("subscription");
+    expect(parsed.success_url).toContain("{CHECKOUT_SESSION_ID}");
+    expect(parsed.cancel_url).toContain("checkout=cancelled");
+    expect(parsed["line_items[0][price]"]).toBe(PRICE_IDS.starterMonthly);
+
+    // Atlas plumbing the webhook depends on must not be dropped.
+    expect(parsed.customer).toBe("cus_1");
+    expect(parsed.client_reference_id).toBe("org-42");
+    expect(parsed["metadata[atlas_org_id]"]).toBe("org-42");
+    expect(parsed["subscription_data[metadata][atlas_org_id]"]).toBe("org-42");
+  });
+
   it("creates NO trial, one-time charge or coupon — even when legacy trial vars are set", async () => {
     // The legacy trial configuration is still present in the environment.
     expect(BASE_ENV.STRIPE_TRIAL_PRICE_ID).toBe("price_trial_10");

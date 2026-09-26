@@ -22,7 +22,10 @@
 //   4. Every function deployed with `verify_jwt = false` verifies its own
 //      signature in code. These functions bypass Supabase JWT verification
 //      entirely, so an unsigned deploy is an unauthenticated write endpoint;
-//      the config comment promises verification and this pins it.
+//      the config comment promises verification and this pins it. The single
+//      declared exception is `blog-sitemap`, whose callers are crawlers that
+//      cannot hold a secret; it is verified instead by running as the ANON
+//      role so RLS bounds the read, which the same rule enforces.
 //
 // WHAT IT DOES NOT CHECK (stated so the gate is never read as more than it is)
 //
@@ -68,6 +71,22 @@ function functionSources(): string[] {
 function readFunction(rel: string): string {
   return readFileSync(resolve(FUNCTIONS, rel), "utf8");
 }
+
+/**
+ * Edge functions deployed with verify_jwt = false whose callers cannot hold a
+ * secret, so signature verification is impossible by construction rather than
+ * skipped by choice. Today this is exactly one function: the blog sitemap,
+ * which is fetched by search crawlers.
+ *
+ * These are NOT exempt from caller verification. They are verified a different
+ * way: by using the ANON role so PostgreSQL row-level security decides what an
+ * unauthenticated caller can read, and by never touching the service role. The
+ * rule in the test below enforces both conditions, so an exempt function that
+ * later starts using the service role fails the build immediately.
+ *
+ * Adding a name here is a security decision and must come with a reason.
+ */
+const PUBLIC_READ_EXEMPT = new Set(["blog-sitemap"]);
 
 /** Remove `// line comments` so a commented-out call is not treated as live. */
 function stripComments(src: string): string {
@@ -201,6 +220,24 @@ describe("edge function integrity (ratchet)", () => {
         continue;
       }
       const code = stripComments(readFunction(rel));
+
+      // A declared public-read surface cannot verify a caller signature: its
+      // callers are crawlers with no secret. Its caller verification is RLS
+      // instead, which is only true if it runs as the ANON role. That is
+      // asserted below and is a STRICTER requirement than a signature check,
+      // because a service-role client would silently bypass RLS.
+      if (PUBLIC_READ_EXEMPT.has(name)) {
+        if (!/SUPABASE_ANON_KEY/.test(code)) {
+          offenders.push(`${rel}: declared public-read but never uses SUPABASE_ANON_KEY`);
+        }
+        if (/SUPABASE_SERVICE_ROLE_KEY/.test(code)) {
+          offenders.push(
+            `${rel}: declared public-read but uses the service role, which bypasses RLS`,
+          );
+        }
+        continue;
+      }
+
       // A Stripe-style or generic HMAC signature verification must be present.
       const verifies =
         /verifyStripeWebhookSignature\s*\(/.test(code) || /verifyWebhookSignature\s*\(/.test(code);
@@ -212,5 +249,22 @@ describe("edge function integrity (ratchet)", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("keeps the public-read exemption list honest", () => {
+    // An exemption that is not actually deployed with verify_jwt = false, or
+    // that has quietly grown a second exemption, is a silent widening of the
+    // rule above. Both are asserted so the list cannot rot.
+    const jwtExempt = new Set(
+      [...BLOCKS.entries()]
+        .filter(([, body]) => /^\s*verify_jwt\s*=\s*false\s*$/m.test(body))
+        .map(([name]) => name),
+    );
+    for (const name of PUBLIC_READ_EXEMPT) {
+      expect(
+        jwtExempt.has(name),
+        `${name} is on the public-read list but is not verify_jwt = false`,
+      ).toBe(true);
+    }
   });
 });

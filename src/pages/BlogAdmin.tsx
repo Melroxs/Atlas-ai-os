@@ -15,9 +15,27 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { blogAdminApi, type AdminContentItem } from "@/lib/blog/admin-api";
 import { siteOrigin } from "@/lib/blog/queries";
+import { CATEGORIES, categoryBySlug } from "@/lib/blog/taxonomy";
+import { ArticleArtwork } from "@/components/blog/ArticleArtwork";
 import { useMutation } from "@/hooks/use-supabase";
 
 type AdminItem = AdminContentItem;
+
+/**
+ * The publish gate (content_publish_blog) refuses an article that is missing
+ * any of these. The admin screen surfaces them BEFORE an admin clicks Publish,
+ * so the failure is visible rather than an opaque database error.
+ */
+function publicationGaps(item: AdminItem): string[] {
+  const gaps: string[] = [];
+  if (!item.hasBody) gaps.push("no body");
+  if (!item.category) gaps.push("no category");
+  if (!item.author) gaps.push("no byline");
+  if (!item.heroImage) gaps.push("no hero image");
+  if (item.knowledgeIds.length === 0) gaps.push("no knowledge provenance");
+  if (item.sourceIds.length === 0) gaps.push("no source provenance");
+  return gaps;
+}
 
 const STATUS_FILTERS = [
   "all",
@@ -53,6 +71,10 @@ export default function BlogAdmin() {
   const publish = useMutation<{ p_content_id: string; p_base_url?: string }, unknown>(
     blogAdminApi.contentPublishBlog,
   );
+  const unpublish = useMutation<
+    { p_content_id: string; p_reason?: string },
+    unknown
+  >(blogAdminApi.contentUnpublish);
 
   const load = useCallback(async () => {
     setError(null);
@@ -146,9 +168,9 @@ export default function BlogAdmin() {
           <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
             <tr>
               <th className="px-4 py-3">Article</th>
+              <th className="px-4 py-3">Publication</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Approval</th>
-              <th className="px-4 py-3">Body</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
@@ -179,14 +201,47 @@ export default function BlogAdmin() {
                     ) : null}
                   </td>
                   <td className="px-4 py-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-24 shrink-0">
+                        <ArticleArtwork
+                          src={item.heroImage}
+                          alt=""
+                          motif={
+                            (typeof item.seo?.motif === "string"
+                              ? item.seo.motif
+                              : "product") as "product"
+                          }
+                          slug={item.slug ?? item._id}
+                          aspect="16 / 9"
+                        />
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        <p>
+                          {categoryBySlug(item.category)?.label ?? "No category"}
+                          {item.author ? ` · ${item.author}` : ""}
+                        </p>
+                        <p className="mt-0.5">
+                          {item.readingTime ? `${item.readingTime} min read` : "—"}
+                          {item.aiGenerated ? " · AI-assisted" : " · authored"}
+                        </p>
+                        {(() => {
+                          const gaps = publicationGaps(item);
+                          if (gaps.length === 0) return null;
+                          return (
+                            <p className="mt-1 font-medium text-destructive">
+                              Cannot publish: {gaps.join(", ")}
+                            </p>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-4">
                     <Badge variant={STATUS_VARIANT[item.status] ?? "outline"}>
                       {item.status}
                     </Badge>
                   </td>
                   <td className="px-4 py-4 text-muted-foreground">{item.approvalStatus}</td>
-                  <td className="px-4 py-4 text-muted-foreground">
-                    {item.hasBody ? "yes" : "no"}
-                  </td>
                   <td className="px-4 py-4">
                     <div className="flex flex-wrap gap-2">
                       <Button
@@ -253,6 +308,27 @@ export default function BlogAdmin() {
                       >
                         Publish
                       </Button>
+                      {item.status === "published" ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={busyId === item._id}
+                          onClick={() =>
+                            void act(
+                              item._id,
+                              () =>
+                                unpublish({
+                                  p_content_id: item._id,
+                                  p_reason:
+                                    "Taken down from the Atlas Intelligence admin screen.",
+                                }),
+                              "Unpublish",
+                            )
+                          }
+                        >
+                          Unpublish
+                        </Button>
+                      ) : null}
                     </div>
                   </td>
                 </tr>
@@ -266,6 +342,13 @@ export default function BlogAdmin() {
         Scheduled generation, retries and distribution run through the durable Atlas job
         queue (atlas_jobs), never from this page. Failures recorded against an item stay
         visible here so they can be retried rather than silently dropped.
+      </p>
+      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+        Publishing is human-gated end to end: the database refuses to publish anything
+        that is not already approved, and it re-checks the body, category, byline, hero
+        image and provenance server-side. The browser has no path that can set an
+        article to published. Unpublishing archives the article and releases its slug —
+        it never deletes the row or its audit history.
       </p>
     </div>
   );

@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Atlas Blog — SEO head management
+// Atlas Intelligence — SEO head management
 //
 // Atlas is a client-rendered SPA, so article metadata is applied to <head> at
 // runtime. Every value written here comes from the stored article + its SEO
@@ -15,6 +15,12 @@ export interface ArticleSeoInput {
   imageUrl?: string | null;
   keywords?: string[];
   author?: string;
+  /** Distinct Open Graph title, when the publication sets one. */
+  ogTitle?: string;
+  /** Distinct Open Graph description, when the publication sets one. */
+  ogDescription?: string;
+  /** Site name for the Open Graph card. */
+  siteName?: string;
 }
 
 const MANAGED = "data-atlas-seo";
@@ -43,16 +49,22 @@ const iso = (ms?: number | null) =>
 export function applyArticleSeo(input: ArticleSeoInput): void {
   if (typeof document === "undefined") return;
 
-  document.title = `${input.title} | Atlas Blog`;
+  const ogTitle = input.ogTitle?.trim() || input.title;
+  const ogDescription = input.ogDescription?.trim() || input.description;
+
+  document.title = `${input.title} | Atlas Intelligence`;
 
   upsertMeta("name", "description", input.description);
+
   upsertMeta("property", "og:type", "article");
-  upsertMeta("property", "og:title", input.title);
-  upsertMeta("property", "og:description", input.description);
+  upsertMeta("property", "og:site_name", input.siteName?.trim() || "Atlas Intelligence");
+  upsertMeta("property", "og:title", ogTitle);
+  upsertMeta("property", "og:description", ogDescription);
   upsertMeta("property", "og:url", input.canonicalUrl);
   upsertMeta("name", "twitter:card", "summary_large_image");
-  upsertMeta("name", "twitter:title", input.title);
-  upsertMeta("name", "twitter:description", input.description);
+  upsertMeta("name", "twitter:site", "@atlasaios");
+  upsertMeta("name", "twitter:title", ogTitle);
+  upsertMeta("name", "twitter:description", ogDescription);
 
   const published = iso(input.publishedAt);
   const updated = iso(input.updatedAt);
@@ -61,8 +73,12 @@ export function applyArticleSeo(input: ArticleSeoInput): void {
   if (input.keywords?.length) {
     upsertMeta("name", "keywords", input.keywords.join(", "));
   }
+  if (input.author) {
+    upsertMeta("name", "author", input.author);
+  }
   if (input.imageUrl) {
     upsertMeta("property", "og:image", input.imageUrl);
+    upsertMeta("property", "og:image:alt", ogTitle);
     upsertMeta("name", "twitter:image", input.imageUrl);
   }
 
@@ -91,6 +107,7 @@ export function applyArticleSeo(input: ArticleSeoInput): void {
     ...(input.imageUrl ? { image: input.imageUrl } : {}),
     ...(input.author ? { author: { "@type": "Organization", name: input.author } } : {}),
     publisher: { "@type": "Organization", name: "Atlas" },
+    mainEntityOfPage: { "@type": "WebPage", "@id": input.canonicalUrl },
   });
   document.head.appendChild(ld);
 }
@@ -98,16 +115,17 @@ export function applyArticleSeo(input: ArticleSeoInput): void {
 /** Apply the blog index metadata. */
 export function applyBlogIndexSeo(count: number): void {
   if (typeof document === "undefined") return;
-  document.title = "Atlas Blog | Restoration industry intelligence";
+  document.title = "Atlas Intelligence | Restoration industry intelligence";
   upsertMeta(
     "name",
     "description",
-    `Field notes, regulatory analysis and AI workforce insight from Atlas${
+    `Field intelligence for insurance restoration — claims, evidence, estimating, supplements and revenue recovery from Atlas${
       count > 0 ? ` — ${count} published ${count === 1 ? "article" : "articles"}` : ""
     }.`,
   );
   upsertMeta("property", "og:type", "website");
-  upsertMeta("property", "og:title", "Atlas Blog");
+  upsertMeta("property", "og:site_name", "Atlas Intelligence");
+  upsertMeta("property", "og:title", "Atlas Intelligence");
 }
 
 /** Remove article-specific tags when leaving the blog. */

@@ -15,6 +15,8 @@ Allow: /
 
 # Dashboard, auth and admin surfaces are private; they are also gated by
 # authentication, so they are disallowed explicitly rather than relied upon.
+# /blog is deliberately NOT disallowed — the Atlas Intelligence publication is
+# public content and must remain indexable.
 Disallow: /dashboard
 Disallow: /auth
 Disallow: /setup

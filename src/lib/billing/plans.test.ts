@@ -176,23 +176,33 @@ describe("client input validation", () => {
 describe("canonical Atlas catalog", () => {
   it("keeps the canonical list prices (monthly / annual)", () => {
     expect(PLAN_METADATA.ATLAS_STARTER.billingIntervalPrice).toEqual({
-      monthly: 10,
-      annual: 100,
+      monthly: 49,
+      annual: 470,
     });
     expect(PLAN_METADATA.ATLAS_GROWTH.billingIntervalPrice).toEqual({
-      monthly: 40,
-      annual: 400,
+      monthly: 149,
+      annual: 1430,
     });
     expect(PLAN_METADATA.ATLAS_SCALE.billingIntervalPrice).toEqual({
-      monthly: 120,
-      annual: 1200,
+      monthly: 299,
+      annual: 2870,
     });
   });
 
-  it("prices every annual plan at ten monthly payments", () => {
+  it("uses only the canonical Atlas prices (no stale amounts)", () => {
+    const amounts = ALL_INTERNAL_PLANS.flatMap((plan) => [
+      PLAN_METADATA[plan].billingIntervalPrice.monthly,
+      PLAN_METADATA[plan].billingIntervalPrice.annual,
+    ]);
+    expect(amounts.sort((a, b) => a - b)).toEqual([49, 149, 299, 470, 1430, 2870]);
+  });
+
+  it("prices every annual plan below twelve monthly payments", () => {
     for (const plan of ALL_INTERNAL_PLANS) {
       const prices = PLAN_METADATA[plan].billingIntervalPrice;
-      expect(prices.annual).toBe(prices.monthly * 10);
+      expect(prices.annual).toBeLessThan(prices.monthly * 12);
+      // Two months free at the canonical price points.
+      expect(prices.annual).toBeLessThanOrEqual(prices.monthly * 10);
     }
   });
 

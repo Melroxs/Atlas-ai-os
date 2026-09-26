@@ -10,10 +10,9 @@ import {
   createWakeWordEngine,
   playWakeChime,
   requestMicrophonePermission,
-  speakText,
-  stopBrowserSpeaking,
   type WakeWordEngine,
 } from "@/lib/voice";
+import { atlasSpeech, type SpeechEngine } from "@/lib/atlas-voice/speech";
 import {
   createContext,
   useCallback,
@@ -72,6 +71,8 @@ export interface VoiceSessionValue {
   ambientSupported: boolean;
   supported: boolean;
   ttsSupported: boolean;
+  /** Engine that actually spoke the most recent Atlas answer (null before any). */
+  speechEngine: SpeechEngine | null;
   interim: string;
   error: string | null;
   turns: ConversationTurn[];
@@ -104,6 +105,7 @@ export function useVoiceSession(): VoiceSessionValue {
       ambientSupported: false,
       supported: false,
       ttsSupported: false,
+      speechEngine: null,
       interim: "",
       error: null,
       turns: [],
@@ -141,6 +143,7 @@ export function VoiceSessionProvider({
   const [wakeState, setWakeState] = useState<WakeState>("off");
   const [ambientEnabled, setAmbientEnabled] = useState<boolean>(storedAmbient);
   const [interim, setInterim] = useState("");
+  const [speechEngine, setSpeechEngine] = useState<SpeechEngine | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
   const [busy, setBusy] = useState(false);
@@ -180,7 +183,11 @@ export function VoiceSessionProvider({
   const speakTextLocal = useCallback(
     (text: string) => {
       setStatus("speaking");
-      speakText(text, {
+      // Atlas answers go through the shared speech controller: ElevenLabs when
+      // the server is configured, browser speech synthesis otherwise. The
+      // controller reports honestly which engine actually spoke.
+      void atlasSpeech.speak(text, {
+        onEngine: (engine) => setSpeechEngine(engine),
         onEnd: () => {
           // Transition: speaking → idle. The lifecycle effect will
           // NOT resume the engine here (it only handles paused/interrupted),
@@ -324,7 +331,7 @@ export function VoiceSessionProvider({
           low,
         );
       if (interrupted) {
-        stopBrowserSpeaking();
+        atlasSpeech.stop();
         finishSpeaking();
         setStatus("interrupted");
         setWakeState("interrupted");
@@ -403,7 +410,7 @@ export function VoiceSessionProvider({
       onWake: () => {},
       onCommand: (text) => handleAmbientCommand(text.trim()),
       onInterrupt: () => {
-        stopBrowserSpeaking();
+        atlasSpeech.stop();
         finishSpeaking();
         captureBusyRef.current = false;
         setStatus("interrupted");
@@ -522,7 +529,7 @@ export function VoiceSessionProvider({
       recoveringRef.current = false;
       pttRecRef.current?.abort();
       engineRef.current?.stop();
-      stopBrowserSpeaking();
+      atlasSpeech.stop();
       if (speakTimeoutRef.current !== null) {
         clearTimeout(speakTimeoutRef.current);
       }
@@ -551,7 +558,7 @@ export function VoiceSessionProvider({
       return;
     }
 
-    stopBrowserSpeaking();
+    atlasSpeech.stop();
     captureBusyRef.current = true;
     engineRef.current?.pause();
     setError(null);
@@ -642,7 +649,7 @@ export function VoiceSessionProvider({
   const speak = useCallback(
     (text: string) => {
       if (!text) return;
-      stopBrowserSpeaking();
+      atlasSpeech.stop();
       captureBusyRef.current = false;
       speakTextLocal(text);
       // The lifecycle effect will set interruptOnly=true once status becomes
@@ -652,7 +659,7 @@ export function VoiceSessionProvider({
   );
 
   const stopSpeaking = useCallback(() => {
-    stopBrowserSpeaking();
+    atlasSpeech.stop();
     finishSpeaking();
     captureBusyRef.current = false;
     // Lifecycle effect will handle resume once status transitions from
@@ -663,7 +670,7 @@ export function VoiceSessionProvider({
   const newSession = useCallback(() => {
     setTurns([]);
     setBusy(false);
-    stopBrowserSpeaking();
+    atlasSpeech.stop();
     finishSpeaking();
     try {
       localStorage.removeItem("atlas-conversation-session");
@@ -679,6 +686,7 @@ export function VoiceSessionProvider({
     ambientSupported: supported,
     supported,
     ttsSupported,
+    speechEngine,
     interim,
     error,
     turns,

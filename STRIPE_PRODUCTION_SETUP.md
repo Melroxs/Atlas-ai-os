@@ -68,12 +68,13 @@ Deployment auth (already set in `supabase/config.toml`):
 
 | Plan | Monthly | Annual | Stripe Price variables |
 |---|---|---|---|
-| Starter | $10 | $100 | `STRIPE_PRICE_STARTER_MONTHLY`, `STRIPE_PRICE_STARTER_YEARLY` |
-| Growth | $40 | $400 | `STRIPE_PRICE_GROWTH_MONTHLY`, `STRIPE_PRICE_GROWTH_YEARLY` |
-| Scale | $120 | $1,200 | `STRIPE_PRICE_SCALE_MONTHLY`, `STRIPE_PRICE_SCALE_YEARLY` |
+| Starter | $49 | $470 | `STRIPE_PRICE_STARTER_MONTHLY`, `STRIPE_PRICE_STARTER_YEARLY` |
+| Growth | $149 | $1,430 | `STRIPE_PRICE_GROWTH_MONTHLY`, `STRIPE_PRICE_GROWTH_YEARLY` |
+| Scale | $299 | $2,870 | `STRIPE_PRICE_SCALE_MONTHLY`, `STRIPE_PRICE_SCALE_YEARLY` |
 
-Each annual price is ten monthly payments (two months free ⇒ the pricing page
-renders "Save 17%", computed from the catalog, never hardcoded).
+Each annual price is twelve monthly payments less roughly two months ⇒ the
+pricing page derives the "Save 20%" badge from the catalog (never hardcoded).
+$470 / $1,430 / $2,870 are the canonical annual amounts.
 
 **Trial policy: none.** Atlas creates no trial, no introductory period, no
 one-time charge and no coupon. A Checkout Session carries exactly one recurring
@@ -96,14 +97,14 @@ never accepted; an unknown plan/interval/price fails closed.
 In **Test mode**:
 
 1. Products → **+ Add product** → `Atlas Starter`
-   - `Atlas Starter Monthly` — recurring, monthly, **$10 USD**
-   - `Atlas Starter Annual` — recurring, yearly, **$100 USD**
+   - `Atlas Starter Monthly` — recurring, monthly, **$49 USD**
+   - `Atlas Starter Annual` — recurring, yearly, **$470 USD**
 2. Product `Atlas Growth`
-   - `Atlas Growth Monthly` — recurring, monthly, **$40 USD**
-   - `Atlas Growth Annual` — recurring, yearly, **$400 USD**
+   - `Atlas Growth Monthly` — recurring, monthly, **$149 USD**
+   - `Atlas Growth Annual` — recurring, yearly, **$1,430 USD**
 3. Product `Atlas Scale`
-   - `Atlas Scale Monthly` — recurring, monthly, **$120 USD**
-   - `Atlas Scale Annual` — recurring, yearly, **$1,200 USD**
+   - `Atlas Scale Monthly` — recurring, monthly, **$299 USD**
+   - `Atlas Scale Annual` — recurring, yearly, **$2,870 USD**
 4. Copy the six `price_…` ids. (No trial product, no one-time price.)
 6. **Verify each price is Active and its `recurring.interval` is
    `month`/`year`** — the server maps back from these ids, and a mismatch shows
@@ -169,12 +170,12 @@ values never committed**:
 ```text
 STRIPE_SECRET_KEY              sk_test_… / sk_live_…
 STRIPE_WEBHOOK_SECRET          whsec_…
-STRIPE_PRICE_STARTER_MONTHLY   price_…  ($10)
-STRIPE_PRICE_STARTER_YEARLY    price_…  ($100)
-STRIPE_PRICE_GROWTH_MONTHLY    price_…  ($40)
-STRIPE_PRICE_GROWTH_YEARLY     price_…  ($400)
-STRIPE_PRICE_SCALE_MONTHLY     price_…  ($120)
-STRIPE_PRICE_SCALE_YEARLY      price_…  ($1,200)
+STRIPE_PRICE_STARTER_MONTHLY   price_…  ($49)
+STRIPE_PRICE_STARTER_YEARLY    price_…  ($470)
+STRIPE_PRICE_GROWTH_MONTHLY    price_…  ($149)
+STRIPE_PRICE_GROWTH_YEARLY     price_…  ($1,430)
+STRIPE_PRICE_SCALE_MONTHLY     price_…  ($299)
+STRIPE_PRICE_SCALE_YEARLY      price_…  ($2,870)
 ATLAS_APP_URL                  https://atlas-ai-os.com   (already set)
 # optional
 STRIPE_API_VERSION             2025-…   (pin the Stripe-Version header)

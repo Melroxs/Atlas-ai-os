@@ -5,6 +5,7 @@ import {
   canAccessMail,
   canAccessUserAdmin,
   canAccessSuperAdmin,
+  isInternalRole,
   type AtlasRole,
 } from "@/lib/auth/access-gate";
 import { Loader2, ShieldAlert } from "lucide-react";
@@ -15,7 +16,7 @@ import { Link, Navigate, useLocation } from "react-router";
  * Which internal section this guard protects.
  * Each section has specific role requirements.
  */
-type InternalSection = "pilot" | "crm" | "mail" | "users" | "superadmin";
+type InternalSection = "pilot" | "crm" | "mail" | "users" | "superadmin" | "platform";
 
 const SECTION_LABELS: Record<InternalSection, string> = {
   pilot: "Pilot Operations",
@@ -23,6 +24,7 @@ const SECTION_LABELS: Record<InternalSection, string> = {
   mail: "Atlas Mail",
   users: "Users & Access",
   superadmin: "Super Admin Organization Administration",
+  platform: "Platform Operations",
 };
 
 function hasSectionAccess(role: AtlasRole, section: InternalSection): boolean {
@@ -37,6 +39,9 @@ function hasSectionAccess(role: AtlasRole, section: InternalSection): boolean {
       return canAccessUserAdmin(role);
     case "superadmin":
       return canAccessSuperAdmin(role);
+    case "platform":
+      // Matches the sidebar's "Platform" section gate (isInternalRole).
+      return isInternalRole(role);
     default:
       return false;
   }

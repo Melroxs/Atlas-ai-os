@@ -1,5 +1,9 @@
 import { getSupabaseClient } from "@/lib/supabase";
 import {
+  currentAtlasVoiceContext,
+  executeAtlasVoiceIntent,
+} from "@/lib/atlas-voice/session";
+import {
   browserSpeechRecognitionSupported,
   browserSpeechSynthesisSupported,
   createSpeechRecognizer,
@@ -216,6 +220,32 @@ export function VoiceSessionProvider({
       setTurns((prev) => [...prev, userTurn]);
 
       try {
+        // 1. Deterministic Atlas layer first: commands like "Atlas, open claims"
+        //    or "open the Carter claim" run the SAME intent router and Atlas
+        //    tools as the rest of Atlas voice, and navigate the real router.
+        //    Everything else (e.g. "what do I have today?") returns null and
+        //    falls through to the conversation engine below.
+        const toolResult = await executeAtlasVoiceIntent(
+          text,
+          currentAtlasVoiceContext(),
+        );
+        if (toolResult) {
+          setTurns((prev) => [
+            ...prev,
+            {
+              id: `a-${Date.now()}`,
+              role: "assistant",
+              text: toolResult.message,
+              ts: Date.now(),
+            },
+          ]);
+          clearAmbientTimer();
+          captureBusyRef.current = false;
+          speakTextLocal(toolResult.message);
+          return;
+        }
+
+        // 2. Otherwise: the existing Atlas conversation engine.
         const supabase = getSupabaseClient();
         if (!supabase) throw new Error("Supabase not configured");
         const { data, error: fnError } = await supabase.functions.invoke(

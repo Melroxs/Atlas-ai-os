@@ -1,6 +1,6 @@
 import { motion, MotionConfig, type Variants } from "framer-motion";
 import { useState, type ReactNode } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import logo from "@/assets/logo.svg";
 import {
   ArrowRight,
@@ -670,6 +670,7 @@ const NAV_LINKS = [
   { label: "How It Works", href: "#how" },
   { label: "Industries", href: "#industries" },
   { label: "Security", href: "#security" },
+  { label: "Blog", href: "/blog" },
   { label: "Company", href: "#company" },
 ];
 
@@ -702,11 +703,23 @@ export default function Landing() {
               <span className="text-lg font-semibold tracking-tight text-foreground">Atlas</span>
             </a>
             <nav className="hidden items-center gap-7 text-sm text-muted-foreground md:flex">
-              {NAV_LINKS.map((l) => (
-                <a key={l.label} href={l.href} className="transition-colors hover:text-foreground">
-                  {l.label}
-                </a>
-              ))}
+              {NAV_LINKS.map((l) =>
+                l.href.startsWith("/") ? (
+                  // In-app routes (e.g. the public Blog) go through the router so
+                  // direct navigation and refresh work without a full reload.
+                  <Link
+                    key={l.label}
+                    to={l.href}
+                    className="transition-colors hover:text-foreground"
+                  >
+                    {l.label}
+                  </Link>
+                ) : (
+                  <a key={l.label} href={l.href} className="transition-colors hover:text-foreground">
+                    {l.label}
+                  </a>
+                ),
+              )}
             </nav>
             <div className="flex items-center gap-2">
               <ThemeToggle />
@@ -733,16 +746,27 @@ export default function Landing() {
           {menuOpen && (
             <div className="border-t border-border/60 bg-background/95 px-5 py-4 md:hidden">
               <nav className="flex flex-col gap-1">
-                {NAV_LINKS.map((l) => (
-                  <a
-                    key={l.label}
-                    href={l.href}
-                    onClick={() => setMenuOpen(false)}
-                    className="rounded-lg px-2 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  >
-                    {l.label}
-                  </a>
-                ))}
+                {NAV_LINKS.map((l) =>
+                  l.href.startsWith("/") ? (
+                    <Link
+                      key={l.label}
+                      to={l.href}
+                      onClick={() => setMenuOpen(false)}
+                      className="rounded-lg px-2 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      {l.label}
+                    </Link>
+                  ) : (
+                    <a
+                      key={l.label}
+                      href={l.href}
+                      onClick={() => setMenuOpen(false)}
+                      className="rounded-lg px-2 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    >
+                      {l.label}
+                    </a>
+                  ),
+                )}
                 <button
                   type="button"
                   onClick={toAuth}

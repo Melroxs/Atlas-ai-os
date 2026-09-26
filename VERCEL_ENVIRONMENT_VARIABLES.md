@@ -64,12 +64,12 @@ is required.
 |---|---|---|---|---|
 | `STRIPE_SECRET_KEY` | Supabase edge secrets (test + live) | ✅ | **Yes** | Stripe API secret key (`sk_test_…` / `sk_live_…`) used by all three functions |
 | `STRIPE_WEBHOOK_SECRET` | Supabase edge secrets (test + live) | ✅ | **Yes** | Verifies the `Stripe-Signature` header (HMAC-SHA256 over `<t>.<rawBody>`) |
-| `STRIPE_PRICE_STARTER_MONTHLY` | Supabase edge secrets | ✅ | No | Starter monthly Price id — $10/month |
-| `STRIPE_PRICE_STARTER_YEARLY` | Supabase edge secrets | ✅ | No | Starter annual Price id — $100/year |
-| `STRIPE_PRICE_GROWTH_MONTHLY` | Supabase edge secrets | ✅ | No | Growth monthly Price id — $40/month |
-| `STRIPE_PRICE_GROWTH_YEARLY` | Supabase edge secrets | ✅ | No | Growth annual Price id — $400/year |
-| `STRIPE_PRICE_SCALE_MONTHLY` | Supabase edge secrets | ✅ | No | Scale monthly Price id — $120/month |
-| `STRIPE_PRICE_SCALE_YEARLY` | Supabase edge secrets | ✅ | No | Scale annual Price id — $1,200/year |
+| `STRIPE_PRICE_STARTER_MONTHLY` | Supabase edge secrets | ✅ | No | Starter monthly Price id — $49/month |
+| `STRIPE_PRICE_STARTER_YEARLY` | Supabase edge secrets | ✅ | No | Starter annual Price id — $470/year |
+| `STRIPE_PRICE_GROWTH_MONTHLY` | Supabase edge secrets | ✅ | No | Growth monthly Price id — $149/month |
+| `STRIPE_PRICE_GROWTH_YEARLY` | Supabase edge secrets | ✅ | No | Growth annual Price id — $1,430/year |
+| `STRIPE_PRICE_SCALE_MONTHLY` | Supabase edge secrets | ✅ | No | Scale monthly Price id — $299/month |
+| `STRIPE_PRICE_SCALE_YEARLY` | Supabase edge secrets | ✅ | No | Scale annual Price id — $2,870/year |
 | `STRIPE_API_VERSION` | Supabase edge secrets | Optional | No | Pins the `Stripe-Version` header; unset ⇒ the account default is used |
 | `ATLAS_APP_URL` | Supabase edge secrets | ✅ | No | Public Atlas base URL for checkout success/cancel + portal return URLs (default `https://atlas-ai-os.com`) |
 | `SUPABASE_URL` | Supabase edge secrets (auto) | ✅ | No | Provided to Edge Functions by the platform |

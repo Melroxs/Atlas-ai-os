@@ -1002,7 +1002,15 @@ export function AtlasAssistant({
                 <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                   Speech synthesis
                 </p>
-                <p className="mt-0.5 font-medium">{voice.ttsSupported ? "Browser" : "Unavailable"}</p>
+                <p className="mt-0.5 font-medium">
+                  {voiceSession.speechEngine === "elevenlabs"
+                    ? "ElevenLabs"
+                    : voiceSession.speechEngine === "browser"
+                      ? "Browser (Web Speech)"
+                      : voice.ttsSupported
+                        ? "Not used yet · Browser available"
+                        : "Unavailable"}
+                </p>
               </div>
               <div className="rounded-lg border border-border/70 bg-muted/30 px-2.5 py-2">
                 <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">

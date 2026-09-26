@@ -42,6 +42,7 @@ export {
   intervalForInput,
   internalPlanForStripePriceId,
   planAndIntervalForStripePriceId,
+  planFeatureLines,
   planForSlug,
   planSlug,
   purchasablePlans,

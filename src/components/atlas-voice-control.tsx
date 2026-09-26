@@ -140,7 +140,12 @@ export function AtlasVoiceControl({
 
           <div className="mt-4 flex items-center justify-between gap-2">
             <p className="text-[11px] text-muted-foreground">
-              Engine: {voice.engine === "elevenlabs" ? "ElevenLabs" : "Browser"}
+              Engine:{" "}
+              {voice.engine === "elevenlabs"
+                ? "ElevenLabs"
+                : voice.engine === "browser"
+                  ? "Browser"
+                  : "Not used yet"}
             </p>
             <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <input

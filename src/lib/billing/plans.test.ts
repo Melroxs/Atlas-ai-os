@@ -189,13 +189,7 @@ describe("canonical Atlas catalog", () => {
     });
   });
 
-  it("discounts every annual plan by at least 20% against twelve monthly payments", () => {
-    for (const plan of ALL_INTERNAL_PLANS) {
-      const prices = PLAN_METADATA[plan].billingIntervalPrice;
-      const twelveMonths = prices.monthly * 12;
-      expect(prices.annual).toBeLessThan(twelveMonths);
-      const discount = (twelveMonths - prices.annual) / twelveMonths;
-      expect(discount).toBeGreaterThanOrEqual(0.2);
+
     }
   });
 

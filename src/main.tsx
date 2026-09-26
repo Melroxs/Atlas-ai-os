@@ -73,6 +73,7 @@ const CustomerSuccess = lazy(() => import("./pages/workers/CustomerSuccess.tsx")
 const Governance = lazy(() => import("./pages/Governance.tsx"));
 const RegulatoryDashboard = lazy(() => import("./pages/RegulatoryDashboard.tsx"));
 const RegulatoryIntelligence = lazy(() => import("./pages/RegulatoryIntelligence.tsx"));
+const PlatformOps = lazy(() => import("./pages/PlatformOps.tsx"));
 
 /** Protected section: auth gate + workspace shell.
  * VoiceSessionProvider is mounted OUTSIDE the router (see render tree) so the
@@ -588,6 +589,16 @@ createRoot(document.getElementById("root")!).render(
                   <ProtectedLayout>
                     <RequireInternalAuth section="superadmin">
                       <SuperAdminOrgs />
+                    </RequireInternalAuth>
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/platform"
+                element={
+                  <ProtectedLayout>
+                    <RequireInternalAuth section="platform">
+                      <PlatformOps />
                     </RequireInternalAuth>
                   </ProtectedLayout>
                 }

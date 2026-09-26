@@ -32,13 +32,14 @@ import {
   type SpeechEngine,
 } from "./elevenlabs";
 import { claimIdFromPath, pageLabelFromPath } from "./navigation";
-import { isInterruptPhrase, routeAtlasIntent } from "./intent";
+import { isInterruptPhrase, routeAtlasIntent, type AtlasIntent } from "./intent";
 import {
   getClaim,
   getClaimFindings,
   getMissingEvidence,
   navigateAtlasTool,
   searchClaims,
+  type AtlasToolResult,
 } from "./tools";
 
 // ---------------------------------------------------------------------------
@@ -269,24 +270,8 @@ function playUrl(url: string): Promise<void> {
 // Orchestration
 // ---------------------------------------------------------------------------
 
-/** Execute one Atlas tool for a routed intent. */
-async function runIntent(transcript: string, context: AtlasVoiceContext) {
-  const intent = routeAtlasIntent(transcript, { claimId: context.claimId });
-  if (!intent) return null;
-
-  const label =
-    intent.name === "navigate_atlas"
-      ? "Opening…"
-      : intent.name === "search_claims"
-        ? "Searching claims…"
-        : intent.name === "get_missing_evidence"
-          ? "Checking evidence…"
-          : intent.name === "get_claim_findings"
-            ? "Checking findings…"
-            : "Loading claim…";
-
-  setState({ status: "executing", toolLabel: label });
-
+/** Execute the deterministic Atlas tool a routed intent maps to. */
+async function dispatchAtlasTool(intent: AtlasIntent): Promise<AtlasToolResult<unknown> | null> {
   switch (intent.name) {
     case "navigate_atlas":
       return navigateAtlasTool({
@@ -307,6 +292,48 @@ async function runIntent(transcript: string, context: AtlasVoiceContext) {
     default:
       return null;
   }
+}
+
+/** Human label for a running Atlas tool. */
+function toolLabelFor(intent: AtlasIntent): string {
+  switch (intent.name) {
+    case "navigate_atlas":
+      return "Opening…";
+    case "search_claims":
+      return "Searching claims…";
+    case "get_missing_evidence":
+      return "Checking evidence…";
+    case "get_claim_findings":
+      return "Checking findings…";
+    default:
+      return "Loading claim…";
+  }
+}
+
+/** Execute one Atlas tool for a routed intent, reflecting it in session state. */
+async function runIntent(transcript: string, context: AtlasVoiceContext) {
+  const intent = routeAtlasIntent(transcript, { claimId: context.claimId });
+  if (!intent) return null;
+
+  setState({ status: "executing", toolLabel: toolLabelFor(intent) });
+  return dispatchAtlasTool(intent);
+}
+
+/**
+ * Run the deterministic Atlas layer for a transcript and return its honest
+ * result, or null when the utterance should go to the conversation engine.
+ *
+ * Exposed so the ambient/wake-word path reuses the SAME intent router and the
+ * SAME Atlas tools (including the real-router navigation seam) rather than
+ * growing a second navigation system.
+ */
+export async function executeAtlasVoiceIntent(
+  transcript: string,
+  context: AtlasVoiceContext = currentAtlasVoiceContext(),
+): Promise<AtlasToolResult<unknown> | null> {
+  const intent = routeAtlasIntent(transcript, { claimId: context.claimId });
+  if (!intent) return null;
+  return dispatchAtlasTool(intent);
 }
 
 /**

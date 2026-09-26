@@ -39,7 +39,12 @@ const FINDINGS_RE =
   /\b(?:findings?|what did we find|what'?s been found|issues? found)\b/i;
 const ATTENTION_RE =
   /\b(?:needing? review|needs? (?:my )?attention|waiting for review|requires? attention|needing attention|to review)\b/i;
-const SEARCH_VERB_RE = /\b(?:find|show|list|search|look up|which|what|any)\b/i;
+// A claim search is only initiated by an explicit search verb, or by a weaker
+// "what/any" question that actually mentions claims. Without this, ordinary
+// questions ("Good morning Atlas, what do I have today?") were turned into a
+// failed claim lookup instead of reaching the conversation engine.
+const SEARCH_VERB_RE = /\b(?:find|show|list|search|look up|which|pull up)\b/i;
+const WEAK_SEARCH_VERB_RE = /\b(?:what|any)\b/i;
 const CLAIM_WORD_RE = /\bclaims?\b/i;
 const STATUS_RE =
   /\b(?:what'?s (?:happening|going on|the status|up)|status of|status on|status|how much is|tell me about|what about|details? (?:on|for|about))\b/i;
@@ -153,8 +158,13 @@ export function routeAtlasIntent(
     if (ref) return { name: "get_claim", args: { claimRef: ref } };
   }
 
-  // 5. claim search ("find Carter", "which claims do we have")
-  if (SEARCH_VERB_RE.test(text)) {
+  // 5. claim search ("find Carter", "which claims do we have"). A weak
+  //    "what/any" question must mention claims to count, so general questions
+  //    fall through to the conversation engine instead of a claim lookup.
+  if (
+    SEARCH_VERB_RE.test(text) ||
+    (WEAK_SEARCH_VERB_RE.test(text) && CLAIM_WORD_RE.test(text))
+  ) {
     const query = extractClaimReference(text.replace(LEADING_SEARCH_VERB_RE, " "));
     if (query) return { name: "search_claims", args: { query } };
   }

@@ -78,6 +78,19 @@ describe("atlas-voice/intent routing", () => {
     expect(routeAtlasIntent("summarize the policy language")).toBeNull();
     expect(routeAtlasIntent("")).toBeNull();
   });
+
+  it("does not turn a general 'what do I have today' question into a claim search", () => {
+    // Regression: a bare "what ..." question with no claim reference must
+    // reach the conversation engine, not become a failed claim lookup.
+    expect(routeAtlasIntent("Good morning, Atlas. What do I have today?")).toBeNull();
+    expect(routeAtlasIntent("what do I have today?")).toBeNull();
+    expect(routeAtlasIntent("what's new?")).toBeNull();
+  });
+
+  it("still searches when a weak verb mentions claims", () => {
+    const intent = routeAtlasIntent("what claims do we have?");
+    expect(intent?.name).toBe("search_claims");
+  });
 });
 
 describe("atlas-voice/interrupt phrase", () => {

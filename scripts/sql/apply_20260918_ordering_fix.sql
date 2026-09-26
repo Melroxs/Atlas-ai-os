@@ -1,0 +1,31 @@
+-- ============================================================================
+-- ATLAS — 20260918 apply-order compensation (WRITE: one GRANT only)
+--
+-- Why this exists
+-- ---------------
+-- 20260918 is the privilege-normalisation migration: it does a blanket
+-- `revoke execute on all functions in schema public from public, anon,
+-- authenticated`, then re-grants `authenticated` to everything (except the
+-- service-only set) and `anon` only to its explicit allowlist.
+--
+-- In the intended APPLY ORDER 20260918 sorts BEFORE 20260920, so 20260920's
+-- own explicit grant wins. Because 20260920 was already applied out-of-band
+-- BEFORE this, applying 20260918 now strips that grant for exactly one
+-- function: content_public_get(text) — 20260920 lines 255-258:
+--     revoke execute on function public.content_public_get(text) from public;
+--     grant  execute on function public.content_public_get(text) to anon, authenticated, service_role;
+--
+-- Re-asserting the anon grant here reproduces the EXACT end state that
+-- applying all migrations in order would produce — nothing more.
+--
+-- Scope and safety
+-- ----------------
+--   * One GRANT on one SECURITY INVOKER function.
+--   * That function only reads published blog rows (status='published',
+--     contentType='blog'), exactly like the anon table-SELECT policy it mirrors,
+--     so it grants no new data access.
+--   * No other function is touched. The 20260918 service-only set stays revoked.
+--   * Idempotent.
+-- ============================================================================
+
+grant execute on function public.content_public_get(text) to anon;

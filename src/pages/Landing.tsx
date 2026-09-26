@@ -63,6 +63,14 @@ import {
 import { WORKERS } from "@/lib/workforce/worker-defs";
 import { cn } from "@/lib/utils";
 import { ThemeToggle } from "@/components/atlas-ui";
+import {
+  allPricingPlans,
+  checkoutReturnTo,
+  type PricingPlanData,
+} from "@/lib/billing/checkout";
+import { planFeatureLines } from "@/lib/billing/plans";
+import { useAuth } from "@/hooks/use-auth";
+import type { InternalPlan } from "@/lib/billing/types";
 
 const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
@@ -668,17 +676,54 @@ function ClosedLoopRing() {
 const NAV_LINKS = [
   { label: "Product", href: "#product" },
   { label: "How It Works", href: "#how" },
+  { label: "Pricing", href: "#pricing" },
   { label: "Industries", href: "#industries" },
   { label: "Security", href: "#security" },
   { label: "Blog", href: "/blog" },
   { label: "Company", href: "#company" },
 ];
 
+/** The plan highlighted as most popular on the landing pricing section. */
+const POPULAR_PLAN: InternalPlan = "ATLAS_GROWTH";
+
 export default function Landing() {
   const navigate = useNavigate();
+  const { isAuthenticated } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [billing, setBilling] = useState<"monthly" | "annual">("monthly");
   const toAuth = () => navigate("/auth");
-  const toPricing = () => navigate("/pricing");
+
+  // The generic "Sign Up" CTAs lead into the landing pricing section; the plan
+  // buttons themselves enter the real Stripe checkout flow.
+  const toPricing = () => {
+    document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const plans = allPricingPlans(billing);
+  const annualSavingsPercent = allPricingPlans("annual")[0]?.annualSavingsPercent ?? null;
+
+  /**
+   * Enter the existing Stripe checkout flow for the selected plan + interval.
+   *
+   * Signed-in users go straight to /checkout (which calls the stripe-checkout
+   * Edge Function). Signed-out users are sent through /auth with the selected
+   * plan, interval and a returnTo so the choice survives sign-up. The browser
+   * only ever carries a plan slug and an interval — never a price or an amount.
+   */
+  const handleSelectPlan = (plan: PricingPlanData) => {
+    const returnTo = checkoutReturnTo({ plan: plan.slug, interval: billing });
+    if (isAuthenticated) {
+      navigate(returnTo);
+      return;
+    }
+    const params = new URLSearchParams({
+      mode: "signup",
+      plan: plan.slug,
+      interval: billing,
+      returnTo,
+    });
+    navigate(`/auth?${params.toString()}`);
+  };
 
   return (
     <MotionConfig reducedMotion="user">
@@ -1953,6 +1998,118 @@ export default function Landing() {
         </section>
 
         {/* ------------------------------------------------------------------ */}
+        {/* Pricing — canonical Atlas plans, wired to the Stripe checkout flow */}
+        <section id="pricing" className="relative z-10 border-y border-border/60 bg-card/30 py-20">
+          <div className="mx-auto w-full max-w-6xl px-5">
+            <SectionHead
+              eyebrow="Pricing"
+              title="Simple, transparent pricing."
+              lead="Three plans, no trial and no setup fee. Choose monthly or annual billing — you pay the plan price shown here and can cancel anytime from your Atlas billing settings."
+            />
+
+            {/* Billing interval selector */}
+            <Reveal className="mt-8 flex justify-center">
+              <div className="inline-flex items-center gap-1 rounded-lg border border-border/60 bg-muted/30 p-1">
+                {(["monthly", "annual"] as const).map((interval) => (
+                  <button
+                    key={interval}
+                    type="button"
+                    onClick={() => setBilling(interval)}
+                    aria-pressed={billing === interval}
+                    className={cn(
+                      "rounded-md px-4 py-2 text-sm font-medium transition-colors",
+                      billing === interval
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {interval === "monthly" ? "Monthly" : "Annual"}
+                    {interval === "annual" && annualSavingsPercent !== null && (
+                      <span className="ml-1.5 text-xs text-emerald-600 dark:text-emerald-400">
+                        Save {annualSavingsPercent}%
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </Reveal>
+
+            {/* Plan cards — rendered from the canonical billing catalog */}
+            <div className="mt-10 grid gap-6 lg:grid-cols-3">
+              {plans.map((plan, i) => {
+                const popular = plan.internalPlan === POPULAR_PLAN;
+                return (
+                  <Reveal key={plan.slug} delay={i * 0.06}>
+                    <div
+                      className={cn(
+                        "relative flex h-full flex-col rounded-2xl border bg-card/60 p-7 transition-colors",
+                        popular
+                          ? "border-teal-400/50 shadow-lg shadow-teal-400/10"
+                          : "border-border/70 hover:border-teal-400/30",
+                      )}
+                    >
+                      {popular && (
+                        <div className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-teal-400 px-4 py-1 text-xs font-semibold text-teal-950">
+                          Most Popular
+                        </div>
+                      )}
+
+                      <h3 className="text-lg font-semibold tracking-tight text-foreground">
+                        {plan.displayName.replace("Atlas ", "")}
+                      </h3>
+                      <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                        {plan.description}
+                      </p>
+
+                      <div className="mt-5 flex items-baseline gap-1">
+                        <span className="text-4xl font-bold text-foreground">
+                          {"$" + (billing === "monthly" ? plan.price : Math.round(plan.intervalPrice / 12))}
+                        </span>
+                        <span className="text-sm text-muted-foreground">/mo</span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {billing === "annual"
+                          ? "Billed $" + plan.intervalPrice + " annually"
+                          : "Billed $" + plan.price + " monthly"}
+                      </p>
+
+                      <ul className="mt-6 space-y-2.5">
+                        {planFeatureLines(plan.internalPlan).map((feature) => (
+                          <li
+                            key={feature}
+                            className="flex items-start gap-2.5 text-sm text-muted-foreground"
+                          >
+                            <Check className="mt-0.5 size-4 shrink-0 text-teal-600 dark:text-teal-300" />
+                            {feature}
+                          </li>
+                        ))}
+                      </ul>
+
+                      <div className="mt-auto pt-7">
+                        <PrimaryCta onClick={() => handleSelectPlan(plan)} className="w-full">
+                          Get Started
+                        </PrimaryCta>
+                      </div>
+                    </div>
+                  </Reveal>
+                );
+              })}
+            </div>
+
+            <p className="mt-8 text-center text-xs text-muted-foreground">
+              Payments are processed securely by Stripe. Subscriptions renew on the interval you
+              choose until you cancel.{" "}
+              <Link
+                to="/pricing"
+                className="underline underline-offset-2 transition-colors hover:text-teal-700 dark:hover:text-teal-200"
+              >
+                Compare every plan in detail
+              </Link>
+              .
+            </p>
+          </div>
+        </section>
+
         {/* Final CTA */}
         {/* ------------------------------------------------------------------ */}
         <section id="cta" className="relative z-10 mx-auto w-full max-w-6xl px-5 py-24">
@@ -2022,7 +2179,7 @@ export default function Landing() {
               {[
                 ["Product", [["Ask Atlas", "#ask"], ["Company model", "#model"], ["Connections", "#how"], ["Security", "#security"]]],
                 ["How it works", [["The problem", "#problem"], ["The pipeline", "#product"], ["Industries", "#industries"], ["The roadmap", "#evolution"]]],
-                ["Company", [["About", "#product"], ["Industries", "#industries"], ["Trust", "#security"], ["Pricing", "/pricing"]]],
+                ["Company", [["About", "#product"], ["Industries", "#industries"], ["Trust", "#security"], ["Blog", "/blog"], ["Pricing", "/pricing"]]],
               ].map(([head, links]) => (
                 <div key={head as string}>
                   <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
@@ -2031,12 +2188,21 @@ export default function Landing() {
                   <ul className="mt-3 space-y-2">
                     {(links as [string, string][]).map(([label, href]) => (
                       <li key={label}>
-                        <a
-                          href={href}
-                          className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-                        >
-                          {label}
-                        </a>
+                        {href.startsWith("/") ? (
+                          <Link
+                            to={href}
+                            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                          >
+                            {label}
+                          </Link>
+                        ) : (
+                          <a
+                            href={href}
+                            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                          >
+                            {label}
+                          </a>
+                        )}
                       </li>
                     ))}
                   </ul>

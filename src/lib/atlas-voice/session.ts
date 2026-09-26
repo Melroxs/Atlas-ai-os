@@ -18,19 +18,18 @@
 // ElevenLabs never talks to the model and never holds the tools.
 // ---------------------------------------------------------------------------
 
-import { speakText, stopBrowserSpeaking } from "@/lib/voice";
 import type { ApiFn } from "@/lib/api";
 import { api } from "@/lib/api";
 import { normalizeRpcArgs } from "@/lib/actions/rpc";
 import { getSupabaseClient } from "@/lib/supabase";
 import {
   SpeechEngineError,
-  elevenLabsSpeak,
   elevenLabsTranscribe,
   startAudioRecording,
   type AudioRecorder,
   type SpeechEngine,
 } from "./elevenlabs";
+import { atlasSpeech } from "./speech";
 import { claimIdFromPath, pageLabelFromPath } from "./navigation";
 import { isInterruptPhrase, routeAtlasIntent, type AtlasIntent } from "./intent";
 import {
@@ -61,8 +60,8 @@ export interface AtlasVoiceState {
   transcript: string;
   /** Last Atlas answer (also what was spoken). */
   response: string;
-  /** Which engine actually handled the most recent turn. */
-  engine: SpeechEngine;
+  /** Which engine actually handled the most recent turn (null before any). */
+  engine: SpeechEngine | null;
   /** Which engine should be attempted next. */
   preferredEngine: SpeechEngine;
   error: string | null;
@@ -77,7 +76,7 @@ const initialState: AtlasVoiceState = {
   status: "idle",
   transcript: "",
   response: "",
-  engine: "elevenlabs",
+  engine: null,
   preferredEngine: "elevenlabs",
   error: null,
   toolLabel: null,
@@ -113,10 +112,8 @@ export function subscribeToAtlasVoice(listener: () => void): () => void {
 /** Test-only reset. */
 export function resetAtlasVoiceSession(): void {
   _recorder = null;
-  _ttsAbort?.abort();
-  _ttsAbort = null;
-  _currentAudio?.pause();
-  _currentAudio = null;
+  atlasSpeech.stop();
+  atlasSpeech.reset();
   instanceTag += 1;
   _state = initialState;
 }
@@ -141,8 +138,6 @@ export function currentAtlasVoiceContext(): AtlasVoiceContext {
 // ---------------------------------------------------------------------------
 
 let _recorder: AudioRecorder | null = null;
-let _ttsAbort: AbortController | null = null;
-let _currentAudio: HTMLAudioElement | null = null;
 let instanceTag = 0;
 
 // ---------------------------------------------------------------------------
@@ -195,75 +190,25 @@ export async function askAtlasConversation(
 // Speech output
 // ---------------------------------------------------------------------------
 
-/** Speak `text`, preferring ElevenLabs and falling back to browser speech. */
+/**
+ * Speak `text` through the shared Atlas speech controller: ElevenLabs when the
+ * server is configured, browser speech synthesis otherwise. The controller
+ * owns interruption and object-URL cleanup.
+ */
 async function speakAnswer(text: string): Promise<SpeechEngine> {
   const clean = text.trim();
-  if (!clean) return _state.engine;
+  if (!clean) return _state.engine ?? "browser";
 
-  _ttsAbort?.abort();
-  const controller = new AbortController();
-  _ttsAbort = controller;
-
-  if (_state.preferredEngine === "elevenlabs") {
-    try {
-      const spoken = await elevenLabsSpeak(clean, { signal: controller.signal });
-      if (controller.signal.aborted) {
-        spoken.revoke();
-        setState({ status: "interrupted" });
-        return "elevenlabs";
-      }
-      setState({ status: "speaking", engine: "elevenlabs" });
-      await playUrl(spoken.url);
-      spoken.revoke();
-      if (!controller.signal.aborted && _state.status === "speaking") {
-        setState({ status: "idle" });
-      }
-      return "elevenlabs";
-    } catch (error) {
-      if (controller.signal.aborted) {
-        setState({ status: "interrupted" });
-        return "elevenlabs";
-      }
-      // Fall through to browser speech — voice must never dead-end.
-      const code = error instanceof SpeechEngineError ? error.code : "unavailable";
-      if (code === "not_configured" || code === "unavailable") {
-        console.info("[atlas-voice] ElevenLabs TTS unavailable — using browser speech.");
-        setState({ preferredEngine: "browser" });
-      }
-    } finally {
-      if (_ttsAbort === controller) _ttsAbort = null;
-    }
-  }
-
-  setState({ status: "speaking", engine: "browser" });
-  const started = speakText(clean, {
+  setState({ status: "speaking" });
+  const engine = await atlasSpeech.speak(clean, {
+    onEngine: (used) => setState({ engine: used }),
     onEnd: () => {
       if (_state.status === "speaking") setState({ status: "idle" });
     },
   });
-  if (!started) {
-    // No audio output available at all — the text answer still stands.
-    setState({ status: "idle", engine: "browser" });
-  }
-  return "browser";
-}
-
-function playUrl(url: string): Promise<void> {
-  return new Promise<void>((resolve) => {
-    if (typeof Audio === "undefined") {
-      resolve();
-      return;
-    }
-    const audio = new Audio(url);
-    _currentAudio = audio;
-    const finish = () => {
-      _currentAudio = null;
-      resolve();
-    };
-    audio.onended = finish;
-    audio.onerror = finish;
-    void audio.play().catch(finish);
-  });
+  // Interruption sets `interrupted` itself; only clear a still-speaking state.
+  if (_state.status === "speaking") setState({ status: "idle" });
+  return engine;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,18 +420,9 @@ export function cancelAtlasVoiceListening(): void {
 
 /** Stop audio immediately (used for interruption). */
 export function stopAtlasVoiceSpeaking(): void {
-  _ttsAbort?.abort();
-  _ttsAbort = null;
-  if (_currentAudio) {
-    try {
-      _currentAudio.pause();
-      _currentAudio.currentTime = 0;
-    } catch {
-      // already stopped
-    }
-    _currentAudio = null;
-  }
-  stopBrowserSpeaking();
+  // Aborts any in-flight ElevenLabs request, stops playback, revokes the
+  // generated object URL and cancels browser speech in one place.
+  atlasSpeech.stop();
 }
 
 export function setAtlasVoiceAutoSpeak(value: boolean): void {

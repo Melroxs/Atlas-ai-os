@@ -22,20 +22,11 @@
 // rather than silently creating an unusable session.
 // ---------------------------------------------------------------------------
 
-import type { InternalPlan, BillingInterval } from "./types";
-
-// ---------------------------------------------------------------------------
+import type { InternalPlan, BillingInterval } from "./types";// ---------------------------------------------------------------------------
 // Internal plan metadata (Atlas-owned)
 //
 // The amounts below are the canonical Atlas list prices and are what the
-// public pricing page renders. Each annual price is discounted ~20% against
-// twelve monthly payments. The AUTHORITATIVE amounts live in the Stripe
-// catalog — the configured Stripe Prices must match these values, and the
-// server never accepts an amount from the browser.
-//
-//   Starter  $49/month    $470/year
-//   Growth  $149/month  $1,430/year
-//   Scale   $299/month  $2,870/year
+
 // ---------------------------------------------------------------------------
 
 export const PLAN_METADATA = {
@@ -286,4 +277,35 @@ export function resolvePlanEntitlements(
   plan: InternalPlan | null,
 ): PlanEntitlements | null {
   return plan ? PLAN_ENTITLEMENTS[plan] : null;
+}
+
+const AI_TIER_LABEL: Record<PlanEntitlements["aiTier"], string> = {
+  basic: "Basic AI intelligence",
+  advanced: "Advanced AI intelligence",
+  enterprise: "Enterprise AI intelligence",
+};
+
+/**
+ * Display feature lines for a plan, DERIVED from its canonical entitlements.
+ *
+ * Shared by every page that renders a plan card (pricing page + landing page)
+ * so no page can advertise a seat limit, storage limit or feature that the
+ * entitlement contract — and therefore the server — does not enforce.
+ */
+export function planFeatureLines(plan: InternalPlan): string[] {
+  const e = PLAN_ENTITLEMENTS[plan];
+  const lines: string[] = [
+    e.maxSeats === null ? "Unlimited team members" : `Up to ${e.maxSeats} team members`,
+    e.maxStorageGb === null
+      ? "Unlimited document storage"
+      : `${e.maxStorageGb} GB document storage`,
+    AI_TIER_LABEL[e.aiTier],
+    e.prioritySupport ? "Priority support" : "Email support",
+    e.multipleOrganizations ? "Multiple organizations" : "Single organization",
+  ];
+  if (e.customWorkflows) lines.push("Custom workflows");
+  if (e.apiAccess) lines.push("API access");
+  if (e.sso) lines.push("SSO & advanced security");
+  if (e.sla) lines.push("SLA guarantee");
+  return lines;
 }

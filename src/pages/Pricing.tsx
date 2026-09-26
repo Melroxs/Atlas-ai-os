@@ -10,7 +10,7 @@ import {
   checkoutReturnTo,
   type PricingPlanData,
 } from "@/lib/billing/checkout";
-import { resolvePlanEntitlements } from "@/lib/billing/plans";
+import { planFeatureLines } from "@/lib/billing/plans";
 import type { InternalPlan } from "@/lib/billing/types";
 
 /**
@@ -22,32 +22,8 @@ const MARKETING_LINES: Partial<Record<InternalPlan, string[]>> = {
   ATLAS_SCALE: ["Custom integrations", "Custom deployment"],
 };
 
-const AI_TIER_LABEL: Record<string, string> = {
-  basic: "Basic AI intelligence",
-  advanced: "Advanced AI intelligence",
-  enterprise: "Enterprise AI intelligence",
-};
-
 function planFeatures(plan: InternalPlan): string[] {
-  const entitlements = resolvePlanEntitlements(plan);
-  if (!entitlements) return [];
-  const features: string[] = [
-    entitlements.maxSeats === null
-      ? "Unlimited team members"
-      : `Up to ${entitlements.maxSeats} team members`,
-    entitlements.maxStorageGb === null
-      ? "Unlimited document storage"
-      : `${entitlements.maxStorageGb} GB document storage`,
-    AI_TIER_LABEL[entitlements.aiTier] ?? "AI intelligence",
-    entitlements.prioritySupport ? "Priority support" : "Email support",
-    entitlements.multipleOrganizations ? "Multiple organizations" : "Single organization",
-  ];
-  if (entitlements.customWorkflows) features.push("Custom workflows");
-  if (entitlements.apiAccess) features.push("API access");
-  if (entitlements.sso) features.push("SSO & advanced security");
-  if (entitlements.sla) features.push("SLA guarantee");
-  features.push(...(MARKETING_LINES[plan] ?? []));
-  return features;
+  return [...planFeatureLines(plan), ...(MARKETING_LINES[plan] ?? [])];
 }
 
 const POPULAR_PLAN: InternalPlan = "ATLAS_GROWTH";
@@ -85,21 +61,7 @@ export default function Pricing() {
 
   const plans = allPricingPlans(billing);
 
-  // Derived from the canonical catalog so the badge can never drift from the
-  // prices actually charged. NOTE: `price` is the MONTHLY-equivalent display
-  // price; `intervalPrice` is the amount actually charged for that interval.
-  // The annual comparison must use `intervalPrice` for both sides.
-  const annualDiscountPercent = (() => {
-    const monthlyPlans = allPricingPlans("monthly");
-    const annualPlans = allPricingPlans("annual");
-    const best = monthlyPlans.reduce((min, p, i) => {
-      const twelveMonths = p.intervalPrice * 12;
-      const annualTotal = annualPlans[i].intervalPrice;
-      const pct = ((twelveMonths - annualTotal) / twelveMonths) * 100;
-      return pct > min.pct ? { pct } : min;
-    }, { pct: -Infinity });
-    return Number.isFinite(best.pct) ? Math.max(0, Math.round(best.pct)) : 0;
-  })();
+
 
   const handleGetStarted = (plan: PricingPlanData) => {
     // Carry plan + interval through auth so checkout resumes after sign-up.
@@ -183,9 +145,7 @@ export default function Pricing() {
               )}
             >
               Annual
-              <span className="ml-1.5 text-xs text-emerald-600 dark:text-emerald-400">
-                Save {annualDiscountPercent}%
-              </span>
+
             </button>
           </div>
         </div>
@@ -209,9 +169,9 @@ export default function Pricing() {
                     Most Popular
                   </div>
                 )}
-                {billing === "annual" && (
+                {billing === "annual" && plan.annualSavingsPercent !== null && (
                   <div className="absolute -top-3 right-4 rounded-full border border-teal-400/40 bg-teal-400/10 px-3 py-1 text-[11px] font-medium text-teal-700 dark:text-teal-300">
-                    2 months free
+                    Save {plan.annualSavingsPercent}%
                   </div>
                 )}
 

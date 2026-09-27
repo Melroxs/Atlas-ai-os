@@ -200,7 +200,7 @@ begin
   select count(*) into v_members
   from public.memberships m where m."tenantId" = p_tenant_id;
 
-  select coalesce(array_agg(distinct u), '{}'::uuid[]) into v_user_ids
+  select coalesce(array_agg(distinct m."userId"), '{}'::uuid[]) into v_user_ids
   from public.memberships m
   where m."tenantId" = p_tenant_id and m."userId" is not null;
 

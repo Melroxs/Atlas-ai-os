@@ -19,6 +19,15 @@ vi.mock("@/hooks/use-supabase", () => ({
   invalidateQueries: vi.fn(),
 }));
 
+vi.mock("@/hooks/use-auth", () => ({
+  useAuth: vi.fn(() => ({
+    role: null,
+    user: null,
+    isLoading: false,
+    isAuthenticated: false,
+  })),
+}));
+
 vi.mock("react-router", () => ({
   useParams: () => ({ id: "arch-1" }),
   useNavigate: () => vi.fn(),
@@ -34,10 +43,15 @@ vi.mock("@/lib/api", () => ({
       deleteArchiveWithDegree: {},
       deleteIngestedFile: {},
     },
+    tenants: {
+      getMyWorkspace: {},
+    },
   },
 }));
 
 import { useQuery } from "@/hooks/use-supabase";
+import { useAuth } from "@/hooks/use-auth";
+import { api } from "@/lib/api";
 import ArchiveDetail from "./ArchiveDetail";
 
 const DETAIL = {
@@ -88,9 +102,27 @@ const DETAIL = {
 describe("ArchiveDetail — graded deletion UI", () => {
   beforeEach(() => {
     actionFn.mockClear();
-    vi.mocked(useQuery).mockReturnValue(DETAIL as never);
+    // The archive detail and the caller's workspace are separate queries.
+    vi.mocked(useQuery).mockImplementation((def: unknown) => {
+      if (def === api.archive.getArchiveDetail) return DETAIL as never;
+      return { membership: { role: "admin" } } as never;
+    });
   });
   afterEach(() => cleanup());
+
+  /** Re-render with a different viewer: platform role + org role. */
+  function asViewer(platformRole: string | null, memberRole: string | null) {
+    vi.mocked(useAuth).mockReturnValue({
+      role: platformRole,
+      user: platformRole ? { _id: "u1", platform_role: platformRole } : null,
+      isLoading: false,
+      isAuthenticated: Boolean(platformRole),
+    } as never);
+    vi.mocked(useQuery).mockImplementation((def: unknown) => {
+      if (def === api.archive.getArchiveDetail) return DETAIL as never;
+      return { membership: memberRole ? { role: memberRole } : null } as never;
+    });
+  }
 
   it("offers a depth choice and deletes a single file at the chosen depth", async () => {
     render(
@@ -160,5 +192,64 @@ describe("ArchiveDetail — graded deletion UI", () => {
         degree: "everything",
       }),
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Who the delete control is offered to. The SERVER is the boundary (see the
+  // ingestion_delete_* RPCs); these pin that the UI does not offer a button
+  // that would always be rejected, and does offer it to a super admin who is
+  // not a member of the organization.
+  // -------------------------------------------------------------------------
+  describe("who may delete", () => {
+    async function renderPage() {
+      render(
+        <>
+          <ArchiveDetail />
+          <Toaster />
+        </>,
+      );
+    }
+
+    it.each(["owner", "admin", "manager"])(
+      "offers deletion to an organization %s",
+      async (role) => {
+        asViewer(null, role);
+        await renderPage();
+        expect(await screen.findByTitle("Delete this ingested file")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /Delete import/ })).toBeInTheDocument();
+      },
+    );
+
+    it("hides deletion from an analyst", async () => {
+      asViewer(null, "analyst");
+      await renderPage();
+      // Wait for the page itself to render before asserting the absence.
+      expect(await screen.findByText("Claims.zip")).toBeInTheDocument();
+      expect(screen.queryByTitle("Delete this ingested file")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Delete import/ })).not.toBeInTheDocument();
+    });
+
+    it("hides deletion from a viewer with no organization role", async () => {
+      asViewer(null, null);
+      await renderPage();
+      expect(await screen.findByText("Claims.zip")).toBeInTheDocument();
+      expect(screen.queryByTitle("Delete this ingested file")).not.toBeInTheDocument();
+    });
+
+    it("offers deletion to a platform super_admin who is not a member", async () => {
+      // The case the 20260930 migration exists for: a super_admin resolves the
+      // organization from the target row, not from a membership.
+      asViewer("super_admin", null);
+      await renderPage();
+      expect(await screen.findByTitle("Delete this ingested file")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Delete import/ })).toBeInTheDocument();
+    });
+
+    it("hides deletion from an atlas_admin — that role is not a delete role", async () => {
+      asViewer("atlas_admin", "analyst");
+      await renderPage();
+      expect(await screen.findByText("Claims.zip")).toBeInTheDocument();
+      expect(screen.queryByTitle("Delete this ingested file")).not.toBeInTheDocument();
+    });
   });
 });

@@ -4,8 +4,12 @@ import {
   ARCHIVE_DELETION_DEGREES,
   DELETION_CONFIRMATION_WORD,
   FILE_DELETION_DEGREES,
+  INGESTION_DELETE_ORG_ROLES,
+  INGESTION_DELETE_PLATFORM_ROLE,
+  canDeleteIngestedFiles,
   deletionDegreesFor,
   describeDeletion,
+  ingestionDeleteDeniedReason,
   isDeletionDegree,
   resolveDeletionDegree,
 } from "./deletion";
@@ -111,5 +115,64 @@ describe("graded deletion — confirmation prompts", () => {
 
   it("returns null for an invalid degree", () => {
     expect(describeDeletion("file", "everything")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Who may delete ingested files.
+//
+// This predicate is the UI's mirror of the server guard in the
+// ingestion_delete_* RPCs. If the two ever disagree the UI either hides a
+// button that would work, or offers one that always fails — so the role sets
+// are pinned here AND in src/lib/security/deletion-sql.test.ts.
+// ---------------------------------------------------------------------------
+
+describe("ingestion deletion authorization", () => {
+  it("keeps the original organization roles unchanged", () => {
+    // These are the roles 20260928 allowed. The 20260930 change ADDED a
+    // platform role; it must not have quietly narrowed these.
+    expect([...INGESTION_DELETE_ORG_ROLES]).toEqual(["owner", "admin", "manager"]);
+  });
+
+  it.each(["owner", "admin", "manager"])("allows an organization %s", (role) => {
+    expect(canDeleteIngestedFiles({ memberRole: role })).toBe(true);
+    expect(canDeleteIngestedFiles({ platformRole: null, memberRole: role })).toBe(true);
+  });
+
+  it.each(["analyst", "viewer", "customer_user", "", "Owner", "ADMIN"])(
+    "refuses %s even if it merely looks like a privileged role",
+    (role) => {
+      // Role strings are compared exactly: a capitalized or padded value is
+      // not a role, and must not be treated as one.
+      expect(canDeleteIngestedFiles({ memberRole: role })).toBe(false);
+    },
+  );
+
+  it("allows a platform super_admin with no membership at all", () => {
+    // The case the 20260930 migration exists for: a super_admin is not a
+    // member of most organizations.
+    expect(INGESTION_DELETE_PLATFORM_ROLE).toBe("super_admin");
+    expect(canDeleteIngestedFiles({ platformRole: "super_admin", memberRole: null })).toBe(true);
+    expect(canDeleteIngestedFiles({ platformRole: "super_admin" })).toBe(true);
+  });
+
+  it("does NOT widen to other platform roles", () => {
+    // atlas_admin is an internal operator role, not a super_admin. It must not
+    // inherit the ability to delete another organization's ingested data.
+    expect(canDeleteIngestedFiles({ platformRole: "atlas_admin", memberRole: null })).toBe(false);
+    expect(canDeleteIngestedFiles({ platformRole: "customer_user", memberRole: null })).toBe(false);
+  });
+
+  it("refuses an anonymous viewer", () => {
+    expect(canDeleteIngestedFiles({})).toBe(false);
+    expect(canDeleteIngestedFiles({ platformRole: null, memberRole: null })).toBe(false);
+  });
+
+  it("explains the refusal instead of returning a bare false", () => {
+    expect(ingestionDeleteDeniedReason({ memberRole: "analyst" })).toContain(
+      "owners, admins and managers",
+    );
+    expect(ingestionDeleteDeniedReason({ memberRole: "owner" })).toBeNull();
+    expect(ingestionDeleteDeniedReason({ platformRole: "super_admin" })).toBeNull();
   });
 });

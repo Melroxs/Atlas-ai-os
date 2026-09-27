@@ -12,6 +12,7 @@
  *   - Invite a member (first name, last name, email, organization role)
  *   - Remove a member (membership only — the Auth account stays intact)
  *   - Delete a user (permanent Auth deletion, confirmation required)
+ *   - Delete an organization (cancels live billing first, purges its data)
  *   - Grant / revoke complimentary access (7d, 30d, 90d, 1y, lifetime)
  */
 import { PageHeader, EmptyPanel } from "@/components/atlas-ui";
@@ -56,7 +57,7 @@ import {
   UserPlus,
   Users,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import {
   PILOT_STATUS_LABELS,
@@ -182,6 +183,7 @@ export default function SuperAdminOrgs() {
     kind:
       | "remove_member"
       | "delete_user"
+      | "delete_organization"
       | "revoke_grant"
       | "suspend_pilot"
       | "reactivate_pilot"
@@ -190,11 +192,25 @@ export default function SuperAdminOrgs() {
     message: string;
     /** Convert is irreversible bookkeeping; mark it destructive. */
     destructive?: boolean;
-    /** Render a (required) reason field before confirming. */
+    /** Render a reason field before confirming. */
     needsReason?: boolean;
+    /** Require that reason before Confirm is enabled (destructive deletes). */
+    requiresReason?: boolean;
+    /**
+     * Organization deletion additionally requires typing the organization's
+     * exact name, and offers to delete the member accounts.
+     */
+    needsNameConfirmation?: boolean;
+    /** Allow choosing whether the member accounts are deleted too. */
+    offersDeleteUsers?: boolean;
     run: (reason: string) => Promise<void>;
   } | null>(null);
   const [confirmReason, setConfirmReason] = useState("");
+  const [confirmName, setConfirmName] = useState("");
+  const [confirmDeleteUsers, setConfirmDeleteUsers] = useState(false);
+  // `confirmState.run` is created once, when the dialog opens, so it would
+  // close over a stale `confirmDeleteUsers`. The ref is the live value.
+  const confirmDeleteUsersRef = useRef(false);
 
   const selectedOrg = orgs?.find((o) => o._id === selectedOrgId) ?? null;
 
@@ -450,6 +466,49 @@ export default function SuperAdminOrgs() {
         }
         toast.success("User account deleted");
         await loadSelected();
+        await loadOrgs();
+      },
+    });
+  };
+
+  /**
+   * Deleting the organization is separate from deleting its members: the
+   * accounts outlive the tenant unless the operator explicitly asks for them
+   * to go too, so both choices are stated in the confirmation.
+   */
+  const confirmDeleteOrganization = () => {
+    if (!selectedOrgId || !selectedOrg) return;
+    const tenantId = selectedOrgId;
+    const orgName = selectedOrg.name ?? "";
+    setConfirmReason("");
+    setConfirmName("");
+    setConfirmDeleteUsers(false);
+    confirmDeleteUsersRef.current = false;
+    setConfirmState({
+      kind: "delete_organization",
+      title: `Permanently delete ${orgName}?`,
+      message: `This permanently deletes ${orgName}, its members, documents, ingested archives, claims, jobs and work history. The organization and its data cannot be restored. Billing and audit records are retained. Any live Stripe subscription is cancelled first.`,
+      destructive: true,
+      needsReason: true,
+      requiresReason: true,
+      needsNameConfirmation: true,
+      offersDeleteUsers: true,
+      run: async (reason) => {
+        const deleteUsers = confirmDeleteUsersRef.current;
+        const res = await orgAdmin.deleteOrganization({
+          tenantId,
+          reason,
+          confirmName: orgName,
+          deleteUsers,
+        });
+        if (!res.ok) {
+          toast.error(res.error ?? "Could not delete the organization.");
+          return;
+        }
+        toast.success(`${orgName} deleted`);
+        if (res.data?.warning) toast.warning(res.data.warning);
+        setSelectedOrgId(null);
+        setOrgs(null);
         await loadOrgs();
       },
     });
@@ -952,6 +1011,44 @@ export default function SuperAdminOrgs() {
                 )}
               </CardContent>
             </Card>
+
+            {/* Danger zone — permanent organization deletion */}
+            {selectedOrg && (
+              <Card className="border-destructive/40">
+                <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 text-base text-destructive">
+                      <Trash2 className="size-4" /> Danger zone
+                    </CardTitle>
+                    <CardDescription>
+                      Permanently delete this organization and all of its data.
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={confirmDeleteOrganization}
+                    disabled={busy !== null}
+                  >
+                    <Trash2 className="mr-2 size-4" /> Delete organization
+                  </Button>
+                </CardHeader>
+                <CardContent className="space-y-1 text-sm text-muted-foreground">
+                  <p>
+                    Deletes {selectedOrg.name ?? "this organization"}, its
+                    memberships, documents, ingested archives, claims, jobs and
+                    work history. Stored files are removed from Supabase Storage
+                    and a live Stripe subscription is cancelled first.
+                  </p>
+                  <p>
+                    Billing and audit records are retained for reporting. The
+                    member sign-in accounts are kept unless you choose to delete
+                    them during confirmation.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       )}
@@ -1282,13 +1379,47 @@ export default function SuperAdminOrgs() {
           </DialogHeader>
           {confirmState?.needsReason && (
             <div className="space-y-1.5">
-              <Label htmlFor="confirm-reason">Reason (recommended)</Label>
+              <Label htmlFor="confirm-reason">
+                Reason{confirmState?.requiresReason ? " (required)" : " (recommended)"}
+              </Label>
               <Textarea
                 id="confirm-reason"
                 rows={2}
                 value={confirmReason}
                 onChange={(e) => setConfirmReason(e.target.value)}
                 placeholder="Recorded in the audit log"
+              />
+            </div>
+          )}
+          {confirmState?.offersDeleteUsers && (
+            <label className="flex cursor-pointer items-start gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4"
+                checked={confirmDeleteUsers}
+                onChange={(e) => {
+                  confirmDeleteUsersRef.current = e.target.checked;
+                  setConfirmDeleteUsers(e.target.checked);
+                }}
+              />
+              <span>
+                Also delete the member accounts (permanently removes their
+                Supabase sign-in). Leave this off to keep the user accounts and
+                only remove them from the organization.
+              </span>
+            </label>
+          )}
+          {confirmState?.needsNameConfirmation && (
+            <div className="space-y-1.5">
+              <Label htmlFor="confirm-name">
+                Type <span className="font-mono">{selectedOrg?.name}</span> to confirm
+              </Label>
+              <Input
+                id="confirm-name"
+                value={confirmName}
+                onChange={(e) => setConfirmName(e.target.value)}
+                placeholder={selectedOrg?.name ?? ""}
+                autoComplete="off"
               />
             </div>
           )}
@@ -1301,6 +1432,11 @@ export default function SuperAdminOrgs() {
                 confirmState?.destructive || confirmState?.kind === "delete_user"
                   ? "destructive"
                   : "default"
+              }
+              disabled={
+                (confirmState?.requiresReason === true && confirmReason.trim() === "") ||
+                (confirmState?.needsNameConfirmation === true &&
+                  confirmName.trim() !== (selectedOrg?.name ?? "").trim())
               }
               onClick={() => {
                 const run = confirmState?.run;

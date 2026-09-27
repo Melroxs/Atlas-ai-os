@@ -22,6 +22,7 @@ vi.mock("@/lib/actions/org-admin", () => ({
     inviteMember: vi.fn(),
     removeMember: vi.fn(),
     deleteUser: vi.fn(),
+    deleteOrganization: vi.fn(),
     grantComplimentary: vi.fn(),
     revokeComplimentary: vi.fn(),
     extendPilot: vi.fn(),
@@ -98,6 +99,10 @@ describe("SuperAdminOrgs", () => {
     vi.mocked(orgAdmin.listComplimentary).mockResolvedValue({ ok: true, data: { grants: GRANTS } });
     vi.mocked(orgAdmin.inviteMember).mockResolvedValue({ ok: true, data: { invitation_sent: true } });
     vi.mocked(orgAdmin.deleteUser).mockResolvedValue({ ok: true, data: { ok: true } });
+    vi.mocked(orgAdmin.deleteOrganization).mockResolvedValue({
+      ok: true,
+      data: { members: 2, storage_removed: 0, users_deleted: 0 },
+    });
     vi.mocked(orgAdmin.revokeComplimentary).mockResolvedValue({ ok: true, data: { grant: null } });
     vi.mocked(orgAdmin.extendPilot).mockResolvedValue({ ok: true, data: { status: "active" } });
     vi.mocked(orgAdmin.setPilotStatus).mockResolvedValue({ ok: true, data: { status: "suspended" } });
@@ -218,6 +223,84 @@ describe("SuperAdminOrgs", () => {
 
     expect(await screen.findByText("A reason is required for complimentary access.")).toBeInTheDocument();
     expect(orgAdmin.grantComplimentary).not.toHaveBeenCalled();
+  });
+
+  describe("organization deletion", () => {
+    async function openDeleteDialog() {
+      render(wrapInRouter(<SuperAdminOrgs />));
+      await screen.findByText("Jane Doe");
+      fireEvent.click(screen.getByRole("button", { name: /Delete organization/ }));
+      return screen.findByRole("heading", { name: /Permanently delete Example Restoration Co\./ });
+    }
+
+    it("never deletes without a reason and the exact organization name typed", async () => {
+      await openDeleteDialog();
+
+      const confirm = screen.getByRole("button", { name: "Confirm" });
+      // Both the reason and the typed name start empty, so Confirm is inert.
+      expect(confirm).toBeDisabled();
+
+      // A reason alone is still not enough.
+      fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: "duplicate org" } });
+      expect(confirm).toBeDisabled();
+      await waitFor(() => expect(orgAdmin.deleteOrganization).not.toHaveBeenCalled());
+
+      // A wrong name is still not enough.
+      fireEvent.change(screen.getByLabelText(/Type Example Restoration Co\./), {
+        target: { value: "Example Restoration" },
+      });
+      expect(confirm).toBeDisabled();
+      await waitFor(() => expect(orgAdmin.deleteOrganization).not.toHaveBeenCalled());
+
+      fireEvent.change(screen.getByLabelText(/Type Example Restoration Co\./), {
+        target: { value: "Example Restoration Co." },
+      });
+      await waitFor(() => expect(confirm).toBeEnabled());
+    });
+
+    it("sends the tenant, reason and typed name to the server, keeping user accounts by default", async () => {
+      await openDeleteDialog();
+
+      fireEvent.change(screen.getByLabelText(/Reason/), {
+        target: { value: "  duplicate of org-9  " },
+      });
+      fireEvent.change(screen.getByLabelText(/Type Example Restoration Co\./), {
+        target: { value: "Example Restoration Co." },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+      await waitFor(() =>
+        expect(orgAdmin.deleteOrganization).toHaveBeenCalledWith({
+          tenantId: "org-1",
+          reason: "duplicate of org-9",
+          confirmName: "Example Restoration Co.",
+          deleteUsers: false,
+        }),
+      );
+    });
+
+    it("deletes the member accounts only when the operator opts in", async () => {
+      await openDeleteDialog();
+
+      fireEvent.change(screen.getByLabelText(/Reason/), { target: { value: "offboarding" } });
+      fireEvent.change(screen.getByLabelText(/Type Example Restoration Co\./), {
+        target: { value: "Example Restoration Co." },
+      });
+      fireEvent.click(screen.getByRole("checkbox"));
+      fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+      await waitFor(() =>
+        expect(orgAdmin.deleteOrganization).toHaveBeenCalledWith(
+          expect.objectContaining({ deleteUsers: true }),
+        ),
+      );
+    });
+
+    it("cancelling the dialog never calls the server", async () => {
+      await openDeleteDialog();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(orgAdmin.deleteOrganization).not.toHaveBeenCalled());
+    });
   });
 });
 
@@ -344,5 +427,5 @@ describe("SuperAdminOrgs — Free Pilot lifecycle", () => {
     const arg = vi.mocked(orgAdmin.extendPilot).mock.calls[0][0];
     expect(arg.tenantId).toBe("org-1");
     expect(arg.expiresAt).toBe(Date.UTC(Number(future.slice(0, 4)), Number(future.slice(5, 7)) - 1, Number(future.slice(8, 10)), 23, 59, 59, 999));
-  });
+});
 });

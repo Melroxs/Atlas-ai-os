@@ -4,8 +4,13 @@
  * Tenant-scoped view of one company-data import: processing status, derived
  * summary (every number from real records), warnings, the full file inventory
  * with classifications/duplicates/versions, per-file retry, cancel, and
- * delete (manager+). Provenance is preserved: every ingested file links to
- * its Atlas document.
+ * delete. Provenance is preserved: every ingested file links to its Atlas
+ * document.
+ *
+ * Deletion is offered to organization owners/admins/managers AND to an Atlas
+ * platform super_admin, matching the server guard in the ingestion_delete_*
+ * RPCs. The server is the boundary; the gate here only avoids a button that
+ * would always fail.
  */
 import { api } from "@/lib/api";
 import {
@@ -30,8 +35,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   DELETION_CONFIRMATION_WORD,
+  canDeleteIngestedFiles,
   deletionDegreesFor,
   describeDeletion,
+  ingestionDeleteDeniedReason,
   isDeletionDegree,
   resolveDeletionDegree,
   type DeletionTarget,
@@ -51,6 +58,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { invalidateQueries, useAction, useMutation, useQuery } from "@/hooks/use-supabase";
+import { useAuth } from "@/hooks/use-auth";
 import type {
   NormalizedArchiveCandidate,
   NormalizedArchiveFile,
@@ -117,6 +125,20 @@ export default function ArchiveDetail() {
   } | null>(null);
   const [deleteDegree, setDeleteDegree] = useState("knowledge");
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
+
+  // Who may delete: the caller's platform role OR their role in the
+  // organization that owns this import. A super_admin is not a member of most
+  // organizations, which is why both are consulted.
+  const { user } = useAuth();
+  const workspace = useQuery(api.tenants.getMyWorkspace);
+  const mayDelete = canDeleteIngestedFiles({
+    platformRole: user?.platform_role ?? null,
+    memberRole: workspace?.membership?.role ?? null,
+  });
+  const deleteDeniedReason = ingestionDeleteDeniedReason({
+    platformRole: user?.platform_role ?? null,
+    memberRole: workspace?.membership?.role ?? null,
+  });
 
   if (!id) return null;
   if (detail === undefined) {
@@ -268,6 +290,12 @@ export default function ArchiveDetail() {
   };
 
   const openArchiveDelete = () => {
+    // The button is hidden for unprivileged viewers, but the dialog must not
+    // be reachable at all — the role can change under an open page.
+    if (deleteDeniedReason) {
+      toast.error(deleteDeniedReason);
+      return;
+    }
     setDeleteConfirmText("");
     setDeleteDegree("knowledge");
     setDeleteTarget({
@@ -280,6 +308,10 @@ export default function ArchiveDetail() {
   };
 
   const openFileDelete = (f: NormalizedArchiveFile) => {
+    if (deleteDeniedReason) {
+      toast.error(deleteDeniedReason);
+      return;
+    }
     setDeleteConfirmText("");
     setDeleteDegree("knowledge");
     setDeleteTarget({
@@ -292,9 +324,23 @@ export default function ArchiveDetail() {
     });
   };
 
+  /**
+   * The database deletion and the Storage deletion are two different systems.
+   * When the operator chose a depth that destroys the original bytes but
+   * Storage did not remove them, the rows are already gone and the file is
+   * orphaned with nothing pointing at it. That must be said out loud — a
+   * success toast alone would let someone believe the bytes are destroyed.
+   */
+  const warnIfStorageSurvived = (failed: boolean, subject: string) => {
+    if (!failed) return;
+    toast.warning("The stored file was not deleted", {
+      description: `The knowledge was removed, but ${subject} could not be deleted from storage and may still exist. Contact an administrator to remove it.`,
+      duration: 12000,
+    });
+  };
+
   const runDeletion = async () => {
-    if (!deleteTarget) return;
-    const spec = resolveDeletionDegree(deleteTarget.target, deleteDegree);
+    if (!deleteTarget) return;    const spec = resolveDeletionDegree(deleteTarget.target, deleteDegree);
     if (!spec) {
       toast.error("Choose a deletion option.");
       return;
@@ -322,6 +368,7 @@ export default function ArchiveDetail() {
               : ""
           }.`,
         });
+        warnIfStorageSurvived(res.storageRemovalFailed, "stored files");
         setDeleteTarget(null);
         if (res.recordDeleted) navigate("/dashboard/knowledge");
       } else {
@@ -335,6 +382,7 @@ export default function ArchiveDetail() {
             res.storageRemoved > 0 ? " · stored file deleted" : ""
           }.`,
         });
+        warnIfStorageSurvived(res.storageRemovalFailed, "the stored file");
         setDeleteTarget(null);
       }
     } catch (e) {
@@ -397,15 +445,17 @@ export default function ArchiveDetail() {
                 Retry {failedFiles.length} failed
               </Button>
             )}
-            <Button
-              variant="outline"
-              onClick={openArchiveDelete}
-              disabled={busy !== null}
-              className="gap-2 text-muted-foreground"
-            >
-              {busy === "delete" ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-              Delete import…
-            </Button>
+            {mayDelete && (
+              <Button
+                variant="outline"
+                onClick={openArchiveDelete}
+                disabled={busy !== null}
+                className="gap-2 text-muted-foreground"
+              >
+                {busy === "delete" ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                Delete import…
+              </Button>
+            )}
           </div>
         }
       />
@@ -679,7 +729,7 @@ export default function ArchiveDetail() {
                   {f.ingestStatus === "failed" && !f.storageId && (
                     <span className="text-[10px] text-muted-foreground">content not retained — cannot retry</span>
                   )}
-                  {f.ingestStatus !== "deleted" && (f.documentId || f.storageId) && (
+                  {mayDelete && f.ingestStatus !== "deleted" && (f.documentId || f.storageId) && (
                     <Button
                       variant="ghost"
                       size="sm"

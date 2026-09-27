@@ -32,6 +32,11 @@
 //   invite                { firstName?, lastName?, email, tenantId, orgRole }
 //   remove_member         { tenantId, userId }   — membership only, Auth account stays
 //   delete_user           { userId }              — permanent Auth deletion (confirm in UI)
+//   delete_organization   { tenantId, reason, confirmName, deleteUsers? }
+//                         — cancels live Stripe billing, deletes the tenant and
+//                           everything cascading from it, purges stored bytes,
+//                           and optionally deletes the member accounts.
+//                           Requires typing the organization name exactly.
 //   grant_complimentary   { tenantId, userId?, duration, reason }
 //   revoke_complimentary  { grantId }
 
@@ -44,6 +49,19 @@ import {
   greetingLine,
 } from "../_shared/email.ts";
 import { cleanupUserData, deleteProfileRow } from "../_shared/user-deletion.ts";
+import { stripeRequest } from "../_shared/stripe.ts";
+
+/** Subscription states that mean the organization is still being charged. */
+const LIVE_SUBSCRIPTION_STATUSES = new Set([
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+  "incomplete",
+]);
+
+/** Bucket that holds every original ingested/uploaded file. */
+const DOCUMENTS_BUCKET = "documents";
 
 const ATLAS_ALLOWED_ORIGINS = [
   "https://atlas-ai-os.com",
@@ -733,6 +751,169 @@ async function handleDeleteUser(ctx: AdminContext, body: Record<string, unknown>
   return { ok: true, user_id: userId };
 }
 
+/**
+ * Delete an organization.
+ *
+ * There was no path for this at all: no migration defines a tenant delete and
+ * `archive_delete` only removes an ingestion. The DB work is done by
+ * `admin_delete_organization` (super-admin only, audited, refuses while Stripe
+ * still charges the organization). This handler owns the three things SQL
+ * cannot do:
+ *
+ *   1. cancelling the live Stripe subscription FIRST, so a paying customer is
+ *      never orphaned from a deleted tenant;
+ *   2. removing the stored bytes, which live in Supabase Storage and would
+ *      otherwise be orphaned when their rows cascade away;
+ *   3. deleting the member Auth accounts, when the operator asked for it.
+ *
+ * Every step is server-authorized; the confirmation the UI collects (typing
+ * the organization name, plus a reason) is re-checked here.
+ */
+async function handleDeleteOrganization(ctx: AdminContext, body: Record<string, unknown>) {
+  const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+  const confirmName = typeof body.confirmName === "string" ? body.confirmName.trim() : "";
+  const deleteUsers = body.deleteUsers === true;
+
+  if (!tenantId) return fail("Organization id is required.");
+  if (!reason) return fail("A reason is required to delete an organization.");
+
+  const { data: tenant } = await ctx.admin
+    .from("tenants")
+    .select("name")
+    .eq("_id", tenantId)
+    .maybeSingle();
+  if (!tenant) return fail("Organization not found.");
+
+  const orgName = (tenant.name ?? "").trim();
+  if (!orgName) {
+    return fail("This organization has no name to confirm against; delete it from the database console instead.");
+  }
+  if (confirmName !== orgName) {
+    return fail(`Type the organization name exactly (${orgName}) to confirm.`);
+  }
+
+  // 1. Cancel live billing BEFORE the tenant disappears, so Stripe can never
+  //    keep charging for an organization that no longer exists.
+  const { data: subRows } = await ctx.admin
+    .from("subscriptions")
+    .select("stripe_subscription_id, status")
+    .eq("tenant_id", tenantId);
+  const liveSub = (subRows ?? []).find((s: any) =>
+    s.stripe_subscription_id && LIVE_SUBSCRIPTION_STATUSES.has(s.status)
+  );
+
+  let billingCancelled = false;
+  if (liveSub) {
+    try {
+      // Prorate up to now, and do not send an invoice — the customer is leaving.
+      await stripeRequest("DELETE", `/v1/subscriptions/${liveSub.stripe_subscription_id}`, {
+        invoice_now: "false",
+        prorate: "false",
+      });
+      billingCancelled = true;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return fail(
+        `Could not cancel the Stripe subscription (${liveSub.status}). Cancel it in Stripe, then delete the organization.`,
+        message,
+      );
+    }
+  }
+
+  // 2. Delete the organization (and everything cascading from it), audited in
+  //    the same transaction.
+  const { data: deleted, error: deleteError } = await ctx.admin.rpc(
+    "admin_delete_organization",
+    {
+      p_tenant_id: tenantId,
+      p_reason: reason,
+      p_delete_users: deleteUsers,
+      p_billing_cancelled: billingCancelled,
+      p_actor_id: ctx.callerId,
+    },
+  );
+  if (deleteError) {
+    return fail("Could not delete the organization.", deleteError.message);
+  }
+
+  // 3. Purge the stored bytes the database cannot reach. Done server-side with
+  //    the service role: an organization can own many objects, and this must
+  //    not depend on the operator's session policies.
+  const storagePaths: string[] = Array.isArray(deleted?.storage_paths)
+    ? deleted.storage_paths.filter((p: unknown): p is string => typeof p === "string" && p.length > 0)
+    : [];
+  let storageRemoved = 0;
+  let storageError: string | null = null;
+  if (storagePaths.length > 0) {
+    const { error: removeError } = await ctx.admin.storage
+      .from(DOCUMENTS_BUCKET)
+      .remove(storagePaths);
+    if (removeError) {
+      storageError = removeError.message;
+    } else {
+      storageRemoved = storagePaths.length;
+    }
+  }
+
+  // 4. Optionally delete the member accounts. Best-effort per user so one
+  //    failure cannot leave the organization half deleted; the caller is never
+  //    deleted here (that is a separate, explicit action).
+  let usersDeleted = 0;
+  const usersFailed: string[] = [];
+  if (deleteUsers) {
+    const memberIds: string[] = Array.isArray(deleted?.member_user_ids)
+      ? deleted.member_user_ids.filter((id: unknown): id is string => typeof id === "string")
+      : [];
+    for (const userId of memberIds) {
+      if (userId === ctx.callerId) continue;
+      const { error: delError } = await ctx.admin.auth.admin.deleteUser(userId);
+      if (delError) usersFailed.push(userId);
+      else usersDeleted += 1;
+    }
+  }
+
+  await audit(ctx, {
+    actorId: ctx.callerId,
+    actorEmail: ctx.callerEmail,
+    action: "organization_delete_completed",
+    targetType: "organization",
+    targetId: tenantId,
+    details: {
+      name: orgName,
+      reason,
+      members: deleted?.members ?? 0,
+      billing_cancelled: billingCancelled,
+      storage_removed: storageRemoved,
+      users_deleted: usersDeleted,
+      users_failed: usersFailed.length,
+    },
+  });
+
+  const warnings: string[] = [];
+  if (storageError) {
+    warnings.push(
+      `The organization was deleted, but ${storagePaths.length} stored file(s) could not be removed: ${storageError}`,
+    );
+  }
+  if (usersFailed.length > 0) {
+    warnings.push(
+      `${usersFailed.length} user account(s) could not be deleted. Remove them from Supabase → Authentication.`,
+    );
+  }
+
+  return {
+    ok: true,
+    tenant_id: tenantId,
+    name: orgName,
+    members: deleted?.members ?? 0,
+    storage_removed: storageRemoved,
+    users_deleted: usersDeleted,
+    billing_cancelled: billingCancelled,
+    warning: warnings.length > 0 ? warnings.join(" ") : null,
+  };
+}
+
 async function handleGrantComplimentary(ctx: AdminContext, body: Record<string, unknown>) {
   const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
   const userId = typeof body.userId === "string" && body.userId ? body.userId : null;
@@ -929,6 +1110,9 @@ serve(async (req: Request) => {
         break;
       case "delete_user":
         result = await handleDeleteUser(ctx, body);
+        break;
+      case "delete_organization":
+        result = await handleDeleteOrganization(ctx, body);
         break;
       case "grant_complimentary":
         result = await handleGrantComplimentary(ctx, body);

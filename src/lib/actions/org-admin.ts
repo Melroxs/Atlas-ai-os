@@ -123,9 +123,84 @@ async function callAdminEdge<T = Record<string, unknown>>(
   }
 }
 
+export interface PilotOrganizationInput {
+  /** Organization name. */
+  name: string;
+  /** Optional explicit slug; derived from the name when omitted. */
+  slug?: string | null;
+  /** Primary admin email. Receives an invite; no password is ever set here. */
+  adminEmail: string;
+  adminName?: string | null;
+  /** epoch ms, or null for "no expiration". */
+  expiresAt?: number | null;
+  /** Internal notes. Never shown to pilot users. */
+  notes?: string | null;
+  /** Optional pilot limits (entitlement configuration). */
+  limits?: Record<string, unknown> | null;
+}
+
 export const orgAdmin = {
-  createOrg: (name: string) =>
-    callAdminEdge<{ tenant_id?: string }>("create_org", { name }),
+  createOrg: (name: string, slug?: string | null) =>
+    callAdminEdge<{ tenant_id?: string; slug?: string }>("create_org", {
+      name,
+      slug: slug ?? null,
+    }),
+
+  /**
+   * Create a Free Pilot organization: a real tenant, its primary admin
+   * membership, and the Free Pilot entitlement, in one audited server call.
+   * No Stripe customer, subscription, invoice or payment is created.
+   */
+  createPilotOrg: (params: PilotOrganizationInput) =>
+    callAdminEdge<{
+      tenant_id?: string;
+      slug?: string;
+      user_id?: string;
+      grant_id?: string;
+      account_type?: string;
+      next_step?: string;
+    }>("create_pilot_org", {
+      name: params.name,
+      slug: params.slug ?? null,
+      adminEmail: params.adminEmail,
+      adminName: params.adminName ?? null,
+      expiresAt: params.expiresAt ?? null,
+      notes: params.notes ?? null,
+      limits: params.limits ?? null,
+    }),
+
+  /** Extend or clear a pilot's expiration. */
+  extendPilot: (params: { tenantId: string; expiresAt: number | null; reason?: string | null }) =>
+    callAdminEdge<{ status?: string }>("extend_pilot", {
+      tenantId: params.tenantId,
+      expiresAt: params.expiresAt,
+      reason: params.reason ?? null,
+    }),
+
+  /** Suspend or reactivate a pilot. Never deletes the organization or its data. */
+  setPilotStatus: (params: {
+    tenantId: string;
+    status: "active" | "suspended";
+    reason?: string | null;
+  }) =>
+    callAdminEdge<{ status?: string }>("set_pilot_status", {
+      tenantId: params.tenantId,
+      status: params.status,
+      reason: params.reason ?? null,
+    }),
+
+  /**
+   * Record a pilot's conversion to a paid organization.
+   *
+   * Atlas bookkeeping only — the paid subscription is produced by the normal
+   * Stripe Checkout flow and reconciled by the Stripe webhook. This must never
+   * be used to fabricate a subscription.
+   */
+  convertPilot: (params: { tenantId: string; reason?: string | null }) =>
+    callAdminEdge<{ account_type?: string; status?: string; converted_at?: number }>(
+      "convert_pilot",
+      { tenantId: params.tenantId, reason: params.reason ?? null },
+    ),
 
   listOrgs: () =>
     callAdminEdge<{ organizations: Array<{ _id: string; name: string | null; member_count?: number }> }>(

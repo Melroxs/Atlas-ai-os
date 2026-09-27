@@ -18,10 +18,17 @@
 //
 // Actions (body.action):
 //   provision             legacy single-user provisioning (email, name, role, status, companyName)
-//   create_org            { name }
+//   create_org            { name, slug? }
 //   list_orgs             {}
 //   list_org_members      { tenantId }
 //   list_complimentary    { tenantId }
+//   create_pilot_org      { name, slug?, adminEmail, adminName?, expiresAt?, notes?, limits? }
+//                         — real tenant + owner membership + Free Pilot grant, audited.
+//                           Sends no password; follow with `invite` to provision Auth.
+//   extend_pilot          { tenantId, expiresAt, reason? }
+//   set_pilot_status      { tenantId, status: active|suspended, reason? }
+//   convert_pilot         { tenantId, reason? }  — Atlas bookkeeping only. Never
+//                           creates a Stripe customer/subscription; the webhook does.
 //   invite                { firstName?, lastName?, email, tenantId, orgRole }
 //   remove_member         { tenantId, userId }   — membership only, Auth account stays
 //   delete_user           { userId }              — permanent Auth deletion (confirm in UI)
@@ -258,8 +265,125 @@ async function handleProvision(ctx: AdminContext, body: Record<string, unknown>)
 async function handleCreateOrg(ctx: AdminContext, body: Record<string, unknown>) {
   const name = typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return fail("Organization name is required.");
-  const { data, error } = await ctx.user.rpc("admin_create_tenant", { p_name: name });
+  const slug = typeof body.slug === "string" ? body.slug.trim() : null;
+  const { data, error } = await ctx.user.rpc("admin_create_tenant", {
+    p_name: name,
+    p_slug: slug || null,
+  });
   if (error) return fail("Could not create organization.", error.message);
+  return { ok: true, ...(data ?? {}) };
+}
+
+/**
+ * Parse an optional epoch-ms expiration sent by the client. Returns
+ * `undefined` when the value is malformed so the caller can reject it rather
+ * than silently granting a lifetime entitlement.
+ */
+function parseExpiresAt(value: unknown): number | null | undefined {
+  if (value === null || value === undefined || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.trunc(n);
+}
+
+/**
+ * Create a Free Pilot organization.
+ *
+ * Produces a real tenant + primary profile + owner membership + the Free
+ * Pilot complimentary_access entitlement in one audited transaction. It does
+ * NOT create a Supabase Auth user here: the invite is sent separately below so
+ * no password is ever generated or transmitted by this handler.
+ */
+async function handleCreatePilotOrg(ctx: AdminContext, body: Record<string, unknown>) {
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) return fail("Organization name is required.");
+
+  const adminEmail = typeof body.adminEmail === "string" ? body.adminEmail.trim() : "";
+  if (!adminEmail) return fail("A primary admin email is required.");
+
+  const expiresAt = parseExpiresAt(body.expiresAt);
+  if (expiresAt === undefined) {
+    return fail("Pilot expiration must be a valid future date, or empty for no expiration.");
+  }
+
+  const notes = typeof body.notes === "string" ? body.notes.trim() : null;
+  const slug = typeof body.slug === "string" ? body.slug.trim() : null;
+  const adminName = typeof body.adminName === "string" ? body.adminName.trim() : null;
+  const limits =
+    body.limits && typeof body.limits === "object" && !Array.isArray(body.limits)
+      ? body.limits
+      : null;
+
+  const { data, error } = await ctx.user.rpc("admin_create_pilot_organization", {
+    p_name: name,
+    p_admin_email: adminEmail,
+    p_admin_name: adminName || null,
+    p_slug: slug || null,
+    p_expires_at: expiresAt,
+    p_notes: notes || null,
+    p_limits: limits,
+  });
+  if (error) return fail("Could not create the pilot organization.", error.message);
+  return { ok: true, ...(data ?? {}) };
+}
+
+/** Extend (or clear) a pilot's expiration. */
+async function handleExtendPilot(ctx: AdminContext, body: Record<string, unknown>) {
+  const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+  if (!tenantId) return fail("Organization is required.");
+
+  const expiresAt = parseExpiresAt(body.expiresAt);
+  if (expiresAt === undefined) {
+    return fail("Pilot expiration must be a valid future date, or empty for no expiration.");
+  }
+
+  const reason = typeof body.reason === "string" ? body.reason.trim() : null;
+  const { data, error } = await ctx.user.rpc("admin_extend_pilot", {
+    p_tenant_id: tenantId,
+    p_expires_at: expiresAt,
+    p_reason: reason || null,
+  });
+  if (error) return fail("Could not extend the pilot.", error.message);
+  return { ok: true, ...(data ?? {}) };
+}
+
+/** Suspend or reactivate a pilot. Never deletes the organization or its data. */
+async function handleSetPilotStatus(ctx: AdminContext, body: Record<string, unknown>) {
+  const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+  const status = typeof body.status === "string" ? body.status : "";
+  if (!tenantId) return fail("Organization is required.");
+  if (status !== "active" && status !== "suspended") {
+    return fail("Pilot status must be active or suspended.");
+  }
+
+  const reason = typeof body.reason === "string" ? body.reason.trim() : null;
+  const { data, error } = await ctx.user.rpc("admin_set_pilot_status", {
+    p_tenant_id: tenantId,
+    p_status: status,
+    p_reason: reason || null,
+  });
+  if (error) return fail("Could not update the pilot status.", error.message);
+  return { ok: true, ...(data ?? {}) };
+}
+
+/**
+ * Record a pilot's conversion to a paid organization.
+ *
+ * Bookkeeping only. This handler must NOT create a Stripe customer or
+ * subscription: the paid subscription comes from the normal Stripe Checkout
+ * flow and is reconciled by the existing Stripe webhook. This revokes the
+ * Free Pilot grant so exactly one authoritative entitlement remains.
+ */
+async function handleConvertPilot(ctx: AdminContext, body: Record<string, unknown>) {
+  const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
+  if (!tenantId) return fail("Organization is required.");
+
+  const reason = typeof body.reason === "string" ? body.reason.trim() : null;
+  const { data, error } = await ctx.user.rpc("admin_convert_pilot_to_paid", {
+    p_tenant_id: tenantId,
+    p_reason: reason || null,
+  });
+  if (error) return fail("Could not convert the pilot organization.", error.message);
   return { ok: true, ...(data ?? {}) };
 }
 
@@ -814,6 +938,18 @@ serve(async (req: Request) => {
         break;
       case "list_complimentary":
         result = await handleListComplimentary(ctx, body);
+        break;
+      case "create_pilot_org":
+        result = await handleCreatePilotOrg(ctx, body);
+        break;
+      case "extend_pilot":
+        result = await handleExtendPilot(ctx, body);
+        break;
+      case "set_pilot_status":
+        result = await handleSetPilotStatus(ctx, body);
+        break;
+      case "convert_pilot":
+        result = await handleConvertPilot(ctx, body);
         break;
       default:
         return respond(corsH, 400, fail(`Unknown action: ${action}`));

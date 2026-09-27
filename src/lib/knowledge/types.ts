@@ -49,6 +49,7 @@ export type SourceClassification =
   | "CARRIER_OR_INSURANCE"
   | "MANUFACTURER"
   | "PROFESSIONAL_GUIDANCE"
+  | "TRAINING_MANUAL"
   | "ATLAS_CURATED"
   | "CUSTOMER_PROVIDED"
   | "CUSTOMER_GENERATED"
@@ -92,6 +93,18 @@ export const SOURCE_CLASSIFICATIONS: Record<SourceClassification, SourceClassifi
     label: "Professional Guidance",
     description: "Professional organizations and recognized industry guidance (RIA, CLM).",
     defaultConfidence: 0.7,
+  },
+  // A trade-published training/education manual. Deliberately the LOWEST
+  // authority tier of any non-inference source: it is a training reference,
+  // never a current legal, regulatory, coverage or carrier requirement.
+  // It must not override policy documents, building codes, manufacturer
+  // documentation or verified claim evidence.
+  TRAINING_MANUAL: {
+    classification: "TRAINING_MANUAL",
+    label: "Training Manual",
+    description:
+      "Trade-published training and education manual. Conceptual training value only; not a current legal, regulatory, coverage, pricing or carrier-requirement authority.",
+    defaultConfidence: 0.55,
   },
   ATLAS_CURATED: {
     classification: "ATLAS_CURATED",
@@ -150,6 +163,33 @@ export const INGESTION_STATUS_LABELS: Record<IngestionStatus, string> = {
 // Knowledge Items
 // ---------------------------------------------------------------------------
 
+/**
+ * Temporal scope of a knowledge statement.
+ *
+ * `historical_context` marks information that was true when its source was
+ * written but must never be presented as current without independent
+ * verification against a current authoritative source. Trade manuals
+ * frequently embed industry statistics from their publication year; those
+ * are training context, not current market conditions.
+ */
+export type TemporalScope = "current" | "historical_context";
+
+/**
+ * Page- or section-level pointer back into a source document.
+ *
+ * Document-level provenance (`KnowledgeProvenance`) answers "which source";
+ * this answers "where in it". Every statement ingested from a paged document
+ * should carry one so answers can cite the relevant page or heading.
+ */
+export interface KnowledgeLocator {
+  /** 1-indexed page number within the source document. */
+  page?: number;
+  /** Section, chapter or heading name. */
+  section?: string;
+  /** Short quoted or paraphrased anchor text used to locate the statement. */
+  excerpt?: string;
+}
+
 /** A single piece of knowledge in the Atlas knowledge layer. */
 export interface KnowledgeItem {
   id: string;
@@ -189,6 +229,20 @@ export interface KnowledgeItem {
   isInference: boolean;
   /** Tags for categorization. */
   tags?: string[];
+  /**
+   * Whether this statement is current or historical training context.
+   * Defaults to "current" when omitted.
+   */
+  temporalScope?: TemporalScope;
+  /** Page/section pointer back into the source document. */
+  locator?: KnowledgeLocator;
+  /**
+   * Whether this item is a confirmed finding backed by evidence, or a
+   * proposal/potential item that still warrants investigation.
+   * See CONFIRMED_VS_PROPOSED in ./training-manual for the controlled
+   * vocabulary.
+   */
+  evidenceStatus?: string;
 }
 
 /** Provenance for a knowledge item — answers "Where did this come from?" */
@@ -237,6 +291,16 @@ export interface KnowledgeRetrievalResult {
   provenance?: KnowledgeProvenance;
   /** Snippet of matched content. */
   snippet?: string;
+  /**
+   * Temporal scope carried through from the item. Results whose scope is
+   * `historical_context` must be surfaced to the model with an explicit
+   * historical marker — never restated as a current fact.
+   */
+  temporalScope?: TemporalScope;
+  /** Page/section pointer, when the source document is paged. */
+  locator?: KnowledgeLocator;
+  /** Confirmed finding vs. proposed/potential item. */
+  evidenceStatus?: string;
 }
 
 /** Context built from retrieved knowledge for the AI reasoning layer. */

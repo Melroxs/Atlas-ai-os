@@ -100,6 +100,19 @@ export interface BillingStore {
   appendAudit(entry: AuditEntry): Promise<void>;
   resolveOrganizationIdByCustomer(customerId: string): Promise<string | null>;
   resolveOrganizationIdBySubscription(subscriptionId: string): Promise<string | null>;
+  /**
+   * True when the organization is a Free Pilot account (tenants.account_type
+   * = 'free_pilot'). Used to decide whether an authoritative paid subscription
+   * should convert a pilot. Never a statement about entitlement on its own.
+   */
+  isPilotOrganization(organizationId: string): Promise<boolean>;
+  /**
+   * Atlas-side bookkeeping after Stripe reports an authoritative paid
+   * subscription for a pilot: revoke the Free Pilot grant and mark the tenant
+   * converted. Must be idempotent — a repeat call on an already-converted
+   * organization resolves without changing anything.
+   */
+  convertPilotOrganization(organizationId: string, reason: string): Promise<void>;
 }
 
 /** External calls the processor needs (injected so tests never hit Stripe). */
@@ -749,6 +762,33 @@ export async function processStripeWebhook(
   const row = mergeSubscriptionWrite(existing, reconciled.row);
   await store.saveSubscription(row);
   await store.setBillingState(organizationId, resolveAtlasBillingState(row.status));
+
+  // ---- 7b. Free Pilot → paid (idempotent) --------------------------------
+  // Stripe is now authoritative: the merged row says this customer has an
+  // active/trialing subscription. If the organization is a Free Pilot, its
+  // complimentary entitlement must stop being the source of access so exactly
+  // ONE authoritative entitlement remains. This never creates a Stripe record
+  // and never touches the organization, its members or its data — it revokes
+  // the pilot grant and records the conversion (admin_convert_pilot_to_paid),
+  // reusing the single conversion path. A converted (or non-pilot) org is left
+  // untouched, so duplicate deliveries cannot corrupt state.
+  //
+  // Deliberately NOT gated on a Stripe customer existing, nor on a checkout
+  // session: only on the subscription state Stripe currently reports. A
+  // failed/incomplete checkout leaves status !== active/trialing, so the pilot
+  // keeps its grant and no conversion happens.
+  //
+  // Runs BEFORE the ledger row (written last, below). If it throws, the caller
+  // answers 5xx, Stripe retries, and the retry re-applies the same idempotent
+  // state instead of being swallowed as a duplicate.
+  if (row.status === "active" || row.status === "trialing") {
+    if (await store.isPilotOrganization(organizationId)) {
+      await store.convertPilotOrganization(
+        organizationId,
+        `Stripe subscription ${row.providerSubscriptionId ?? "(unknown)"} is ${row.status}`,
+      );
+    }
+  }
 
   const result: WebhookResult = reconciled.unresolvedPrice ? "ignored" : "processed";
   const entry: AuditEntry = {

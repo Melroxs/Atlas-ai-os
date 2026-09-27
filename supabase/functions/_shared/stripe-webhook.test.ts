@@ -56,6 +56,10 @@ interface StoreState {
   audits: AuditEntry[];
   billing: Map<string, string>;
   ops: string[];
+  /** Organization ids currently classified as Free Pilot (account_type). */
+  pilots: Set<string>;
+  /** Every pilot conversion the processor requested (idempotency evidence). */
+  conversions: Array<{ organizationId: string; reason: string }>;
 }
 
 function createStore(): BillingStore & { state: StoreState } {
@@ -65,6 +69,8 @@ function createStore(): BillingStore & { state: StoreState } {
     audits: [],
     billing: new Map(),
     ops: [],
+    pilots: new Set(),
+    conversions: [],
   };
 
   const findBy = (
@@ -112,6 +118,15 @@ function createStore(): BillingStore & { state: StoreState } {
     },
     async resolveOrganizationIdBySubscription(subscriptionId) {
       return findBy("providerSubscriptionId", subscriptionId);
+    },
+    async isPilotOrganization(organizationId) {
+      return state.pilots.has(organizationId);
+    },
+    async convertPilotOrganization(organizationId, reason) {
+      state.ops.push("convertPilotOrganization");
+      state.conversions.push({ organizationId, reason });
+      // Mirrors the RPC: idempotent — the org is no longer a pilot afterwards.
+      state.pilots.delete(organizationId);
     },
   };
 }
@@ -979,5 +994,127 @@ describe("organization_subscriptions row mapping", () => {
     expect(mapped.paymentStatus).toBe("unknown");
     expect(mapped.cancelAtPeriodEnd).toBe(false);
     expect(mapped.providerSubscriptionId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Free Pilot → paid conversion
+// ---------------------------------------------------------------------------
+
+describe("Free Pilot conversion", () => {
+  it("does not convert a pilot when no Stripe customer/subscription exists yet", async () => {
+    const store = createStore();
+    store.state.pilots.add(ORG);
+    // checkout.session.expired: identifiers only, no subscription state.
+    const gateway = createGateway(stripeSubscription({ status: "active" }));
+    const res = await processStripeWebhook(store, gateway, {
+      id: "evt_expired",
+      type: "checkout.session.expired",
+      created: T0,
+      data: { object: { id: "cs_1", customer: CUSTOMER, metadata: { atlas_org_id: ORG } } },
+    });
+    expect(res.result).toBe("ignored");
+    expect(store.state.conversions).toEqual([]);
+    expect(store.state.pilots.has(ORG)).toBe(true);
+  });
+
+  it("does not convert a pilot on a checkout session alone", async () => {
+    const store = createStore();
+    store.state.pilots.add(ORG);
+    // checkout.session.completed, but the re-read subscription is incomplete
+    // (payment not established) → status must not be active/trialing.
+    const gateway = createGateway(stripeSubscription({ status: "incomplete" }));
+    const res = await processStripeWebhook(
+      store,
+      gateway,
+      checkoutEvent("checkout.session.completed"),
+    );
+    expect(res.result).toBe("processed");
+    expect(store.state.conversions).toEqual([]);
+    expect(store.state.pilots.has(ORG)).toBe(true);
+  });
+
+  it("converts the pilot once an authoritative active subscription is established", async () => {
+    const store = createStore();
+    store.state.pilots.add(ORG);
+    const gateway = createGateway(stripeSubscription({ status: "active" }));
+    const res = await processStripeWebhook(
+      store,
+      gateway,
+      subscriptionEvent("customer.subscription.created", {}, "evt_created"),
+    );
+    expect(res.result).toBe("processed");
+    expect(store.state.conversions).toEqual([
+      { organizationId: ORG, reason: expect.stringContaining("is active") },
+    ]);
+    // The conversion runs before the ledger row so a retry re-applies it.
+    expect(store.state.ops.indexOf("convertPilotOrganization")).toBeLessThan(
+      store.state.ops.lastIndexOf("recordEvent"),
+    );
+  });
+
+  it("converts on trialing, not only active", async () => {
+    const store = createStore();
+    store.state.pilots.add(ORG);
+    const gateway = createGateway(stripeSubscription({ status: "trialing" }));
+    await processStripeWebhook(
+      store,
+      gateway,
+      subscriptionEvent("customer.subscription.updated", { status: "trialing" }, "evt_trial"),
+    );
+    expect(store.state.conversions).toHaveLength(1);
+  });
+
+  it("never converts a standard (non-pilot) organization", async () => {
+    const store = createStore();
+    const gateway = createGateway(stripeSubscription());
+    await processStripeWebhook(
+      store,
+      gateway,
+      subscriptionEvent("customer.subscription.created", {}, "evt_std"),
+    );
+    expect(store.state.conversions).toEqual([]);
+    expect(store.state.ops).not.toContain("convertPilotOrganization");
+  });
+
+  it("does not convert on a failed payment (the subscription is not active)", async () => {
+    const store = createStore();
+    store.state.pilots.add(ORG);
+    // Store the pilot's (non-existent) subscription state from the invoice's
+    // point of view: Stripe reports the subscription as past_due.
+    const gateway = createGateway(stripeSubscription({ status: "past_due" }));
+    const res = await processStripeWebhook(
+      store,
+      gateway,
+      invoiceEvent("invoice.payment_failed", { status: "open", paid: false }),
+    );
+    expect(res.result).toBe("processed");
+    expect(store.state.conversions).toEqual([]);
+    expect(store.state.pilots.has(ORG)).toBe(true);
+  });
+
+  it("is idempotent — a duplicate delivery does not convert twice", async () => {
+    const store = createStore();
+    store.state.pilots.add(ORG);
+    const gateway = createGateway(stripeSubscription());
+    const event = subscriptionEvent("customer.subscription.created", {}, "evt_dup");
+    await processStripeWebhook(store, gateway, event);
+    const second = await processStripeWebhook(store, gateway, event);
+    expect(second.result).toBe("duplicate");
+    expect(store.state.conversions).toHaveLength(1);
+  });
+
+  it("keeps paid organizations working — an existing subscription is unaffected", async () => {
+    const store = createStore();
+    store.state.rows.set(ORG, storedRow());
+    const gateway = createGateway(stripeSubscription());
+    const res = await processStripeWebhook(
+      store,
+      gateway,
+      subscriptionEvent("customer.subscription.updated", {}, "evt_paid"),
+    );
+    expect(res.result).toBe("processed");
+    expect(store.state.rows.get(ORG)?.status).toBe("active");
+    expect(store.state.conversions).toEqual([]);
   });
 });

@@ -709,6 +709,36 @@ export const api = {
       },
     ),
     deleteArchive: def<{ ok: boolean }>("archive_delete", "mutation"),
+    // Graded deletion: the operator chooses the depth (knowledge only vs also
+    // the stored bytes vs the whole record). See src/lib/archive/deletion.ts.
+    deleteArchiveWithDegree: def<{
+      ok: boolean;
+      documentsDeleted: number;
+      filesAffected: number;
+      storageRemoved: number;
+      recordDeleted: boolean;
+    }>("ingestion_delete_archive", "client", async (args) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      const { deleteIngestedArchiveClient } = await import("@/lib/actions/file-deletion");
+      return deleteIngestedArchiveClient({
+        archiveId: String(a.archiveId ?? ""),
+        degree: String(a.degree ?? "knowledge") as never,
+      });
+    }),
+    deleteIngestedFile: def<{
+      ok: boolean;
+      documentsDeleted: number;
+      filesAffected: number;
+      storageRemoved: number;
+      recordDeleted: boolean;
+    }>("ingestion_delete_archive_file", "client", async (args) => {
+      const a = (args ?? {}) as Record<string, unknown>;
+      const { deleteIngestedFileClient } = await import("@/lib/actions/file-deletion");
+      return deleteIngestedFileClient({
+        fileId: String(a.fileId ?? ""),
+        degree: String(a.degree ?? "knowledge") as never,
+      });
+    }),
   },
   events: {
     listEvents: defT<ObjArray>("events_list", "query", (d) =>

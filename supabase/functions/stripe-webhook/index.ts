@@ -231,5 +231,31 @@ function createSupabaseBillingStore(
       if (error) throw new Error(`subscription lookup failed: ${error.message}`);
       return (data?.organization_id as string | null) ?? null;
     },
+
+    // Free Pilot detection: an ordinary tenant row, no billing tables involved.
+    async isPilotOrganization(organizationId) {
+      const { data, error } = await client
+        .from("tenants")
+        .select("account_type")
+        .eq("_id", organizationId)
+        .maybeSingle();
+      if (error) throw new Error(`pilot lookup failed: ${error.message}`);
+      return data?.account_type === "free_pilot";
+    },
+
+    // Reuses the single conversion RPC, which is super_admin OR trusted-server
+    // authorized (the service role is trusted) and idempotent. A race where the
+    // organization was converted between the check and this call is a no-op:
+    // the RPC raises "not a Free Pilot organization" only, which is treated as
+    // success so a duplicate delivery cannot fail the webhook.
+    async convertPilotOrganization(organizationId, reason) {
+      const { error } = await client.rpc("admin_convert_pilot_to_paid", {
+        p_tenant_id: organizationId,
+        p_reason: reason,
+      });
+      if (!error) return;
+      if (/not a Free Pilot organization/i.test(error.message)) return;
+      throw new Error(`pilot conversion failed: ${error.message}`);
+    },
   };
 }

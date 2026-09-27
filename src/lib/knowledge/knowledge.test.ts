@@ -411,8 +411,27 @@ describe("buildKnowledgeContextString", () => {
 // ---------------------------------------------------------------------------
 
 describe("SOURCE_CLASSIFICATIONS", () => {
-  it("has all 9 source classifications", () => {
-    expect(Object.keys(SOURCE_CLASSIFICATIONS)).toHaveLength(9);
+  it("has all 10 source classifications", () => {
+    expect(Object.keys(SOURCE_CLASSIFICATIONS)).toHaveLength(10);
+  });
+
+  it("ranks the trade training manual below every current authority", () => {
+    const training = SOURCE_CLASSIFICATIONS.TRAINING_MANUAL;
+    // A training reference must never outrank a regulation, manufacturer
+    // documentation, or recognized professional guidance.
+    expect(training.defaultConfidence).toBeLessThan(
+      SOURCE_CLASSIFICATIONS.REGULATORY.defaultConfidence,
+    );
+    expect(training.defaultConfidence).toBeLessThan(
+      SOURCE_CLASSIFICATIONS.MANUFACTURER.defaultConfidence,
+    );
+    expect(training.defaultConfidence).toBeLessThan(
+      SOURCE_CLASSIFICATIONS.PROFESSIONAL_GUIDANCE.defaultConfidence,
+    );
+    // ...but it is still a real source, above pure model inference.
+    expect(training.defaultConfidence).toBeGreaterThan(
+      SOURCE_CLASSIFICATIONS.MODEL_INFERENCE.defaultConfidence,
+    );
   });
 
   it("each has required fields", () => {

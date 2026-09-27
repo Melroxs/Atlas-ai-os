@@ -136,11 +136,14 @@ begin
     raise exception 'A reason is required for complimentary access.';
   end if;
 
+  -- The multiplication is done in bigint. Casting only the RESULT to bigint is
+  -- too late: the literals are int4, so 30/90/365 days overflowed at runtime
+  -- ("integer out of range") and only 7d and lifetime ever worked.
   case p_duration
-    when '7d' then v_expires := v_now + (7 * 24 * 60 * 60 * 1000)::bigint;
-    when '30d' then v_expires := v_now + (30 * 24 * 60 * 60 * 1000)::bigint;
-    when '90d' then v_expires := v_now + (90 * 24 * 60 * 60 * 1000)::bigint;
-    when '1y' then v_expires := v_now + (365 * 24 * 60 * 60 * 1000)::bigint;
+    when '7d' then v_expires := v_now + (7::bigint * 24 * 60 * 60 * 1000);
+    when '30d' then v_expires := v_now + (30::bigint * 24 * 60 * 60 * 1000);
+    when '90d' then v_expires := v_now + (90::bigint * 24 * 60 * 60 * 1000);
+    when '1y' then v_expires := v_now + (365::bigint * 24 * 60 * 60 * 1000);
     when 'lifetime' then v_expires := null;
     else raise exception 'Invalid duration. Expected 7d, 30d, 90d, 1y or lifetime.';
   end case;

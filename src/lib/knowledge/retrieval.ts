@@ -19,6 +19,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { rpcCall } from "@/lib/actions/rpc";
+import { applyAuthorityFloor } from "./training-manual-guardrails";
 import {
   type KnowledgeItem,
   type KnowledgeLayer,
@@ -416,6 +417,13 @@ async function retrieveIndustryKnowledge(
   } catch {
     // Document search is best-effort
   }
+
+  // Apply the training-manual authority floor BEFORE ranking. A trade manual
+  // may be highly relevant while still being weak authority, so its relevance
+  // is capped: it stays citable and available for training, but can never
+  // outrank a current policy, regulatory, manufacturer or verified-evidence
+  // source that also matched. Results are then sorted and trimmed.
+  applyAuthorityFloor(results);
 
   // Sort by relevance and return top results
   results.sort((a, b) => b.relevance - a.relevance);

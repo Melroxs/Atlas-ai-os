@@ -411,6 +411,14 @@ function createRacingStore(initialRow: SubscriptionRow): BillingStore & { state:
     async resolveOrganizationIdBySubscription(id) {
       return findBy("providerSubscriptionId", id);
     },
+    // This suite concerns subscription merging, not pilot conversion; the
+    // organization is never a Free Pilot here.
+    async isPilotOrganization() {
+      return false;
+    },
+    async convertPilotOrganization() {
+      throw new Error("unexpected pilot conversion in subscription-merge suite");
+    },
   };
 }
 

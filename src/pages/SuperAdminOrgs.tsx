@@ -59,6 +59,15 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import {
+  PILOT_STATUS_LABELS,
+  computePilotStatus,
+  describePilotBilling,
+  describePilotLimits,
+  formatPilotExpiration,
+  parsePilotExpiration,
+  type PilotStatus,
+} from "@/lib/admin/super-admin";
+import {
   orgAdmin,
   type ComplimentaryDuration,
   type ComplimentaryGrant,
@@ -76,6 +85,9 @@ const DURATIONS: Array<{ value: ComplimentaryDuration; label: string }> = [
   { value: "lifetime", label: "Lifetime" },
 ];
 
+/** Create-dialog account type. Standard = normal paid-track org. */
+type CreateAccountType = "standard" | "free_pilot";
+
 const REASON_SUGGESTIONS = [
   "Pilot customer",
   "Strategic partner",
@@ -90,7 +102,20 @@ const REASON_SUGGESTIONS = [
 interface OrgRow {
   _id: string;
   name: string | null;
+  slug?: string | null;
   member_count?: number;
+  /** Internal administrative classification. */
+  account_type?: string | null;
+  /** Derived lifecycle state, computed server-side. */
+  pilot_status?: string | null;
+  pilot_expires_at?: number | null;
+  pilot_converted_at?: number | null;
+  billing?: {
+    has_stripe_subscription?: boolean | null;
+    has_stripe_customer?: boolean | null;
+    status?: string | null;
+    internal_plan?: string | null;
+  } | null;
 }
 
 function formatExpiration(expiresAt: number | null): string {
@@ -129,6 +154,11 @@ export default function SuperAdminOrgs() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createName, setCreateName] = useState("");
+  const [createAccountType, setCreateAccountType] = useState<CreateAccountType>("standard");
+  const [createAdminEmail, setCreateAdminEmail] = useState("");
+  const [createAdminName, setCreateAdminName] = useState("");
+  const [createExpires, setCreateExpires] = useState("");
+  const [createNotes, setCreateNotes] = useState("");
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteForm, setInviteForm] = useState({
@@ -145,12 +175,26 @@ export default function SuperAdminOrgs() {
     reason: "",
   });
 
+  const [pilotExtendOpen, setPilotExtendOpen] = useState(false);
+  const [pilotExtendForm, setPilotExtendForm] = useState({ expires: "", reason: "" });
+
   const [confirmState, setConfirmState] = useState<{
-    kind: "remove_member" | "delete_user" | "revoke_grant";
+    kind:
+      | "remove_member"
+      | "delete_user"
+      | "revoke_grant"
+      | "suspend_pilot"
+      | "reactivate_pilot"
+      | "convert_pilot";
     title: string;
     message: string;
-    run: () => Promise<void>;
+    /** Convert is irreversible bookkeeping; mark it destructive. */
+    destructive?: boolean;
+    /** Render a (required) reason field before confirming. */
+    needsReason?: boolean;
+    run: (reason: string) => Promise<void>;
   } | null>(null);
+  const [confirmReason, setConfirmReason] = useState("");
 
   const selectedOrg = orgs?.find((o) => o._id === selectedOrgId) ?? null;
 
@@ -218,12 +262,80 @@ export default function SuperAdminOrgs() {
     );
   }
 
+  /**
+   * Prefer the server-derived status. Fall back to the local computation only
+   * when the server value is missing (older response shape), so the UI never
+   * invents a state the database did not report.
+   */
+  const pilotStatusOf = (org: OrgRow): PilotStatus => {
+    const server = org.pilot_status;
+    if (server && server in PILOT_STATUS_LABELS) return server as PilotStatus;
+    return computePilotStatus(
+      { account_type: org.account_type, pilot_converted_at: org.pilot_converted_at },
+      // The list endpoint does not return grants; an absent grant means the
+      // pilot is not active, which is the fail-closed reading.
+      null,
+      Date.now(),
+    );
+  };
+
+  const resetCreateForm = () => {
+    setCreateName("");
+    setCreateAccountType("standard");
+    setCreateAdminEmail("");
+    setCreateAdminName("");
+    setCreateExpires("");
+    setCreateNotes("");
+  };
+
   const createOrg = async () => {
     const name = createName.trim();
     if (!name) {
       toast.error("Organization name is required.");
       return;
     }
+
+    // A Free Pilot org needs its primary admin up front: the server creates
+    // the organization, the owner membership and the Free Pilot entitlement
+    // together, in one audited transaction.
+    if (createAccountType === "free_pilot") {
+      const email = createAdminEmail.trim();
+      if (!email) {
+        toast.error("A primary admin email is required for a Free Pilot organization.");
+        return;
+      }
+      const parsed = parsePilotExpiration(createExpires, Date.now());
+      if (!parsed.ok) {
+        toast.error(parsed.error ?? "Enter a valid pilot expiration.");
+        return;
+      }
+
+      setBusy("create");
+      try {
+        const res = await orgAdmin.createPilotOrg({
+          name,
+          adminEmail: email,
+          adminName: createAdminName.trim() || null,
+          expiresAt: parsed.expiresAt,
+          notes: createNotes.trim() || null,
+        });
+        if (!res.ok) {
+          toast.error(res.error ?? "Could not create the pilot organization.");
+          return;
+        }
+        toast.success(
+          "Free Pilot organization created. Invite the primary admin to finish setup.",
+        );
+        setCreateOpen(false);
+        resetCreateForm();
+        setOrgs(null);
+        await loadOrgs();
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+
     setBusy("create");
     try {
       const res = await orgAdmin.createOrg(name);
@@ -233,7 +345,7 @@ export default function SuperAdminOrgs() {
       }
       toast.success("Organization created");
       setCreateOpen(false);
-      setCreateName("");
+      resetCreateForm();
       setOrgs(null);
       await loadOrgs();
     } finally {
@@ -360,6 +472,116 @@ export default function SuperAdminOrgs() {
     });
   };
 
+  /** Refresh both the org list (pilot_status/expiration) and the detail view. */
+  const reloadAfterPilotChange = async () => {
+    setOrgs(null);
+    await loadOrgs();
+    await loadSelected();
+  };
+
+  const openExtendPilot = () => {
+    setPilotExtendForm({ expires: "", reason: "" });
+    setPilotExtendOpen(true);
+  };
+
+  const submitExtendPilot = async () => {
+    if (!selectedOrgId) return;
+    const parsed = parsePilotExpiration(pilotExtendForm.expires, Date.now());
+    if (!parsed.ok) {
+      toast.error(parsed.error ?? "Enter a valid pilot expiration.");
+      return;
+    }
+    setBusy("pilot-extend");
+    try {
+      const res = await orgAdmin.extendPilot({
+        tenantId: selectedOrgId,
+        expiresAt: parsed.expiresAt,
+        reason: pilotExtendForm.reason.trim() || null,
+      });
+      if (!res.ok) {
+        toast.error(res.error ?? "Could not extend the pilot.");
+        return;
+      }
+      toast.success(
+        parsed.expiresAt ? "Pilot expiration updated" : "Pilot set to no expiration",
+      );
+      setPilotExtendOpen(false);
+      await reloadAfterPilotChange();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const confirmSetPilotStatus = (status: "active" | "suspended") => {
+    if (!selectedOrgId) return;
+    const tenantId = selectedOrgId;
+    const orgName = selectedOrg?.name ?? "this organization";
+    setConfirmReason("");
+    if (status === "suspended") {
+      setConfirmState({
+        kind: "suspend_pilot",
+        title: "Suspend this pilot?",
+        message: `${orgName} keeps its organization, members, data and Free Pilot classification, but its pilot access is revoked immediately. Reactivating later restores access; the expiration date is never silently changed.`,
+        needsReason: true,
+        run: async (reason) => {
+          const res = await orgAdmin.setPilotStatus({
+            tenantId,
+            status: "suspended",
+            reason: reason || null,
+          });
+          if (!res.ok) {
+            toast.error(res.error ?? "Could not suspend the pilot.");
+            return;
+          }
+          toast.success("Pilot suspended — data preserved");
+          await reloadAfterPilotChange();
+        },
+      });
+      return;
+    }
+    setConfirmState({
+      kind: "reactivate_pilot",
+      title: "Reactivate this pilot?",
+      message: `Access is restored for ${orgName}. If a live grant still applies, its expiration is left unchanged — reactivating never silently extends a pilot.`,
+      run: async (reason) => {
+        const res = await orgAdmin.setPilotStatus({
+          tenantId,
+          status: "active",
+          reason: reason || null,
+        });
+        if (!res.ok) {
+          toast.error(res.error ?? "Could not reactivate the pilot.");
+          return;
+        }
+        toast.success("Pilot reactivated");
+        await reloadAfterPilotChange();
+      },
+    });
+  };
+
+  const confirmConvertPilot = () => {
+    if (!selectedOrgId) return;
+    const tenantId = selectedOrgId;
+    const orgName = selectedOrg?.name ?? "this organization";
+    setConfirmReason("");
+    setConfirmState({
+      kind: "convert_pilot",
+      title: "Convert this pilot to a paid organization?",
+      message: `This revokes ${orgName}'s Free Pilot access and marks it converted. The organization id, its members and all of its data are preserved. Only do this once the Stripe subscription is authoritative — a completed or failed checkout alone does not convert a pilot.`,
+      destructive: true,
+      needsReason: true,
+      run: async (reason) => {
+        const res = await orgAdmin.convertPilot({ tenantId, reason: reason || null });
+        if (!res.ok) {
+          toast.error(res.error ?? "Could not convert the pilot.");
+          return;
+        }
+        toast.success("Pilot converted to a standard paid organization");
+        await reloadAfterPilotChange();
+      },
+    });
+  };
+
   const activeGrantForUser = (userId: string): ComplimentaryGrant | undefined =>
     grants.find((g) => g.status === "active" && (g.user_id === userId || g.user_id === null));
 
@@ -418,6 +640,18 @@ export default function SuperAdminOrgs() {
                   <div className="text-xs text-muted-foreground">
                     {org.member_count ?? 0} members
                   </div>
+                  {org.account_type === "free_pilot" && (
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <span className="rounded bg-teal-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-teal-900 dark:bg-teal-900/50 dark:text-teal-100">
+                        Free Pilot
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {PILOT_STATUS_LABELS[pilotStatusOf(org)] ?? pilotStatusOf(org)}
+                        {formatPilotExpiration(org.pilot_expires_at) !== "Never" &&
+                          ` \u00b7 expires ${formatPilotExpiration(org.pilot_expires_at)}`}
+                      </span>
+                    </div>
+                  )}
                 </button>
               ))}
             </CardContent>
@@ -557,6 +791,100 @@ export default function SuperAdminOrgs() {
               </CardContent>
             </Card>
 
+            {/* Free Pilot lifecycle (only for pilot organizations) */}
+            {selectedOrg && selectedOrg.account_type === "free_pilot" && (
+              <Card className="border-teal-500/30">
+                <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+                  <div>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Gift className="size-4 text-teal-600 dark:text-teal-300" /> Free Pilot lifecycle
+                    </CardTitle>
+                    <CardDescription>
+                      Internal pilot administration. Data is never deleted by these actions.
+                    </CardDescription>
+                  </div>
+                  <Badge
+                    variant={
+                      pilotStatusOf(selectedOrg) === "active" ? "default" : "outline"
+                    }
+                  >
+                    {PILOT_STATUS_LABELS[pilotStatusOf(selectedOrg)] ?? pilotStatusOf(selectedOrg)}
+                  </Badge>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <dl className="grid gap-2 text-sm sm:grid-cols-2">
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Expiration</dt>
+                      <dd className="font-medium">
+                        {formatPilotExpiration(selectedOrg.pilot_expires_at)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Billing</dt>
+                      <dd className="font-medium">{describePilotBilling(selectedOrg.billing)}</dd>
+                    </div>
+                    {selectedOrg.pilot_converted_at != null && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Converted</dt>
+                        <dd className="font-medium">
+                          {formatPilotExpiration(selectedOrg.pilot_converted_at)}
+                        </dd>
+                      </div>
+                    )}
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Limits</dt>
+                      <dd className="font-medium">{describePilotLimits()}</dd>
+                    </div>
+                  </dl>
+
+                  {pilotStatusOf(selectedOrg) === "converted" ? (
+                    <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300">
+                      This organization is a standard paid organization. Its paid
+                      entitlement is authoritative, so pilot controls are not shown.
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={openExtendPilot}
+                        disabled={busy !== null}
+                      >
+                        Extend / clear expiration
+                      </Button>
+                      {pilotStatusOf(selectedOrg) === "active" ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-rose-600 dark:text-rose-300"
+                          onClick={() => confirmSetPilotStatus("suspended")}
+                          disabled={busy !== null}
+                        >
+                          Suspend
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"                          onClick={() => confirmSetPilotStatus("active")}
+                          disabled={busy !== null}
+                        >
+                          Reactivate
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={confirmConvertPilot}
+                        disabled={busy !== null}
+                      >
+                        Convert to paid
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
             {/* Complimentary access */}
             <Card>
               <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
@@ -647,6 +975,73 @@ export default function SuperAdminOrgs() {
                 placeholder="Example Restoration Co."
               />
             </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="org-account-type">Account type</Label>
+              <select
+                id="org-account-type"
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={createAccountType}
+                onChange={(e) => setCreateAccountType(e.target.value as CreateAccountType)}
+              >
+                <option value="standard">Standard</option>
+                <option value="free_pilot">Free Pilot</option>
+              </select>
+            </div>
+
+            {createAccountType === "free_pilot" && (
+              <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
+                <p className="text-xs text-muted-foreground">
+                  Free Pilot organizations use the Atlas complimentary entitlement. No Stripe
+                  customer, subscription, invoice or payment is created. The primary admin is
+                  invited and sets their own password.
+                </p>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="pilot-admin-email">Primary admin email</Label>
+                  <Input
+                    id="pilot-admin-email"
+                    type="email"
+                    value={createAdminEmail}
+                    onChange={(e) => setCreateAdminEmail(e.target.value)}
+                    placeholder="owner@example.com"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="pilot-admin-name">Primary admin name</Label>
+                  <Input
+                    id="pilot-admin-name"
+                    value={createAdminName}
+                    onChange={(e) => setCreateAdminName(e.target.value)}
+                    placeholder="Optional"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="pilot-expires">Pilot expiration</Label>
+                  <Input
+                    id="pilot-expires"
+                    type="date"
+                    value={createExpires}
+                    onChange={(e) => setCreateExpires(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Leave empty for no expiration — the pilot stays active until revoked.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="pilot-notes">Internal notes</Label>
+                  <Input
+                    id="pilot-notes"
+                    value={createNotes}
+                    onChange={(e) => setCreateNotes(e.target.value)}
+                    placeholder="Not shown to the customer"
+                  />
+                </div>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
@@ -823,7 +1218,57 @@ export default function SuperAdminOrgs() {
         </DialogContent>
       </Dialog>
 
-      {/* Confirmation dialog (remove / delete / revoke) */}
+      {/* Extend / clear pilot expiration */}
+      <Dialog open={pilotExtendOpen} onOpenChange={setPilotExtendOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Extend pilot</DialogTitle>
+            <DialogDescription>
+              Choose a new expiration date for {selectedOrg?.name ?? "this pilot"}, or leave
+              it empty for no expiration. A past date is rejected.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="pilot-extend-expires">New expiration</Label>
+              <Input
+                id="pilot-extend-expires"
+                type="date"
+                value={pilotExtendForm.expires}
+                onChange={(e) =>
+                  setPilotExtendForm((f) => ({ ...f, expires: e.target.value }))
+                }
+              />
+              <p className="text-xs text-muted-foreground">
+                Empty means no expiration — the pilot stays active until revoked.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="pilot-extend-reason">Reason (optional)</Label>
+              <Textarea
+                id="pilot-extend-reason"
+                rows={2}
+                value={pilotExtendForm.reason}
+                onChange={(e) =>
+                  setPilotExtendForm((f) => ({ ...f, reason: e.target.value }))
+                }
+                placeholder="e.g. Pilot extended for 30 more days"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPilotExtendOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void submitExtendPilot()} disabled={busy === "pilot-extend"}>
+              {busy === "pilot-extend" && <Loader2 className="mr-2 size-4 animate-spin" />}
+              Save expiration
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmation dialog (remove / delete / revoke / suspend / convert) */}
       <Dialog
         open={confirmState !== null}
         onOpenChange={(open) => {
@@ -835,18 +1280,33 @@ export default function SuperAdminOrgs() {
             <DialogTitle>{confirmState?.title}</DialogTitle>
             <DialogDescription>{confirmState?.message}</DialogDescription>
           </DialogHeader>
+          {confirmState?.needsReason && (
+            <div className="space-y-1.5">
+              <Label htmlFor="confirm-reason">Reason (recommended)</Label>
+              <Textarea
+                id="confirm-reason"
+                rows={2}
+                value={confirmReason}
+                onChange={(e) => setConfirmReason(e.target.value)}
+                placeholder="Recorded in the audit log"
+              />
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmState(null)}>
               Cancel
             </Button>
             <Button
               variant={
-                confirmState?.kind === "delete_user" ? "destructive" : "default"
+                confirmState?.destructive || confirmState?.kind === "delete_user"
+                  ? "destructive"
+                  : "default"
               }
               onClick={() => {
                 const run = confirmState?.run;
+                const reason = confirmReason.trim();
                 setConfirmState(null);
-                if (run) void run();
+                if (run) void run(reason);
               }}
             >
               Confirm

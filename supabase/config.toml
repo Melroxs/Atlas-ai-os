@@ -406,6 +406,15 @@ verify_jwt = false
 [functions.integrations-oauth]
 verify_jwt = true
 
+# Atlas Intelligence article sitemap. Fetched by crawlers, which send no
+# Supabase JWT — so JWT verification is off. This is safe because the function
+# uses the ANON key (never the service role) and therefore runs under the
+# caller's RLS, which exposes only status='published' AND contentType='blog'.
+# A draft is excluded by RLS before the function can ever read it. It reads no
+# secret and touches no tenant data.
+[functions.blog-sitemap]
+verify_jwt = false
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.

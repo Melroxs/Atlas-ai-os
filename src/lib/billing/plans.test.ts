@@ -189,8 +189,22 @@ describe("canonical Atlas catalog", () => {
     });
   });
 
-
+  it("discounts every annual plan by at least 20% against twelve monthly payments", () => {
+    for (const plan of ALL_INTERNAL_PLANS) {
+      const prices = PLAN_METADATA[plan].billingIntervalPrice;
+      const twelveMonths = prices.monthly * 12;
+      expect(prices.annual).toBeLessThan(twelveMonths);
+      const discount = (twelveMonths - prices.annual) / twelveMonths;
+      expect(discount).toBeGreaterThanOrEqual(0.2);
     }
+  });
+
+  it("uses only the canonical Atlas prices (no stale amounts)", () => {
+    const amounts = ALL_INTERNAL_PLANS.flatMap((plan) => [
+      PLAN_METADATA[plan].billingIntervalPrice.monthly,
+      PLAN_METADATA[plan].billingIntervalPrice.annual,
+    ]);
+    expect(amounts.sort((a, b) => a - b)).toEqual([49, 149, 299, 470, 1430, 2870]);
   });
 
   it("has no trial amounts in the catalog", () => {

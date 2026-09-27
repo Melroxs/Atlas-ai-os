@@ -19,6 +19,24 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  DELETION_CONFIRMATION_WORD,
+  deletionDegreesFor,
+  describeDeletion,
+  isDeletionDegree,
+  resolveDeletionDegree,
+  type DeletionTarget,
+} from "@/lib/archive/deletion";
+import {
   AlertTriangle,
   Archive,
   ArrowLeft,
@@ -83,8 +101,22 @@ export default function ArchiveDetail() {
   const cancelArchive = useMutation(api.archive.cancelArchive);
   const beginProcessing = useAction(api.archive.beginProcessing);
   const retryFiles = useAction(api.archive.retryFiles);
-  const deleteArchive = useMutation(api.archive.deleteArchive);
+  const deleteArchiveWithDegree = useAction(api.archive.deleteArchiveWithDegree);
+  const deleteIngestedFile = useAction(api.archive.deleteIngestedFile);
   const [busy, setBusy] = useState<string | null>(null);
+
+  // Graded-deletion prompt: the operator picks the depth before anything is
+  // removed. The chosen depth is what actually runs; nothing is implicit.
+  const [deleteTarget, setDeleteTarget] = useState<{
+    target: DeletionTarget;
+    fileId?: string;
+    label: string;
+    hasStorage: boolean;
+    hasDocument: boolean;
+    count: number;
+  } | null>(null);
+  const [deleteDegree, setDeleteDegree] = useState("knowledge");
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
 
   if (!id) return null;
   if (detail === undefined) {
@@ -235,20 +267,89 @@ export default function ArchiveDetail() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!window.confirm("Delete this archive record and its inventory? Ingested documents stay in Atlas knowledge.")) return;
+  const openArchiveDelete = () => {
+    setDeleteConfirmText("");
+    setDeleteDegree("knowledge");
+    setDeleteTarget({
+      target: "archive",
+      label: archive.filename,
+      hasStorage: files.some((f) => Boolean(f.storageId)),
+      hasDocument: files.some((f) => Boolean(f.documentId)),
+      count: files.length,
+    });
+  };
+
+  const openFileDelete = (f: NormalizedArchiveFile) => {
+    setDeleteConfirmText("");
+    setDeleteDegree("knowledge");
+    setDeleteTarget({
+      target: "file",
+      fileId: String(f._id),
+      label: f.path,
+      hasStorage: Boolean(f.storageId),
+      hasDocument: Boolean(f.documentId),
+      count: 1,
+    });
+  };
+
+  const runDeletion = async () => {
+    if (!deleteTarget) return;
+    const spec = resolveDeletionDegree(deleteTarget.target, deleteDegree);
+    if (!spec) {
+      toast.error("Choose a deletion option.");
+      return;
+    }
+    if (
+      spec.deletesRecord &&
+      deleteConfirmText.trim().toUpperCase() !== DELETION_CONFIRMATION_WORD
+    ) {
+      toast.error(`Type ${DELETION_CONFIRMATION_WORD} to confirm this deletion.`);
+      return;
+    }
+
     setBusy("delete");
     try {
-      await deleteArchive({ archiveId: id as never });
-      invalidateQueries();
-      toast.success("Archive record deleted");
-      navigate("/dashboard/knowledge");
+      if (deleteTarget.target === "archive") {
+        const res = await deleteArchiveWithDegree({
+          archiveId: id as never,
+          degree: deleteDegree as never,
+        });
+        invalidateQueries();
+        toast.success("Import deleted", {
+          description: `${res.documentsDeleted} document${res.documentsDeleted === 1 ? "" : "s"} removed${
+            res.storageRemoved > 0
+              ? `, ${res.storageRemoved} stored file${res.storageRemoved === 1 ? "" : "s"} deleted`
+              : ""
+          }.`,
+        });
+        setDeleteTarget(null);
+        if (res.recordDeleted) navigate("/dashboard/knowledge");
+      } else {
+        const res = await deleteIngestedFile({
+          fileId: (deleteTarget.fileId ?? "") as never,
+          degree: deleteDegree as never,
+        });
+        invalidateQueries();
+        toast.success("File deleted", {
+          description: `${res.documentsDeleted > 0 ? "Knowledge removed" : "No ingested knowledge to remove"}${
+            res.storageRemoved > 0 ? " · stored file deleted" : ""
+          }.`,
+        });
+        setDeleteTarget(null);
+      }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not delete the archive");
+      toast.error(e instanceof Error ? e.message : "Could not complete the deletion");
     } finally {
       setBusy(null);
     }
   };
+
+  const activeDeleteSpec = deleteTarget
+    ? resolveDeletionDegree(deleteTarget.target, deleteDegree)
+    : null;
+  const activeDeletePrompt = deleteTarget
+    ? describeDeletion(deleteTarget.target, deleteDegree, deleteTarget.count)
+    : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -298,12 +399,12 @@ export default function ArchiveDetail() {
             )}
             <Button
               variant="outline"
-              onClick={() => void handleDelete()}
+              onClick={openArchiveDelete}
               disabled={busy !== null}
               className="gap-2 text-muted-foreground"
             >
               {busy === "delete" ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-              Delete record
+              Delete import…
             </Button>
           </div>
         }
@@ -578,12 +679,132 @@ export default function ArchiveDetail() {
                   {f.ingestStatus === "failed" && !f.storageId && (
                     <span className="text-[10px] text-muted-foreground">content not retained — cannot retry</span>
                   )}
+                  {f.ingestStatus !== "deleted" && (f.documentId || f.storageId) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-destructive"
+                      onClick={() => openFileDelete(f)}
+                      disabled={busy !== null}
+                      title="Delete this ingested file"
+                    >
+                      <Trash2 className="size-3" />
+                      Delete
+                    </Button>
+                  )}
+                  {f.ingestStatus === "deleted" && (
+                    <span className="text-[10px] text-muted-foreground">deleted</span>
+                  )}
                 </div>
               );
             }}
           />
         )}
       </div>
+
+      {/* Graded deletion prompt: choose the depth before anything is removed. */}
+      {deleteTarget && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setDeleteTarget(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                Delete {deleteTarget.target === "archive" ? "import" : "file"}
+              </DialogTitle>
+              <DialogDescription className="break-all">
+                {deleteTarget.label}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Choose what should be deleted. Nothing is removed until you confirm.
+              </p>
+              <div className="space-y-2">
+                {deletionDegreesFor(deleteTarget.target)
+                  .filter((d) => !d.deletesStorage || deleteTarget.hasStorage)
+                  .map((d) => (
+                    <label
+                      key={d.degree}
+                      className={`flex cursor-pointer gap-2 rounded-lg border p-3 text-sm ${
+                        deleteDegree === d.degree
+                          ? "border-teal-500/50 bg-teal-400/5"
+                          : "border-border"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="deletion-degree"
+                        className="mt-1"
+                        checked={deleteDegree === d.degree}
+                        onChange={() => {
+                          setDeleteDegree(d.degree);
+                          setDeleteConfirmText("");
+                        }}
+                      />
+                      <span>
+                        <span className="font-medium">{d.label}</span>
+                        <span className="block text-xs text-muted-foreground">
+                          {d.description}
+                        </span>
+                        {d.destructive && (
+                          <span className="mt-1 inline-block text-[10px] font-medium uppercase tracking-wide text-rose-600 dark:text-rose-300">
+                            Irreversible
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  ))}
+              </div>
+
+              {activeDeleteSpec?.deletesRecord ? (
+                <div className="space-y-1.5">
+                  <Label htmlFor="delete-confirm">
+                    Type {DELETION_CONFIRMATION_WORD} to confirm
+                  </Label>
+                  <Input
+                    id="delete-confirm"
+                    value={deleteConfirmText}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder={DELETION_CONFIRMATION_WORD}
+                  />
+                </div>
+              ) : activeDeletePrompt ? (
+                <p
+                  className={`rounded-lg border px-3 py-2 text-xs ${
+                    activeDeleteSpec?.destructive
+                      ? "border-rose-400/30 bg-rose-400/10 text-rose-700 dark:text-rose-300"
+                      : "border-border bg-muted/30 text-muted-foreground"
+                  }`}
+                >
+                  {activeDeletePrompt.summary}
+                </p>
+              ) : null}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => void runDeletion()}
+                disabled={
+                  busy === "delete" ||
+                  !isDeletionDegree(deleteTarget.target, deleteDegree) ||
+                  (activeDeleteSpec?.deletesRecord === true &&
+                    deleteConfirmText.trim().toUpperCase() !== DELETION_CONFIRMATION_WORD)
+                }
+              >
+                {busy === "delete" && <Loader2 className="mr-2 size-4 animate-spin" />}
+                Delete
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }

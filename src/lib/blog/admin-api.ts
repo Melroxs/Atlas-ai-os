@@ -26,6 +26,17 @@ export interface AdminContentItem {
   seo: Record<string, unknown> | null;
   jurisdiction: string | null;
   industry: string | null;
+  category: string | null;
+  tags: string[];
+  author: string | null;
+  heroImage: string | null;
+  socialImage: string | null;
+  readingTime: number | null;
+  ctaId: string | null;
+  aiGenerated: boolean;
+  imagePrompt: string | null;
+  reviewedBy: string | null;
+  reviewedAt: number | null;
   knowledgeIds: unknown[];
   sourceIds: unknown[];
   parentContentId: string | null;
@@ -34,6 +45,23 @@ export interface AdminContentItem {
   approvedAt: number | null;
   updatedAt: number | null;
   hasBody: boolean;
+}
+
+/** Result of an admin edit. */
+export interface AdminUpdateResult {
+  ok: boolean;
+  error?: string;
+  detail?: string;
+  updatedAt?: number;
+}
+
+/** Result of an unpublish. */
+export interface UnpublishResult {
+  ok: boolean;
+  status?: string;
+  previousSlug?: string | null;
+  error?: string;
+  detail?: string;
 }
 
 export interface ReviewDecisionResult {
@@ -57,6 +85,8 @@ export const blogAdminApi: {
   contentAdminList: ApiFn<AdminContentItem[]>;
   contentReviewDecide: ApiFn<ReviewDecisionResult>;
   contentPublishBlog: ApiFn<PublishResult>;
+  contentAdminUpdate: ApiFn<AdminUpdateResult>;
+  contentUnpublish: ApiFn<UnpublishResult>;
 } = {
   /** Pipeline listing, any status. Admin-guarded inside the function. */
   contentAdminList: { name: "content_admin_list", kind: "query" },
@@ -64,4 +94,11 @@ export const blogAdminApi: {
   contentReviewDecide: { name: "content_review_decide", kind: "mutation" },
   /** The single publish path: validates, slugs, and records publication. */
   contentPublishBlog: { name: "content_publish_blog", kind: "mutation" },
+  /**
+   * Edit publication metadata. Refuses to run on a published row, and can
+   * never set `status` — the browser has no way to bypass the approval gate.
+   */
+  contentAdminUpdate: { name: "content_admin_update", kind: "mutation" },
+  /** The only supported way to take a live article down. Archives, never deletes. */
+  contentUnpublish: { name: "content_unpublish", kind: "mutation" },
 };

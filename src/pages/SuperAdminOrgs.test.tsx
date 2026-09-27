@@ -24,6 +24,9 @@ vi.mock("@/lib/actions/org-admin", () => ({
     deleteUser: vi.fn(),
     grantComplimentary: vi.fn(),
     revokeComplimentary: vi.fn(),
+    extendPilot: vi.fn(),
+    setPilotStatus: vi.fn(),
+    convertPilot: vi.fn(),
   },
 }));
 
@@ -96,6 +99,9 @@ describe("SuperAdminOrgs", () => {
     vi.mocked(orgAdmin.inviteMember).mockResolvedValue({ ok: true, data: { invitation_sent: true } });
     vi.mocked(orgAdmin.deleteUser).mockResolvedValue({ ok: true, data: { ok: true } });
     vi.mocked(orgAdmin.revokeComplimentary).mockResolvedValue({ ok: true, data: { grant: null } });
+    vi.mocked(orgAdmin.extendPilot).mockResolvedValue({ ok: true, data: { status: "active" } });
+    vi.mocked(orgAdmin.setPilotStatus).mockResolvedValue({ ok: true, data: { status: "suspended" } });
+    vi.mocked(orgAdmin.convertPilot).mockResolvedValue({ ok: true, data: { account_type: "standard" } });
   });
 
   it("blocks non-super-admins at the UI level (server re-enforces)", async () => {
@@ -212,5 +218,131 @@ describe("SuperAdminOrgs", () => {
 
     expect(await screen.findByText("A reason is required for complimentary access.")).toBeInTheDocument();
     expect(orgAdmin.grantComplimentary).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Free Pilot lifecycle controls
+// ---------------------------------------------------------------------------
+
+function pilotOrg(pilot_status: string, overrides: Record<string, unknown> = {}) {
+  return {
+    _id: "org-1",
+    name: "Pilot Restoration Co.",
+    member_count: 1,
+    account_type: "free_pilot",
+    pilot_status,
+    pilot_expires_at: Date.now() + 30 * 86400000,
+    pilot_converted_at: null,
+    billing: { has_stripe_subscription: false, has_stripe_customer: false, status: null },
+    ...overrides,
+  };
+}
+
+describe("SuperAdminOrgs — Free Pilot lifecycle", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSuperAdmin();
+    vi.mocked(orgAdmin.listOrgMembers).mockResolvedValue({ ok: true, data: { members: MEMBERS } });
+    vi.mocked(orgAdmin.listComplimentary).mockResolvedValue({ ok: true, data: { grants: GRANTS } });
+    vi.mocked(orgAdmin.extendPilot).mockResolvedValue({ ok: true, data: { status: "active" } });
+    vi.mocked(orgAdmin.setPilotStatus).mockResolvedValue({ ok: true, data: { status: "suspended" } });
+    vi.mocked(orgAdmin.convertPilot).mockResolvedValue({ ok: true, data: { account_type: "standard" } });
+  });
+
+  async function renderPilot(status: string, overrides: Record<string, unknown> = {}) {
+    vi.mocked(orgAdmin.listOrgs).mockResolvedValue({
+      ok: true,
+      data: { organizations: [pilotOrg(status, overrides)] },
+    });
+    render(wrapInRouter(<SuperAdminOrgs />));
+    await screen.findByText("Free Pilot lifecycle");
+  }
+
+  it("shows Extend, Suspend and Convert for an active pilot", async () => {
+    await renderPilot("active");
+    expect(screen.getByRole("button", { name: /Extend \/ clear expiration/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Suspend" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Convert to paid" })).toBeInTheDocument();
+  });
+
+  it("shows Reactivate (not Suspend) and Convert for an expired pilot", async () => {
+    await renderPilot("expired");
+    expect(screen.getByRole("button", { name: "Reactivate" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Suspend" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Convert to paid" })).toBeInTheDocument();
+  });
+
+  it("shows no pilot controls for a converted organization", async () => {
+    await renderPilot("converted", { pilot_converted_at: Date.now() - 1000 });
+    expect(await screen.findByText(/paid entitlement is authoritative/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Extend \/ clear expiration/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Convert to paid/ })).not.toBeInTheDocument();
+  });
+
+  it("requires confirmation before suspending a pilot", async () => {
+    await renderPilot("active");
+    fireEvent.click(screen.getByRole("button", { name: "Suspend" }));
+    expect(
+      await screen.findByRole("heading", { name: "Suspend this pilot?" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(orgAdmin.setPilotStatus).toHaveBeenCalledWith({
+        tenantId: "org-1",
+        status: "suspended",
+        reason: null,
+      }),
+    );
+  });
+
+  it("reactivates an expired pilot through the confirmation dialog", async () => {
+    await renderPilot("expired");
+    fireEvent.click(screen.getByRole("button", { name: "Reactivate" }));
+    await screen.findByRole("heading", { name: "Reactivate this pilot?" });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(orgAdmin.setPilotStatus).toHaveBeenCalledWith({
+        tenantId: "org-1",
+        status: "active",
+        reason: null,
+      }),
+    );
+  });
+
+  it("requires confirmation before converting a pilot to paid", async () => {
+    await renderPilot("active");
+    fireEvent.click(screen.getByRole("button", { name: "Convert to paid" }));
+    expect(
+      await screen.findByRole("heading", { name: "Convert this pilot to a paid organization?" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(orgAdmin.convertPilot).toHaveBeenCalledWith({
+        tenantId: "org-1",
+        reason: null,
+      }),
+    );
+  });
+
+  it("sends a new expiration when extending a pilot", async () => {
+    await renderPilot("active");
+    fireEvent.click(screen.getByRole("button", { name: /Extend \/ clear expiration/ }));
+    await screen.findByRole("heading", { name: "Extend pilot" });
+
+    const future = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10);
+    fireEvent.change(screen.getByLabelText("New expiration"), { target: { value: future } });
+    fireEvent.click(screen.getByRole("button", { name: /Save expiration/ }));
+
+    await waitFor(() => expect(orgAdmin.extendPilot).toHaveBeenCalledTimes(1));
+    const arg = vi.mocked(orgAdmin.extendPilot).mock.calls[0][0];
+    expect(arg.tenantId).toBe("org-1");
+    expect(arg.expiresAt).toBe(Date.UTC(Number(future.slice(0, 4)), Number(future.slice(5, 7)) - 1, Number(future.slice(8, 10)), 23, 59, 59, 999));
   });
 });

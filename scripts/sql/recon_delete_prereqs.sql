@@ -1,0 +1,15 @@
+-- READ-ONLY: delete rules for billing tables + does admin_delete_organization exist?
+select tc.table_name || ' <- ' || ccu.table_name || '.' || ccu.column_name || '  ON DELETE ' || rc.delete_rule as fk
+from information_schema.table_constraints tc
+join information_schema.key_column_usage kcu on kcu.constraint_name = tc.constraint_name and kcu.table_schema = tc.table_schema
+join information_schema.constraint_column_usage ccu on ccu.constraint_name = tc.constraint_name and ccu.table_schema = tc.table_schema
+join information_schema.referential_constraints rc on rc.constraint_name = tc.constraint_name and rc.constraint_schema = tc.table_schema
+where tc.constraint_type = 'FOREIGN KEY'
+  and tc.table_schema = 'public'
+  and tc.table_name in ('stripe_customers','subscriptions','organization_subscriptions','billing_audit_events','user_provisions')
+order by tc.table_name;
+
+select p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ') as fn'
+from pg_proc p
+join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public' and p.proname ilike '%delete%organization%';

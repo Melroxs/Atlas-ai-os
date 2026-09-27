@@ -1,0 +1,23 @@
+-- FINAL STATE
+select
+  (select count(*) from public.tenants) as tenants,
+  (select string_agg(name, ', ') from public.tenants) as tenant_names,
+  (select count(*) from public.profiles) as profiles,
+  (select string_agg(email, ', ') from public.profiles) as profile_emails,
+  (select count(*) from auth.users) as auth_users,
+  (select string_agg(email, ', ') from auth.users) as auth_emails,
+  (select count(*) from public.memberships) as memberships,
+  (select count(*) from public.invites) as invites,
+  (select count(*) from public.documents) as documents,
+  (select count(*) from public.archivefiles) as archivefiles,
+  (select count(*) from public.archiveingestions) as ingestions,
+  (select count(*) from public.documentchunks) as chunks,
+  (select count(*) from public.insuranceclaims) as claims,
+  (select count(*) from public.claimcandidates) as candidates,
+  (select count(*) from public.claimfindings) as findings,
+  (select count(*) from public.claimsupplements) as supplements,
+  (select count(*) from public.auditlogs) as auditlogs,
+  (select count(*) from public.stripe_customers) as stripe_customers,
+  (select count(*) from public.subscriptions) as subscriptions,
+  (select count(*) from public.billing_audit_events) as billing_audit_events,
+  (select count(*) from public.atlas_audit_log) as atlas_audit_log;

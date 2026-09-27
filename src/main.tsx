@@ -9,9 +9,30 @@ import { AtlasNavigationBridge } from "@/components/atlas-navigation-bridge";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Route, Routes, useLocation } from "react-router";
+import {
+  BrowserRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router";
+import {
+  captureAuthLink,
+  getCapturedAuthLink,
+  hasAuthCredentials,
+  parseAuthLink,
+  resolveAuthLinkSource,
+} from "./lib/auth/email-link";
 import BillingSettings from "./pages/BillingSettings.tsx";
 import "./index.css";
+
+// Supabase Auth email links (invitation, recovery, magic link, confirmation)
+// are redirected to a `redirectTo` URL that Supabase is allowed to honour, or
+// to the project Site URL when it is not. Tasked once here, at module import
+// time — before any Supabase client exists and before the SDK strips the
+// payload out of the URL — so the callback can always see what the link
+// delivered, whichever Atlas route the browser happened to land on.
+captureAuthLink();
 
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
@@ -26,6 +47,8 @@ const Blog = lazy(() => import("./pages/Blog.tsx"));
 const BlogPost = lazy(() => import("./pages/BlogPost.tsx"));
 const BlogAdmin = lazy(() => import("./pages/BlogAdmin.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
+const AuthCallback = lazy(() => import("./pages/AuthCallback.tsx"));
+const AuthPassword = lazy(() => import("./pages/AuthPassword.tsx"));
 const Setup = lazy(() => import("./pages/Setup.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
 const Ask = lazy(() => import("./pages/Ask.tsx"));
@@ -153,6 +176,40 @@ class RootErrorBoundary extends React.Component<
   }
 }
 
+/**
+ * Forwards a Supabase Auth email-link payload to the single callback route.
+ *
+ * Supabase redirects an email link either to the `redirectTo` Atlas asked for
+ * or — when that URL is not on the project's redirect allow-list — to the
+ * project Site URL, which is the app root. Without this, such a link leaves the
+ * user sitting on whatever public page the root renders while their session is
+ * created invisibly in the background. The search string and fragment are
+ * carried across so the Supabase client can still read the payload.
+ */
+function AuthLinkGate() {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (location.pathname === "/auth/callback") return;
+    // Prefer the live URL, but fall back to the payload captured at page load:
+    // the Supabase client consumes and strips the URL asynchronously, and in
+    // that race the live location no longer carries the credentials even though
+    // the same page load delivered them. A bare `type=` anchor is never enough
+    // — see hasAuthCredentials — so public visitors stay public visitors.
+    const payload = resolveAuthLinkSource(
+      parseAuthLink(location),
+      getCapturedAuthLink(),
+    );
+    if (!hasAuthCredentials(payload)) return;
+    navigate(`/auth/callback${location.search}${location.hash}`, {
+      replace: true,
+    });
+  }, [location, navigate]);
+
+  return null;
+}
+
 function RouteSyncer() {
   const location = useLocation();
   useEffect(() => {
@@ -187,6 +244,7 @@ createRoot(document.getElementById("root")!).render(
         <VoiceSessionProvider>
         <BrowserRouter>
           <RouteSyncer />
+          <AuthLinkGate />
           {/* Lets Atlas voice tools (navigate_atlas) drive the REAL router. */}
           <AtlasNavigationBridge />
           <Suspense fallback={<RouteLoading />}>
@@ -201,10 +259,22 @@ createRoot(document.getElementById("root")!).render(
               <Route path="/blog" element={<Blog />} />
               <Route path="/blog/:slug" element={<BlogPost />} />
               <Route path="/checkout" element={<Checkout />} />
-              <Route
-                path="/auth"
-                element={<AuthPage redirectAfterAuth="/dashboard" />}
-              />
+          <Route
+            path="/auth"
+            element={<AuthPage redirectAfterAuth="/dashboard" />}
+          />
+          {/* Single entry point for every Supabase Auth email link. */}
+          <Route path="/auth/callback" element={<AuthCallback />} />
+          {/* First-time account activation (invitation). */}
+          <Route
+            path="/auth/set-password"
+            element={<AuthPassword mode="set" />}
+          />
+          {/* Password recovery. */}
+          <Route
+            path="/auth/reset-password"
+            element={<AuthPassword mode="reset" />}
+          />
               <Route
                 path="/setup"
                 element={

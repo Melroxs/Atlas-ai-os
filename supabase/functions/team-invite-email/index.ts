@@ -183,7 +183,10 @@ serve(async (req: Request) => {
         full_name: email.split("@")[0],
         inviter_name: inviterName || "a teammate",
         organization_name: tenantName,
-        invite_url: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+        // Entry point, not an auth token: the callback sends the invitee into
+        // Atlas when they already have a session, otherwise to sign-in — never
+        // straight to the public landing page.
+        invite_url: `${atlasSiteUrl()}/auth/callback`,
       },
     });
 

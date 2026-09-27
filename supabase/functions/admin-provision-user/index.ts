@@ -220,7 +220,13 @@ async function handleProvision(ctx: AdminContext, body: Record<string, unknown>)
     const { data: inviteData, error: inviteError } =
       await ctx.admin.auth.admin.inviteUserByEmail(email, {
         data: { full_name: name || email.split("@")[0] },
-        redirectTo: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+        // The Auth callback establishes the invitation session and forwards
+        // the invitee to the password setup page. Pointing this at the login
+        // page instead is what left invited users signed in with no password.
+        // `type=invite` is belt-and-braces: it keeps the invite intent even if
+        // a mail client strips the fragment, and Supabase preserves the query
+        // string of the redirect target.
+        redirectTo: `${atlasSiteUrl()}/auth/callback?type=invite`,
       });
     if (inviteError || !inviteData?.id) {
       return fail("Failed to create/invite user.", inviteError?.message ?? "no id returned");
@@ -260,7 +266,10 @@ async function handleProvision(ctx: AdminContext, body: Record<string, unknown>)
         full_name: name || email.split("@")[0],
         inviter_name: ctx.callerEmail?.split("@")[0] || "the Atlas team",
         organization_name: "your team",
-        invite_url: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+        // This branded notice carries no auth token — the tokenised link is in
+        // the separate Supabase invitation email — so its CTA is a plain entry
+        // point (sign-in when signed out, Atlas when already signed in).
+        invite_url: `${atlasSiteUrl()}/auth/callback`,
       },
     });
   }
@@ -551,7 +560,7 @@ async function handleInvite(ctx: AdminContext, body: Record<string, unknown>) {
     const { data: inviteData, error: inviteError } =
       await ctx.admin.auth.admin.inviteUserByEmail(email, {
         data: { full_name: fullName },
-        redirectTo: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+        redirectTo: `${atlasSiteUrl()}/auth/callback?type=invite`,
       });
     if (inviteError || !inviteData?.id) {
       return fail("Failed to create/invite user.", inviteError?.message ?? "no id returned");
@@ -568,9 +577,14 @@ async function handleInvite(ctx: AdminContext, body: Record<string, unknown>) {
     .eq("_id", authUserId)
     .maybeSingle();
   if (profile) {
+    // NOTE: `profiles` has no `_updated_at` column (see migration
+    // 202608251_atlas_fix_user_management_rpc.sql, which removed the same
+    // reference from the admin_* RPCs). Including it made PostgREST reject
+    // this UPDATE, so the invited user's profile stayed account_status
+    // 'pending' — authenticated, but permanently denied by the access gate.
     const { error: uErr } = await ctx.admin
       .from("profiles")
-      .update({ name: displayName, account_status: "active", email, _updated_at: new Date().toISOString() })
+      .update({ name: displayName, account_status: "active", email })
       .eq("_id", authUserId);
     if (uErr) console.error("[admin-provision-user] profile update failed:", uErr.message.slice(0, 200));
   } else {
@@ -627,7 +641,7 @@ async function handleInvite(ctx: AdminContext, body: Record<string, unknown>) {
       full_name: displayName,
       inviter_name: ctx.callerEmail?.split("@")[0] || "a teammate",
       organization_name: org.name,
-      invite_url: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+      invite_url: `${atlasSiteUrl()}/auth/callback`,
     },
   });
 
@@ -972,7 +986,9 @@ async function handleGrantComplimentary(ctx: AdminContext, body: Record<string, 
           organization_name_phrase: ` for ${organizationName}`,
           reason_phrase: reason ? ` (${reason})` : "",
           expiration_date: formatExpiration(grant?.expires_at ?? null),
-          login_url: `${atlasSiteUrl()}/auth?returnTo=%2Fdashboard`,
+          // Entry point, not an auth token: the callback passes the user on to
+          // sign-in (or straight into Atlas when a session already exists).
+          login_url: `${atlasSiteUrl()}/auth/callback`,
         },
       })
     : { ok: true as const };

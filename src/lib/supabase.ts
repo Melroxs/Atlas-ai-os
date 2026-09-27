@@ -162,10 +162,14 @@ export async function supabaseAnonymousSignIn(): Promise<User> {
 /**
  * Send Supabase's password-reset email.
  *
- * The `redirectTo` ensures the recovery link opens the correct production URL
- * rather than the Supabase Dashboard Site URL (which may be localhost during
- * development). The Site URL in the Supabase Dashboard must also be updated
- * to the production domain.
+ * `redirectTo` sends the recovery link to the single auth callback, which
+ * establishes the recovery session and forwards the user to
+ * /auth/reset-password. Supabase only honours this URL when the origin is on
+ * the project's redirect allow-list (`Authentication → URL Configuration`);
+ * otherwise it silently falls back to the project Site URL, so BOTH the site
+ * URL and the allow-list must include the production app origin. The app
+ * tolerates the fallback — /auth/callback is also reachable from the app root
+ * — but the canonical URL is the one below.
  */
 export async function supabaseSendPasswordReset(email: string): Promise<void> {
   const appOrigin = typeof window !== "undefined"
@@ -173,7 +177,7 @@ export async function supabaseSendPasswordReset(email: string): Promise<void> {
     : "https://atlas-ai-os.com";
 
   const { error } = await getClient().auth.resetPasswordForEmail(email.trim(), {
-    redirectTo: `${appOrigin}/reset-password`,
+    redirectTo: `${appOrigin}/auth/callback`,
   });
   if (error) throw error;
 }

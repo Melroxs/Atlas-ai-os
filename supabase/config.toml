@@ -160,7 +160,19 @@ site_url = "https://atlas-ai-os.com"
 # The public URL that Auth serves on. Defaults to the API external URL with `/auth/v1` appended.
 # external_url = ""
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["https://atlas-ai-os.com/**"]
+#
+# Atlas auth requires every origin the web app is actually served from, because
+# a `redirectTo` that is not on this list is silently ignored and the email link
+# falls back to `site_url` — which is how invitation, recovery and magic-link
+# emails previously ended up on the public landing page. The hosted project
+# (Authentication → URL Configuration) must list the same origins. Entries need
+# an explicit scheme; a scheme-less entry never matches.
+additional_redirect_urls = [
+  "https://atlas-ai-os.com/**",
+  "https://atlasuniversalos.freebuff.app/**",
+  "https://atlasmvp.freebuff.app/**",
+  "http://localhost:5173/**",
+]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to auth.external_url.

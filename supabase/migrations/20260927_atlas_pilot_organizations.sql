@@ -134,7 +134,7 @@ begin
     raise exception 'Could not derive a slug from the organization name; please supply one.';
   end if;
 
-  insert into public.tenants (name, slug, status, account_type, _creationTime)
+  insert into public.tenants (name, slug, status, account_type, "_creationTime")
   values (trim(p_name), v_slug, 'active', 'standard', v_now)
   returning _id into v_tenant;
 
@@ -316,7 +316,7 @@ begin
 
   -- 1. The organization. A normal tenant in every respect.
   insert into public.tenants (
-    name, slug, status, account_type, pilot_notes, pilot_limits, _creationTime
+    name, slug, status, account_type, pilot_notes, pilot_limits, "_creationTime"
   ) values (
     trim(p_name), v_slug, 'active', 'free_pilot',
     nullif(trim(coalesce(p_notes, '')), ''),
@@ -325,35 +325,28 @@ begin
   )
   returning _id into v_tenant;
 
-  -- 2. The primary profile. Upsert by email so re-running for a real user
-  --    never creates a duplicate identity.
+  -- 2. The primary profile. `profiles._id` IS the Supabase Auth user id, and
+  --    this RPC deliberately never creates an Auth user (no password is ever
+  --    generated or transmitted here — `next_step` below is 'invite_user'). A
+  --    brand-new email therefore has no id yet, and cannot get a profile row
+  --    from here; the invite creates the Auth user, then the profile, then the
+  --    membership. An EXISTING profile is reused, never duplicated, and is
+  --    never silently re-roled or reactivated.
+  --
+  --    (The previous version inserted a profile here without `_id`, violating
+  --    the NOT NULL constraint and failing on EVERY call. It also referenced
+  --    `company_name` and `_updated_at`, neither of which exists on
+  --    `profiles` — the organization name lives on `tenants.name`.)
   select _id into v_user from public.profiles where lower(email) = v_email limit 1;
 
-  if v_user is null then
-    insert into public.profiles (
-      email, name, platform_role, account_status, company_name, _creationTime
-    ) values (
-      v_email,
-      coalesce(nullif(trim(coalesce(p_admin_name, '')), ''), v_email),
-      'customer_admin',
-      'pending',
-      trim(p_name),
-      v_now
-    )
-    returning _id into v_user;
-  else
-    -- Never silently reactivate an existing account; only attach it.
-    update public.profiles
-    set company_name = coalesce(company_name, trim(p_name)),
-        _updated_at = now()
-    where _id = v_user;
+  -- 3. Membership as the organization owner, but only when the user already
+  --    exists (the membership-role convention in use: 24 'owner' rows against
+  --    1 'admin'). Idempotent; the invite adds the membership for a new user.
+  if v_user is not null then
+    insert into public.memberships ("tenantId", "userId", role, status, "joinedAt", "_creationTime")
+    values (v_tenant, v_user, 'owner', 'active', v_now, v_now)
+    on conflict do nothing;
   end if;
-
-  -- 3. Membership as the organization owner (the membership-role convention
-  --    in use: 24 'owner' rows against 1 'admin'). Idempotent.
-  insert into public.memberships ("tenantId", "userId", role, status, "joinedAt", "_creationTime")
-  values (v_tenant, v_user, 'owner', 'active', v_now, v_now)
-  on conflict do nothing;
 
   -- 4. The Free Pilot entitlement: organization-wide, no Stripe anything.
   insert into public.complimentary_access (

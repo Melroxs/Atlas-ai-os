@@ -39,7 +39,7 @@ BEGIN
     'image', p.image,
     'platform_role', p.platform_role,
     'account_status', p.account_status,
-    'created_at', p._creationTime,
+    'created_at', p."_creationTime",
     'membership', (
       SELECT json_build_object(
         'tenant_id', m."tenantId",
@@ -59,7 +59,7 @@ BEGIN
      p.email ILIKE '%' || p_search || '%')
     AND (p_role IS NULL OR p_role = '' OR p.platform_role = p_role)
     AND (p_status IS NULL OR p_status = '' OR p.account_status = p_status)
-  ORDER BY p._creationTime DESC NULLS LAST
+  ORDER BY p."_creationTime" DESC NULLS LAST
   LIMIT p_limit;
 END;
 $$;

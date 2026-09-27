@@ -1,0 +1,31 @@
+-- Record 20260933 as applied.
+--
+-- 20260933 (connections_list_catalog quoted mixed-case identifiers): SQL was
+-- executed in full via apply-migration.mjs and verified live. The function
+-- referenced two mixed-case columns of public.connections as bare identifiers
+-- (`c.lastError` and `c._creationTime`), which PostgreSQL folds to
+-- `lasterror` / `_creationtime`; the function therefore raised
+-- "column c.lasterror does not exist" on every authorized call. Only those two
+-- identifiers are quoted in the new body; nothing else changes and no
+-- authorization is restated.
+--
+-- Pre-change body preserved at scripts/sql/backups/20260933_pre_change_definitions.sql
+-- (md5 98793a5d7fee89a86d7c56b25665922a). Post-change body md5
+-- 7a92abe137a74dcebfc1aa894c0dcf9d, byte-identical to the corrected source in
+-- 20260922_atlas_integration_foundation.sql.
+--
+-- Empirically proven in rolled-back transactions, as the super admin:
+--   BEFORE -> connections_list_catalog() raised on the identifier.
+--   AFTER  -> returns {"connections": 1, "providers": 0}.
+--   GUARD  -> still raises 42501 "Access denied: no active Atlas organization"
+--              when called with no active tenant, so the tenant guard is intact.
+--
+-- Note for reviewers: the accompanying task brief named seven functions as
+-- exhibiting the `_creationTime` bug. Probing all seven showed that
+-- connections_list_catalog was the only one actually broken; in the other six
+-- the token appears either as a quoted identifier or as a string literal in a
+-- column denylist. Those six were deliberately left untouched. See the
+-- migration comments and scripts/sql/exercise-seven*.sql.
+insert into supabase_migrations.schema_migrations (version, name)
+values ('20260933', '20260933_atlas_connections_list_catalog_quoted_identifiers.sql')
+on conflict (version) do nothing;

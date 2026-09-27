@@ -287,7 +287,7 @@ begin
           'scopes', c.scopes,
           'lastSyncAt', c."lastSyncAt",
           'lastAttemptedSyncAt', c."lastAttemptedSyncAt",
-          'lastError', c.lastError,
+          'lastError', c."lastError",
           'healthStatus', c."healthStatus",
           'lastTestedAt', c."lastTestedAt",
           'lastTestSuccessAt', c."lastTestSuccessAt",
@@ -295,7 +295,7 @@ begin
           'lastTestLatencyMs', c."lastTestLatencyMs",
           'disconnectedAt', c."disconnectedAt"
         )
-        order by c._creationTime
+        order by c."_creationTime"
       )
       from public.connections c
       where c."tenantId" = v_tenant

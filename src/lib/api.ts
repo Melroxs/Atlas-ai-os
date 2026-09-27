@@ -717,6 +717,7 @@ export const api = {
       filesAffected: number;
       storageRemoved: number;
       recordDeleted: boolean;
+      storageRemovalFailed: boolean;
     }>("ingestion_delete_archive", "client", async (args) => {
       const a = (args ?? {}) as Record<string, unknown>;
       const { deleteIngestedArchiveClient } = await import("@/lib/actions/file-deletion");
@@ -731,6 +732,7 @@ export const api = {
       filesAffected: number;
       storageRemoved: number;
       recordDeleted: boolean;
+      storageRemovalFailed: boolean;
     }>("ingestion_delete_archive_file", "client", async (args) => {
       const a = (args ?? {}) as Record<string, unknown>;
       const { deleteIngestedFileClient } = await import("@/lib/actions/file-deletion");

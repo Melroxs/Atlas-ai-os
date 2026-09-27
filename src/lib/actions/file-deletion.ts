@@ -26,6 +26,17 @@ export interface DeletionResult {
   filesAffected: number;
   storageRemoved: number;
   recordDeleted: boolean;
+  /**
+   * True when the chosen depth asked for the original bytes to be destroyed
+   * but Storage did not remove them.
+   *
+   * The database deletion and the Storage deletion are two separate systems:
+   * the RPC deletes rows, the client removes objects. They can disagree, and
+   * the failure mode is dangerous precisely because the rows ARE gone — the
+   * original file would survive with nothing pointing at it. That must be
+   * reported, not swallowed.
+   */
+  storageRemovalFailed: boolean;
 }
 
 const DOCUMENTS_BUCKET = "documents";
@@ -66,6 +77,9 @@ export async function deleteIngestedFileClient(args: {
     filesAffected: 1,
     storageRemoved,
     recordDeleted: false,
+    // Only a failure to report when the caller actually asked for the bytes
+    // to go. A 'knowledge'-only deletion has no storage step to fail.
+    storageRemovalFailed: args.degree === "knowledge_and_file" && storageRemoved === 0,
   };
 }
 
@@ -119,5 +133,7 @@ export async function deleteIngestedArchiveClient(args: {
     filesAffected: res?.files ?? 0,
     storageRemoved,
     recordDeleted: Boolean(res?.archiveDeleted),
+    storageRemovalFailed:
+      args.degree !== "knowledge" && paths.length > 0 && storageRemoved === 0,
   };
 }

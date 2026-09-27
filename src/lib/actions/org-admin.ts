@@ -224,6 +224,35 @@ export const orgAdmin = {
 
   deleteUser: (userId: string) => callAdminEdge<{ ok: boolean }>("delete_user", { userId }),
 
+  /**
+   * Permanently delete an organization and everything cascading from it.
+   *
+   * The Edge Function cancels any live Stripe subscription first, so a paying
+   * customer is never orphaned, then purges the stored bytes it can only reach
+   * server-side. `confirmName` must be the organization's exact name — the
+   * server re-checks it, so the confirmation cannot be spoofed by the client.
+   */
+  deleteOrganization: (params: {
+    tenantId: string;
+    reason: string;
+    confirmName: string;
+    deleteUsers?: boolean;
+  }) =>
+    callAdminEdge<{
+      tenant_id?: string;
+      name?: string;
+      members?: number;
+      storage_removed?: number;
+      users_deleted?: number;
+      billing_cancelled?: boolean;
+      warning?: string | null;
+    }>("delete_organization", {
+      tenantId: params.tenantId,
+      reason: params.reason,
+      confirmName: params.confirmName,
+      deleteUsers: params.deleteUsers === true,
+    }),
+
   grantComplimentary: (params: {
     tenantId: string;
     userId?: string | null;

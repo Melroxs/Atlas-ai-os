@@ -168,3 +168,50 @@ export function describeDeletion(
 
 /** The word an operator must type to confirm a record-destroying deletion. */
 export const DELETION_CONFIRMATION_WORD = "DELETE";
+
+// ---------------------------------------------------------------------------
+// Who may delete
+//
+// This mirrors the server guard in the ingestion_delete_* RPCs exactly. The
+// server is the security boundary — this only keeps the button from appearing
+// for people the server would reject, which would otherwise be a button that
+// always fails.
+//
+// The two sources are deliberately different: an ORGANIZATION role (from the
+// caller's own membership) and a PLATFORM role (Atlas-wide). A platform
+// super_admin administers every organization and is not a member of most of
+// them, which is exactly why the server had to resolve the tenant from the
+// target row for them.
+// ---------------------------------------------------------------------------
+
+/** Organization roles that may delete ingested data. Unchanged since 20260928. */
+export const INGESTION_DELETE_ORG_ROLES = ["owner", "admin", "manager"] as const;
+
+/** The platform role that may delete ingested data in ANY organization. */
+export const INGESTION_DELETE_PLATFORM_ROLE = "super_admin";
+
+export interface IngestionDeleteViewer {
+  /** `platform_role` from the caller's profile. */
+  platformRole?: string | null;
+  /** The caller's role in the organization that owns the file. */
+  memberRole?: string | null;
+}
+
+/**
+ * True when this viewer may delete ingested files.
+ *
+ * A platform super_admin passes regardless of membership; everyone else must
+ * hold one of the organization roles above.
+ */
+export function canDeleteIngestedFiles(viewer: IngestionDeleteViewer): boolean {
+  if (viewer.platformRole === INGESTION_DELETE_PLATFORM_ROLE) return true;
+  return INGESTION_DELETE_ORG_ROLES.includes(
+    viewer.memberRole as (typeof INGESTION_DELETE_ORG_ROLES)[number],
+  );
+}
+
+/** Why the delete control is unavailable, for the UI to explain itself. */
+export function ingestionDeleteDeniedReason(viewer: IngestionDeleteViewer): string | null {
+  if (canDeleteIngestedFiles(viewer)) return null;
+  return "Only organization owners, admins and managers — or an Atlas super admin — can delete ingested files.";
+}

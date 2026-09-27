@@ -81,7 +81,12 @@ function Auth({ redirectAfterAuth }: AuthProps = {}) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [resetting, setResetting] = useState(false);
+  // `?reset=1` opens the reset-request form directly (used by the expired-link
+  // pages and any "request a new link" CTA) instead of hiding it behind the
+  // "Forgot password?" toggle.
+  const [resetting, setResetting] = useState(
+    () => searchParams.get("reset") === "1",
+  );
   const [recovering, setRecovering] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");

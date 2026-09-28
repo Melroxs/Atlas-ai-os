@@ -301,7 +301,7 @@ as $$
   select 'content-automation:' || p_organization::text;
 $$;
 
-revoke all on function public.content_automation_schedule_name(uuid) from anon;
+revoke all on function public.content_automation_schedule_name(uuid) from public, anon;
 
 -- Idempotently create or update the publication row for one destination.
 -- Returns the row so the caller can decide whether to enqueue work.
@@ -948,12 +948,12 @@ $$;
 revoke all on table public."atlasContentPublications" from anon;
 revoke all on table public."atlasContentAutomation" from anon;
 
-revoke all on function public.content_publication_claim(uuid) from anon;
-revoke all on function public.content_publication_complete(uuid, text, text, jsonb) from anon;
-revoke all on function public.content_publication_fail(uuid, text, text) from anon;
-revoke all on function public.content_automation_upsert(boolean, bigint, boolean, boolean, text, text, text, text) from anon;
-revoke all on function public.content_automation_note_topic(text, uuid) from anon;
-revoke all on function public.content_asset_upsert(uuid, text, text, text, text, text, text, text, text, jsonb, text, text) from anon;
+revoke all on function public.content_publication_claim(uuid, integer) from public, anon;
+revoke all on function public.content_publication_complete(uuid, text, text, jsonb) from public, anon;
+revoke all on function public.content_publication_fail(uuid, text, text) from public, anon;
+revoke all on function public.content_automation_upsert(boolean, bigint, boolean, boolean, text, text, text, text) from public, anon;
+revoke all on function public.content_automation_note_topic(text, uuid) from public, anon;
+revoke all on function public.content_asset_upsert(uuid, text, text, text, text, text, text, text, text, jsonb, text, text) from public, anon;
 
 
 -- ----------------------------------------------------------------------------
@@ -1170,12 +1170,11 @@ end;
 $$;
 
 -- Publishing and generation are worker concerns; anon gets nothing new.
-revoke all on function public.content_studio_list(int, int) from anon;
-revoke all on function public.content_set_youtube_presentation(uuid, text, text, text, jsonb) from anon;
-revoke all on function public.content_automation_list_due(int) from anon;
-revoke all on function public.content_engine_enqueue(uuid, text, jsonb, text) from anon;
-revoke all on function public.content_publications_reclaimable(int) from anon;
-revoke all on function public.content_next_topic(uuid) from anon;
+revoke all on function public.content_studio_list(int, int) from public, anon;
+revoke all on function public.content_set_youtube_presentation(uuid, text, text, text, jsonb) from public, anon;
+revoke all on function public.content_automation_list_due(int) from public, anon;
+revoke all on function public.content_engine_enqueue(uuid, text, jsonb, text) from public, anon;
+revoke all on function public.content_publications_reclaimable(int) from public, anon;
 
 
 -- ----------------------------------------------------------------------------
@@ -1292,4 +1291,5 @@ as $$
     );
 $$;
 
-revoke all on function public.content_topic_remaining() from anon;
+revoke all on function public.content_topic_remaining() from public, anon;
+revoke all on function public.content_next_topic(uuid) from public, anon;

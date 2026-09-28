@@ -1,0 +1,33 @@
+-- ============================================================================
+-- 20260937 — public blog reader RPCs added to the anon allowlist
+--
+-- 20260918 §4d allowlisted exactly one public content RPC:
+--
+--     'content_public_list'   -- published blog/articles only
+--
+-- but the other two readers of the same public surface did not exist yet when
+-- that allowlist was written, so they were never listed:
+--
+--     content_public_get       -- created 20260920, redefined 20260926
+--     content_public_related   -- created 20260926
+--
+-- They were reachable by `anon` only by accident, through the PUBLIC EXECUTE
+-- grant that PostgreSQL gives every new function. 20260936 closed that PUBLIC
+-- grant (it was the live unauthenticated vulnerability), which correctly
+-- removed `anon` from them — and in doing so revealed that they were never
+-- actually on the allowlist.
+--
+-- Both are the same public, published-only surface as content_public_list:
+-- `content_public_related` is `security invoker` and both filter on
+-- `status = 'published' and "contentType" = 'blog'`, so an anonymous caller
+-- sees published blog rows and nothing else — no drafts, no bodies of
+-- unpublished content, no cross-tenant data.
+--
+-- src/lib/blog/queries.ts calls content_public_related for the related-articles
+-- section and already falls back to the most recent published articles when
+-- the RPC is unavailable. Granting it keeps that section on its real data
+-- instead of its degraded fallback.
+-- ============================================================================
+
+grant execute on function public.content_public_get(text) to anon;
+grant execute on function public.content_public_related(text, integer) to anon;

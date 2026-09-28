@@ -502,6 +502,23 @@ const ANON_ALLOWED = new Set([
   ...arrayLiteral(HARDENING_SQL, "v_anon_public"),
 ]);
 
+/**
+ * Service-role-only functions introduced AFTER 20260918.
+ *
+ * The ratchet reads its service-only set from 20260918's `v_service_only`
+ * array, so a function added by a later migration is classified as
+ * "authenticated-reachable" purely because 20260918 predates it. That is wrong
+ * when the later migration revokes the function from public, anon AND
+ * authenticated and grants it only to service_role — which is exactly what the
+ * pg_cron scheduler driver does.
+ *
+ * This list cannot be used to quietly excuse a reachable function: the
+ * "post-hardening service-only entries are genuinely revoked" test below
+ * re-derives the revoke and the grant from the SQL, so an entry that stops
+ * being service-only fails immediately.
+ */
+const POST_HARDENING_SERVICE_ONLY = ["atlas_platform_tick"];
+
 function isDefiner(name: string): boolean {
   return /security\s+definer/i.test(FUNCS.get(name)?.declaration ?? "");
 }
@@ -515,7 +532,12 @@ function guardsItself(name: string): boolean {
 function authenticatedReachableUnguarded(): string[] {
   return [...FUNCS.keys()]
     .filter((n) => isDefiner(n) && !guardsItself(n))
-    .filter((n) => !SERVICE_ONLY.has(n) && !ANON_ALLOWED.has(n))
+    .filter(
+      (n) =>
+        !SERVICE_ONLY.has(n) &&
+        !ANON_ALLOWED.has(n) &&
+        !POST_HARDENING_SERVICE_ONLY.includes(n),
+    )
     .sort();
 }
 
@@ -568,6 +590,40 @@ function walk(dir: string): string[] {
 describe("jobs/auth authorization boundary (ratchet)", () => {
   it("introduces no NEW unguarded authenticated-reachable SECURITY DEFINER function", () => {
     expect(unguardedRegressions()).toEqual([]);
+  });
+
+  it("post-hardening service-only entries are genuinely revoked from every client role", () => {
+    // The allowlist above is only trustworthy if each entry really is
+    // service-role-only. Re-derive it from the SQL rather than trusting the
+    // literal: the revoke must name public, anon and authenticated together,
+    // and the only grant must be to service_role. Omitting `public` is the
+    // exact defect that made schedules_* anonymously executable in production.
+    const allSql = walk(MIGRATIONS)
+      .filter((f) => f.endsWith(".sql"))
+      .map((f) => readFileSync(f, "utf8"))
+      .join("\n");
+
+    for (const name of POST_HARDENING_SERVICE_ONLY) {
+      const revoke = new RegExp(
+        `revoke\\s+execute\\s+on\\s+function\\s+public\\.${name}\\([^)]*\\)\\s*from\\s+public,\\s*anon,\\s*authenticated`,
+        "i",
+      );
+      expect(allSql, `${name} must be revoked from public, anon and authenticated`).toMatch(revoke);
+
+      const grant = new RegExp(
+        `grant\\s+execute\\s+on\\s+function\\s+public\\.${name}\\([^)]*\\)\\s+to\\s+([^;]+);`,
+        "gi",
+      );
+      const targets = [...allSql.matchAll(grant)].map((m) =>
+        m[1].split(",").map((r) => r.trim().toLowerCase()),
+      );
+      expect(targets.length, `${name} must be granted explicitly`).toBeGreaterThan(0);
+      for (const t of targets) {
+        expect(t, `${name} must never be granted to a client role`).not.toContain("anon");
+        expect(t, `${name} must never be granted to a client role`).not.toContain("authenticated");
+        expect(t, `${name} must never be granted to PUBLIC`).not.toContain("public");
+      }
+    }
   });
 
   it("keeps the ratchet honest — the scanner still detects real shapes", () => {

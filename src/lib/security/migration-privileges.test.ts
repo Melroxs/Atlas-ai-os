@@ -637,8 +637,18 @@ describe("jobs/auth authorization boundary (ratchet)", () => {
     // appearing here means the job queue gained an unreviewed server entry
     // point and the SERVICE_ONLY analysis for the jobs_* family must be
     // revisited before merging.
+    // 2026-09-28: content-engine-worker becomes the SECOND sanctioned
+    // server-side producer. It is the only place the Atlas Content Engine can
+    // do its work, because it is the only place a provider credential may be
+    // used: it runs with the service role (a scheduled invocation) or for a
+    // platform admin, refuses every other caller in code, dequeues ONLY the
+    // content_* job types, and never takes a tenant from the request —
+    // content_engine_enqueue resolves the organization from the CONTENT PACKAGE
+    // and jobs_create_job re-verifies membership itself. Both edge callers use
+    // the trusted-server path the 20260918 hardening added.
     const SANCTIONED_SERVER_PRODUCERS = new Set([
       "integrations-webhook/index.ts",
+      "content-engine-worker/index.ts",
     ]);
 
     const offenders = files.filter((f) => {
@@ -651,15 +661,33 @@ describe("jobs/auth authorization boundary (ratchet)", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("records that src/lib/platform is imported by no application code", () => {
+  it("records exactly which application modules import src/lib/platform", () => {
+    // The 2026-09 audit recorded src/lib/platform as a dormant subsystem with no
+    // importer. That changed deliberately with the Atlas Content Engine, which
+    // REUSES the platform content model instead of duplicating it:
+    //
+    //   * content-engine/types.ts  — the content status machine
+    //     (ContentStatus / ContentApprovalStatus) that every package and asset
+    //     row already uses, so the engine cannot invent a second vocabulary;
+    //   * content-engine/copy.ts   — buildLinkedInDraft/slugify, the existing
+    //     LinkedIn draft builder, so distribution copy has ONE implementation.
+    //
+    // The assertion stays an EXACT set: any new importer still fails this test,
+    // because widening the content model is a decision, not an accident.
+    const SANCTIONED_PLATFORM_IMPORTERS = new Set([
+      "lib/content-engine/types.ts",
+      "lib/content-engine/copy.ts",
+    ]);
+
     const srcDir = resolve(HERE, "../../");
     const files = walk(srcDir).filter(
       (f) => (f.endsWith(".ts") || f.endsWith(".tsx")) && !f.includes("/lib/platform/"),
     );
-    const importers = files.filter((f) =>
-      /from\s+"@\/lib\/platform/.test(readFileSync(f, "utf8")),
-    );
-    expect(importers).toEqual([]);
+    const importers = files
+      .filter((f) => /from\s+"@\/lib\/platform/.test(readFileSync(f, "utf8")))
+      .map((f) => f.slice(srcDir.length + 1).replace(/\\/g, "/"))
+      .sort();
+    expect(importers).toEqual([...SANCTIONED_PLATFORM_IMPORTERS].sort());
   });
 });
 

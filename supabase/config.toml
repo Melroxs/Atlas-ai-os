@@ -427,6 +427,14 @@ verify_jwt = true
 [functions.blog-sitemap]
 verify_jwt = false
 
+# Atlas Content Engine worker. It executes the durable content jobs (AI
+# article, media render, blog/YouTube/LinkedIn publishing) and is the only
+# place a provider credential is ever used. It runs with the SERVICE ROLE (a
+# scheduled invocation) or for a platform admin, and it refuses any other
+# caller in code — so JWT verification stays ON.
+[functions.content-engine-worker]
+verify_jwt = true
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.

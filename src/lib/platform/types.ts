@@ -294,6 +294,12 @@ export type PlatformJobType = Extract<
   | "content_review"
   | "content_publish_blog"
   | "content_publish_linkedin"
+  | "content_generate_package"
+  | "content_generate_video"
+  | "content_poll_video"
+  | "content_generate_thumbnail"
+  | "content_publish_youtube"
+  | "content_automation_tick"
   | "document_ingest"
   | "document_extract"
   | "document_ocr"
@@ -323,6 +329,13 @@ export const PLATFORM_JOB_TYPES = [
   "content_review",
   "content_publish_blog",
   "content_publish_linkedin",
+  "content_generate_package",
+  "content_generate_video",
+  "content_poll_video",
+  "content_generate_thumbnail",
+  "content_write_linkedin",
+  "content_publish_youtube",
+  "content_automation_tick",
   "document_ingest",
   "document_extract",
   "document_ocr",

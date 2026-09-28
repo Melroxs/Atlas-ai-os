@@ -37,6 +37,15 @@ export interface PublishedArticle {
   readingTime: number | null;
   ctaId: string | null;
   /**
+   * The canonical YouTube artefact for this article, written by the Content
+   * Engine when a package's video is published. The hero video card and the
+   * two-way blog <-> video link are built from these — never from a second,
+   * unrelated asset.
+   */
+  youtubeUrl: string | null;
+  youtubeVideoId: string | null;
+  youtubeThumbnailUrl: string | null;
+  /**
    * Visual motif, read back out of the stored SEO contract rather than the
    * table, so a published article needs no extra column to render its
    * fallback artwork.
@@ -61,7 +70,7 @@ export interface RelatedArticle {
 }
 
 const LIST_COLUMNS =
-  "_id,slug,title,summary,seo,jurisdiction,industry,category,tags,author,heroImage,socialImage,readingTime,publishedAt,updatedAt";
+  "_id,slug,title,summary,seo,jurisdiction,industry,category,tags,author,heroImage,socialImage,readingTime,publishedAt,updatedAt,youtubeUrl,youtubeVideoId,youtubeThumbnailUrl";
 const ARTICLE_COLUMNS = `${LIST_COLUMNS},body,ctaId`;
 
 const TABLE = "atlasContentItems";
@@ -115,6 +124,9 @@ function toPublishedArticle(row: Record<string, unknown>): PublishedArticle {
     socialImage: (row.socialImage as string | null) ?? null,
     readingTime: typeof row.readingTime === "number" ? row.readingTime : null,
     ctaId: (row.ctaId as string | null) ?? null,
+    youtubeUrl: (row.youtubeUrl as string | null) ?? null,
+    youtubeVideoId: (row.youtubeVideoId as string | null) ?? null,
+    youtubeThumbnailUrl: (row.youtubeThumbnailUrl as string | null) ?? null,
     motif: toMotif(seo),
     publishedAt: typeof row.publishedAt === "number" ? row.publishedAt : null,
     updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : null,

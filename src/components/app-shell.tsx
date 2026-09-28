@@ -57,6 +57,7 @@ import {
   Lightbulb,
   LogOut,
   Mail,
+  Megaphone,
   MessageSquareText,
   Radar,
   Scale,
@@ -198,6 +199,14 @@ const NAV_SECTIONS: Array<{
     ],
   },
   {
+    label: "Marketing",
+    items: [
+      { to: "/dashboard/content", label: "Content Studio", icon: Megaphone },
+      { to: "/dashboard/content/accounts", label: "Content Accounts", icon: Cable },
+      { to: "/dashboard/content/settings", label: "Content Settings", icon: Settings2 },
+    ],
+  },
+  {
     label: "System",
     items: [
       { to: "/dashboard/workflows", label: "Workflows", icon: Workflow },
@@ -274,6 +283,10 @@ const PAGE_TITLES: Record<string, string> = {
   "/dashboard/team": "Team",
   "/dashboard/audit": "Activity / Audit",
   "/dashboard/settings": "Workspace Settings",
+  "/dashboard/content": "Content Studio",
+  "/dashboard/content/accounts": "Content Accounts",
+  "/dashboard/content/settings": "Content Settings",
+  "/dashboard/content/:id": "Content Package",
   "/dashboard/pilot-intelligence": "Pilot Intelligence",
   "/dashboard/pilot-intelligence/companies": "Pilot Companies",
   "/dashboard/pilot-intelligence/sessions": "Pilot Sessions",
@@ -417,6 +430,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             if (section.label === "Pilot") return canAccessPilotAdmin(role);
             if (section.label === "Pilot Intelligence") return canAccessPilotAdmin(role);
             if (section.label === "CRM") return canAccessCRM(role);
+            // Content Studio publishes Atlas's own blog/YouTube/LinkedIn content,
+            // so it follows the same internal-role gate as CRM.
+            if (section.label === "Marketing") return canAccessCRM(role);
             // Operations, Intelligence, Atlas, Workspace are visible to all authenticated users
             return true;
           }).map((section) => (

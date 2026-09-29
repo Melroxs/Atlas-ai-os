@@ -115,14 +115,18 @@ export default function ContentAccounts() {
             returnTo: `${window.location.origin}/dashboard/content/accounts`,
           }),
         });
-        const payload = (await response.json().catch(() => ({}))) as {
+        // Atlas Edge responses are wrapped as `{ data: ... }` (atlasEdgeJson),
+        // while errors are returned flat as `{ data: null, error: ... }`
+        // (atlasEdgeError). Unwrap `data` when it is present and fall back to
+        // the body itself, which keeps the existing `payload.error` behaviour.
+        const body = await response.json().catch(() => ({}));
+        const payload = (body?.data ?? body) as {
           authorizationUrl?: string;
           error?: string;
         };
         if (!response.ok || !payload.authorizationUrl) {
           throw new Error(
-            payload.error ??
-              `${provider} could not be started. Its OAuth client may not be configured yet.`,
+            payload.error ?? `${provider} could not be started. Please try again.`,
           );
         }
 

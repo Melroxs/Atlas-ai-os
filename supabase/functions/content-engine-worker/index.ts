@@ -1716,14 +1716,36 @@ Deno.serve(async (req) => {
     // Crash recovery runs first: a publication whose worker died is the work
     // that is actually at risk of being lost.
     const reclaimed = await reclaimStalePublications();
-    const jobs = await rpc<JobRow[]>("jobs_dequeue", {
+    // `jobs_dequeue` returns jsonb shaped `{ jobs: [id...], count }`, not a row
+    // set, so the claimed ids have to be resolved to their rows before dispatch.
+    const dequeued = await rpc<{ jobs?: string[]; count?: number }>("jobs_dequeue", {
       p_worker_id: workerId,
       p_job_types: CONTENT_JOB_TYPES,
       p_max_jobs: limit,
     });
+    const claimedIds = (dequeued?.jobs ?? []).filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    );
+    const claimedRows = claimedIds.length
+      ? await select<JobRow>(
+          "atlas_jobs",
+          "select=id,tenant_id,job_type,payload,attempt_count,max_attempts&id=in.(" +
+            claimedIds.map((id) => encodeURIComponent(id)).join(",") +
+            ")",
+        )
+      : [];
+    // `in.()` does not preserve order; dequeue order (priority, then
+    // scheduled_at, then created_at) is the order the jobs were claimed in.
+    const rowsById = new Map(claimedRows.map((row) => [row.id, row]));
+    const jobs = claimedIds
+      .map((id) => rowsById.get(id))
+      .filter((row): row is JobRow => Boolean(row));
+    if (jobs.length !== claimedIds.length) {
+      log("jobs.unresolved", { claimed: claimedIds.length, resolved: jobs.length });
+    }
 
     const results: Json[] = [];
-    for (const job of jobs ?? []) {
+    for (const job of jobs) {
       let outcome: StepOutcome;
       try {
         outcome = await execute(job);

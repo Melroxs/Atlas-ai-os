@@ -1,4 +1,11 @@
 import LegalLayout from "@/components/legal-layout";
+import {
+  CITY,
+  COUNTRY,
+  LEGAL_ENTITY_NAME,
+  OPERATOR_STATEMENT,
+  PROVINCE,
+} from "@/lib/legal/company-identity";
 import type { ReactNode } from "react";
 
 /**
@@ -61,6 +68,11 @@ export default function Privacy() {
           AI functionality, and related services (the "Service"). This policy applies to
           information we collect when you use the Service, including when you visit our website,
           create an account, subscribe to a plan, or upload information to Atlas.
+        </P>
+        <P>
+          {OPERATOR_STATEMENT} Atlas AI OS is a trading name of the Company and is not a separately
+          incorporated entity. Where we are the data controller for information collected through
+          the Service, the controller is {LEGAL_ENTITY_NAME}, {CITY}, {PROVINCE}, {COUNTRY}.
         </P>
       </Section>
 

@@ -98,6 +98,36 @@ const PROVIDERS: Record<string, OAuthProviderDefinition> = {
     usePkce: false,
     category: "crm",
   },
+  // --- Content Engine distribution channels ---------------------------------
+  // YouTube uses the Google authorization server but a SEPARATE OAuth client,
+  // because the upload scope is sensitive/restricted and must not be folded
+  // into the Drive/Gmail client's consent screen. The publishing scope is
+  // requested together with the read scope needed to resolve the channel.
+  youtube: {
+    authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: "https://oauth2.googleapis.com/token",
+    scopes: [
+      "https://www.googleapis.com/auth/youtube.upload",
+      "https://www.googleapis.com/auth/youtube.readonly",
+    ],
+    clientIdEnv: "YOUTUBE_CLIENT_ID",
+    clientSecretEnv: "YOUTUBE_CLIENT_SECRET",
+    usePkce: true,
+    authorizeParams: { access_type: "offline", prompt: "consent" },
+    category: "other",
+  },
+  // LinkedIn. `w_organization_social` is requested alongside the member scope
+  // so either a member profile or a company page can be the posting author;
+  // LinkedIn only grants the organization scopes to verified apps.
+  linkedin: {
+    authorizeUrl: "https://www.linkedin.com/oauth/v2/authorization",
+    tokenUrl: "https://www.linkedin.com/oauth/v2/accessToken",
+    scopes: ["openid", "profile", "w_member_social", "w_organization_social", "r_organization_social"],
+    clientIdEnv: "LINKEDIN_CLIENT_ID",
+    clientSecretEnv: "LINKEDIN_CLIENT_SECRET",
+    usePkce: true,
+    category: "other",
+  },
 };
 
 const STATE_TTL_MS = 10 * 60 * 1000;

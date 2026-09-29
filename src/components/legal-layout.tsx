@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import logo from "@/assets/logo.svg";
 import { ThemeToggle } from "@/components/atlas-ui";
+import { LegalIdentityFooter } from "@/components/legal-identity-footer";
 import { cn } from "@/lib/utils";
 
 /**
@@ -67,9 +68,7 @@ function LegalFooter() {
             ))}
           </nav>
         </div>
-        <p className="mt-6 text-center text-[11px] text-muted-foreground/60">
-          © {new Date().getFullYear()} Atlas. AI Operating System for Companies.
-        </p>
+        <LegalIdentityFooter className="mt-6" tagline="AI Operating System for Companies." />
       </div>
     </footer>
   );

@@ -1,4 +1,13 @@
 import LegalLayout from "@/components/legal-layout";
+import {
+  CITY,
+  COUNTRY,
+  COMPANY_REGISTRATION_NUMBER,
+  LEGAL_ENTITY_NAME,
+  OPERATOR_STATEMENT,
+  PROVINCE,
+  TRADING_NAME,
+} from "@/lib/legal/company-identity";
 import type { ReactNode } from "react";
 
 /**
@@ -56,6 +65,11 @@ export default function Refunds() {
           Atlas subscriptions may be billed monthly or annually according to the plan and billing
           interval selected during checkout. When you subscribe, you authorize charges for the
           applicable billing interval in accordance with the Terms of Service.
+        </P>
+        <P>
+          {OPERATOR_STATEMENT} Refunds are issued by {LEGAL_ENTITY_NAME}, which is the contracting
+          entity; {TRADING_NAME} is the product and trading name under which the subscription is
+          sold.
         </P>
       </Section>
 
@@ -140,7 +154,9 @@ export default function Refunds() {
           >
             admin@atlas-ai-os.com
           </a>
-          , the public Atlas contact address.
+          , the public Atlas contact address. Correspondence may be addressed to {LEGAL_ENTITY_NAME}
+          t/a {TRADING_NAME}, {CITY}, {PROVINCE}, {COUNTRY}, registration number{" "}
+          {COMPANY_REGISTRATION_NUMBER}.
         </P>
       </Section>
     </LegalLayout>

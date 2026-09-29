@@ -502,6 +502,23 @@ const ANON_ALLOWED = new Set([
   ...arrayLiteral(HARDENING_SQL, "v_anon_public"),
 ]);
 
+/**
+ * Service-role-only functions introduced AFTER 20260918.
+ *
+ * The ratchet reads its service-only set from 20260918's `v_service_only`
+ * array, so a function added by a later migration is classified as
+ * "authenticated-reachable" purely because 20260918 predates it. That is wrong
+ * when the later migration revokes the function from public, anon AND
+ * authenticated and grants it only to service_role — which is exactly what the
+ * pg_cron scheduler driver does.
+ *
+ * This list cannot be used to quietly excuse a reachable function: the
+ * "post-hardening service-only entries are genuinely revoked" test below
+ * re-derives the revoke and the grant from the SQL, so an entry that stops
+ * being service-only fails immediately.
+ */
+const POST_HARDENING_SERVICE_ONLY = ["atlas_platform_tick"];
+
 function isDefiner(name: string): boolean {
   return /security\s+definer/i.test(FUNCS.get(name)?.declaration ?? "");
 }
@@ -515,7 +532,12 @@ function guardsItself(name: string): boolean {
 function authenticatedReachableUnguarded(): string[] {
   return [...FUNCS.keys()]
     .filter((n) => isDefiner(n) && !guardsItself(n))
-    .filter((n) => !SERVICE_ONLY.has(n) && !ANON_ALLOWED.has(n))
+    .filter(
+      (n) =>
+        !SERVICE_ONLY.has(n) &&
+        !ANON_ALLOWED.has(n) &&
+        !POST_HARDENING_SERVICE_ONLY.includes(n),
+    )
     .sort();
 }
 
@@ -568,6 +590,40 @@ function walk(dir: string): string[] {
 describe("jobs/auth authorization boundary (ratchet)", () => {
   it("introduces no NEW unguarded authenticated-reachable SECURITY DEFINER function", () => {
     expect(unguardedRegressions()).toEqual([]);
+  });
+
+  it("post-hardening service-only entries are genuinely revoked from every client role", () => {
+    // The allowlist above is only trustworthy if each entry really is
+    // service-role-only. Re-derive it from the SQL rather than trusting the
+    // literal: the revoke must name public, anon and authenticated together,
+    // and the only grant must be to service_role. Omitting `public` is the
+    // exact defect that made schedules_* anonymously executable in production.
+    const allSql = walk(MIGRATIONS)
+      .filter((f) => f.endsWith(".sql"))
+      .map((f) => readFileSync(f, "utf8"))
+      .join("\n");
+
+    for (const name of POST_HARDENING_SERVICE_ONLY) {
+      const revoke = new RegExp(
+        `revoke\\s+execute\\s+on\\s+function\\s+public\\.${name}\\([^)]*\\)\\s*from\\s+public,\\s*anon,\\s*authenticated`,
+        "i",
+      );
+      expect(allSql, `${name} must be revoked from public, anon and authenticated`).toMatch(revoke);
+
+      const grant = new RegExp(
+        `grant\\s+execute\\s+on\\s+function\\s+public\\.${name}\\([^)]*\\)\\s+to\\s+([^;]+);`,
+        "gi",
+      );
+      const targets = [...allSql.matchAll(grant)].map((m) =>
+        m[1].split(",").map((r) => r.trim().toLowerCase()),
+      );
+      expect(targets.length, `${name} must be granted explicitly`).toBeGreaterThan(0);
+      for (const t of targets) {
+        expect(t, `${name} must never be granted to a client role`).not.toContain("anon");
+        expect(t, `${name} must never be granted to a client role`).not.toContain("authenticated");
+        expect(t, `${name} must never be granted to PUBLIC`).not.toContain("public");
+      }
+    }
   });
 
   it("keeps the ratchet honest — the scanner still detects real shapes", () => {
@@ -637,8 +693,18 @@ describe("jobs/auth authorization boundary (ratchet)", () => {
     // appearing here means the job queue gained an unreviewed server entry
     // point and the SERVICE_ONLY analysis for the jobs_* family must be
     // revisited before merging.
+    // 2026-09-28: content-engine-worker becomes the SECOND sanctioned
+    // server-side producer. It is the only place the Atlas Content Engine can
+    // do its work, because it is the only place a provider credential may be
+    // used: it runs with the service role (a scheduled invocation) or for a
+    // platform admin, refuses every other caller in code, dequeues ONLY the
+    // content_* job types, and never takes a tenant from the request —
+    // content_engine_enqueue resolves the organization from the CONTENT PACKAGE
+    // and jobs_create_job re-verifies membership itself. Both edge callers use
+    // the trusted-server path the 20260918 hardening added.
     const SANCTIONED_SERVER_PRODUCERS = new Set([
       "integrations-webhook/index.ts",
+      "content-engine-worker/index.ts",
     ]);
 
     const offenders = files.filter((f) => {
@@ -651,15 +717,33 @@ describe("jobs/auth authorization boundary (ratchet)", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("records that src/lib/platform is imported by no application code", () => {
+  it("records exactly which application modules import src/lib/platform", () => {
+    // The 2026-09 audit recorded src/lib/platform as a dormant subsystem with no
+    // importer. That changed deliberately with the Atlas Content Engine, which
+    // REUSES the platform content model instead of duplicating it:
+    //
+    //   * content-engine/types.ts  — the content status machine
+    //     (ContentStatus / ContentApprovalStatus) that every package and asset
+    //     row already uses, so the engine cannot invent a second vocabulary;
+    //   * content-engine/copy.ts   — buildLinkedInDraft/slugify, the existing
+    //     LinkedIn draft builder, so distribution copy has ONE implementation.
+    //
+    // The assertion stays an EXACT set: any new importer still fails this test,
+    // because widening the content model is a decision, not an accident.
+    const SANCTIONED_PLATFORM_IMPORTERS = new Set([
+      "lib/content-engine/types.ts",
+      "lib/content-engine/copy.ts",
+    ]);
+
     const srcDir = resolve(HERE, "../../");
     const files = walk(srcDir).filter(
       (f) => (f.endsWith(".ts") || f.endsWith(".tsx")) && !f.includes("/lib/platform/"),
     );
-    const importers = files.filter((f) =>
-      /from\s+"@\/lib\/platform/.test(readFileSync(f, "utf8")),
-    );
-    expect(importers).toEqual([]);
+    const importers = files
+      .filter((f) => /from\s+"@\/lib\/platform/.test(readFileSync(f, "utf8")))
+      .map((f) => f.slice(srcDir.length + 1).replace(/\\/g, "/"))
+      .sort();
+    expect(importers).toEqual([...SANCTIONED_PLATFORM_IMPORTERS].sort());
   });
 });
 

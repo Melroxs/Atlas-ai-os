@@ -24,6 +24,7 @@ import { applyArticleSeo, clearArticleSeo } from "@/lib/blog/seo";
 import { categoryBySlug } from "@/lib/blog/taxonomy";
 import { ctaById } from "@/lib/blog/cta";
 import { ArticleArtwork } from "@/components/blog/ArticleArtwork";
+import { BlogVideoCard } from "@/components/blog/BlogVideoCard";
 
 type State =
   | { kind: "loading" }
@@ -37,10 +38,7 @@ export default function BlogPost() {
 
   useEffect(() => {
     let active = true;
-    if (!slug) {
-      setState({ kind: "missing" });
-      return;
-    }
+    if (!slug) return;
     getPublishedArticleBySlug(slug).then((article) => {
       if (!active) return;
       if (!article) {
@@ -51,8 +49,11 @@ export default function BlogPost() {
 
       const seo = article.seo ?? {};
       const image =
-        (typeof seo.ogImage === "string" && seo.ogImage) || article.socialImage ||
-        article.heroImage || null;
+        (typeof seo.ogImage === "string" && seo.ogImage) ||
+        article.youtubeThumbnailUrl ||
+        article.socialImage ||
+        article.heroImage ||
+        null;
       applyArticleSeo({
         title: article.title,
         description:
@@ -83,7 +84,12 @@ export default function BlogPost() {
     };
   }, [slug]);
 
-  if (state.kind === "loading") {
+  // A route with no slug IS the missing case, so it is DERIVED during render
+  // rather than pushed into state from the effect body: the effect's only job
+  // is to fetch, and it writes state from the response callback.
+  const view: State = slug ? state : { kind: "missing" };
+
+  if (view.kind === "loading") {
     return (
       <main className="mx-auto min-h-screen w-full max-w-3xl px-6 py-16 sm:px-8">
         <p className="text-sm text-muted-foreground">Loading article…</p>
@@ -91,7 +97,7 @@ export default function BlogPost() {
     );
   }
 
-  if (state.kind === "missing") {
+  if (view.kind === "missing") {
     return (
       <main className="mx-auto min-h-screen w-full max-w-3xl px-6 py-16 sm:px-8">
         <h1 className="text-3xl font-semibold tracking-tight text-foreground">
@@ -108,7 +114,7 @@ export default function BlogPost() {
     );
   }
 
-  const { article } = state;
+  const { article } = view;
   const blocks = parseArticleBody(article.body);
   const minutes = article.readingTime ?? readingMinutes(article.body);
   const category = categoryBySlug(article.category);
@@ -155,7 +161,20 @@ export default function BlogPost() {
           ) : null}
         </header>
 
-        {article.heroImage ? (
+        {/*
+          When the package has a published video, the SAME thumbnail that is
+          the video's poster becomes the article hero as a video card that opens
+          the canonical YouTube URL. Articles without a video keep the plain
+          hero artwork they had before.
+        */}
+        {article.youtubeUrl ? (
+          <BlogVideoCard
+            thumbnailUrl={article.youtubeThumbnailUrl ?? article.heroImage}
+            youtubeUrl={article.youtubeUrl}
+            title={article.title}
+            className="mt-8"
+          />
+        ) : article.heroImage ? (
           <ArticleArtwork
             src={article.heroImage}
             alt=""

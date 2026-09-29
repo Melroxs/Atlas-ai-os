@@ -64,6 +64,49 @@ export interface ConnectorDefinition {
 }
 
 export const CONNECTOR_REGISTRY: ConnectorDefinition[] = [
+  // --- Content Engine distribution channels ---------------------------------
+  // Atlas publishes to these. Credentials are stored in public.connections via
+  // the shared OAuth flow (supabase/functions/integrations-oauth) — the same
+  // registry, the same encryption, no second credential system.
+  {
+    id: "youtube",
+    name: "YouTube",
+    category: "other",
+    authType: "oauth2",
+    implementationStatus: "implemented",
+    capabilities: ["read", "write"],
+    requiredEnvVars: ["YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET"],
+    oauthScopes: [
+      "https://www.googleapis.com/auth/youtube.upload",
+      "https://www.googleapis.com/auth/youtube.readonly",
+    ],
+    description:
+      "Publishes a Content Studio package's video, title, description and shared thumbnail to the connected YouTube channel.",
+    setupInstructions:
+      "Create an OAuth 2.0 Client ID in Google Cloud Console with the YouTube Data API v3 enabled, add YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET in project settings, and register https://<your-project>.supabase.co/functions/v1/integrations-oauth/callback as an authorized redirect URI. YouTube upload scopes are sensitive — Google requires app verification before non-test users can authorize.",
+    docsUrl: "https://developers.google.com/youtube/v3/guides/uploading_a_video",
+  },
+  {
+    id: "linkedin",
+    name: "LinkedIn",
+    category: "other",
+    authType: "oauth2",
+    implementationStatus: "implemented",
+    capabilities: ["read", "write"],
+    requiredEnvVars: ["LINKEDIN_CLIENT_ID", "LINKEDIN_CLIENT_SECRET"],
+    oauthScopes: [
+      "openid",
+      "profile",
+      "w_member_social",
+      "w_organization_social",
+      "r_organization_social",
+    ],
+    description:
+      "Publishes the Content Studio package's native LinkedIn post, linking back to the Atlas article.",
+    setupInstructions:
+      "Create an app in the LinkedIn Developer Portal, request the Share on LinkedIn (w_member_social) product, add LINKEDIN_CLIENT_ID / LINKEDIN_CLIENT_SECRET in project settings, and register https://<your-project>.supabase.co/functions/v1/integrations-oauth/callback as an authorized redirect URL. Company-page posting additionally requires the Community Management API and a verified app.",
+    docsUrl: "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api",
+  },
   {
     id: "manual_upload",
     name: "Manual file uploads",

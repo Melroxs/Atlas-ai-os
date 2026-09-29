@@ -46,6 +46,12 @@ const PricingSuccess = lazy(() => import("./pages/PricingSuccess.tsx"));
 const Blog = lazy(() => import("./pages/Blog.tsx"));
 const BlogPost = lazy(() => import("./pages/BlogPost.tsx"));
 const BlogAdmin = lazy(() => import("./pages/BlogAdmin.tsx"));
+const ContentStudio = lazy(() => import("./pages/content/ContentStudio.tsx"));
+const ContentPackageDetail = lazy(
+  () => import("./pages/content/ContentPackageDetail.tsx"),
+);
+const ContentAccounts = lazy(() => import("./pages/content/ContentAccounts.tsx"));
+const ContentSettings = lazy(() => import("./pages/content/ContentSettings.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
 const AuthCallback = lazy(() => import("./pages/AuthCallback.tsx"));
 const AuthPassword = lazy(() => import("./pages/AuthPassword.tsx"));
@@ -530,6 +536,47 @@ createRoot(document.getElementById("root")!).render(
                 element={
                   <ProtectedLayout>
                     <BlogAdmin />
+                  </ProtectedLayout>
+                }
+              />
+              {/* Content Studio — internal marketing (same gate as CRM). */}
+              <Route
+                path="/dashboard/content"
+                element={
+                  <ProtectedLayout>
+                    <RequireInternalAuth section="crm">
+                      <ContentStudio />
+                    </RequireInternalAuth>
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/content/accounts"
+                element={
+                  <ProtectedLayout>
+                    <RequireInternalAuth section="crm">
+                      <ContentAccounts />
+                    </RequireInternalAuth>
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/content/settings"
+                element={
+                  <ProtectedLayout>
+                    <RequireInternalAuth section="crm">
+                      <ContentSettings />
+                    </RequireInternalAuth>
+                  </ProtectedLayout>
+                }
+              />
+              <Route
+                path="/dashboard/content/:id"
+                element={
+                  <ProtectedLayout>
+                    <RequireInternalAuth section="crm">
+                      <ContentPackageDetail />
+                    </RequireInternalAuth>
                   </ProtectedLayout>
                 }
               />

@@ -132,8 +132,36 @@ const PROVIDERS: Record<string, OAuthProviderDefinition> = {
 
 const STATE_TTL_MS = 10 * 60 * 1000;
 
-function redirectUri(request: Request): string {
-  return `${new URL(request.url).origin}/functions/v1/integrations-oauth/callback`;
+// The OAuth callback must be an absolute HTTPS URL registered with the
+// provider. It is deliberately NOT derived from `new URL(request.url)`: the
+// hosted Edge Runtime receives the internal gateway hop over plain HTTP, so the
+// request origin evaluates to `http://…`, which Google rejects with
+// `redirect_uri_mismatch`. The trusted project URL is the only source used
+// here, and a missing/insecure value fails loudly instead of silently falling
+// back to the transport scheme.
+//
+// Every consumer — the authorization URL, the persisted OAuth state and the
+// token exchange — calls this one helper, so the authorize and exchange steps
+// can never disagree about the callback.
+function redirectUri(): string {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")?.trim();
+
+  if (!supabaseUrl) {
+    throw new Error("SUPABASE_URL is not configured on this deployment.");
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(supabaseUrl);
+  } catch {
+    throw new Error("SUPABASE_URL is not a valid URL.");
+  }
+
+  if (parsed.protocol !== "https:") {
+    throw new Error("SUPABASE_URL must use HTTPS for the OAuth callback.");
+  }
+
+  return `${parsed.origin}/functions/v1/integrations-oauth/callback`;
 }
 
 Deno.serve(async (req) => {
@@ -184,7 +212,7 @@ Deno.serve(async (req) => {
 
       const authorize = new URL(definition.authorizeUrl);
       authorize.searchParams.set("client_id", clientId);
-      authorize.searchParams.set("redirect_uri", redirectUri(req));
+      authorize.searchParams.set("redirect_uri", redirectUri());
       authorize.searchParams.set("response_type", "code");
       authorize.searchParams.set("state", state);
       if (definition.scopes.length > 0) authorize.searchParams.set("scope", definition.scopes.join(" "));
@@ -201,7 +229,7 @@ Deno.serve(async (req) => {
         p_organization_id: caller.tenantId,
         p_user_id: caller.userId,
         p_provider: provider,
-        p_redirect_uri: redirectUri(req),
+        p_redirect_uri: redirectUri(),
         p_return_to: typeof body.returnTo === "string" ? body.returnTo : null,
         p_code_verifier: verifier,
         p_scopes: definition.scopes,
@@ -275,7 +303,7 @@ Deno.serve(async (req) => {
     const tokenBody = new URLSearchParams({
       grant_type: "authorization_code",
       code,
-      redirect_uri: consumed.redirect_uri ?? redirectUri(req),
+      redirect_uri: consumed.redirect_uri ?? redirectUri(),
       client_id: clientId,
       client_secret: clientSecret,
     });

@@ -413,10 +413,22 @@ verify_jwt = false
 [functions.integrations-webhook]
 verify_jwt = false
 
-# Browser-called: start/callback of the OAuth flow. The caller is always an
-# authenticated Atlas user; the callback itself is provider-redirected.
+# Browser-called: start/callback of the OAuth flow. The callback is an
+# EXTERNAL Google browser redirect and carries no Supabase JWT, so gateway
+# verification must be OFF or Google can never complete the flow (it returned
+# 401 "Missing authorization header" with verification on).
+#
+# Turning this off does not weaken the flow:
+#   - /start still requires an authenticated Atlas caller. `requireAtlasCaller`
+#     runs before any provider work and rejects anonymous/unauthorized callers;
+#     the owner/admin/manager role check follows. The gateway was only ever a
+#     second lock in front of that, not the lock itself.
+#   - /callback still requires a single-use, TTL-bound, provider-bound and
+#     organization-bound OAuth state (hashed at rest) and refuses to exchange
+#     the authorization code without it. The code is exchanged only after that
+#     state is consumed successfully.
 [functions.integrations-oauth]
-verify_jwt = true
+verify_jwt = false
 
 # Atlas Intelligence article sitemap. Fetched by crawlers, which send no
 # Supabase JWT — so JWT verification is off. This is safe because the function

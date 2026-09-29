@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import logo from "@/assets/logo.svg";
+import { LegalIdentityFooter } from "@/components/legal-identity-footer";
 import {
   ArrowRight,
   BrainCircuit,
@@ -816,9 +817,7 @@ export default function Pilot() {
             <a href="/" className="transition-colors hover:text-foreground">Back to Atlas</a>
             <a href="/auth" className="transition-colors hover:text-foreground">Sign in</a>
           </div>
-          <p className="text-[11px] text-muted-foreground/60">
-            © {new Date().getFullYear()} Atlas. AI Revenue Recovery for contractors.
-          </p>
+          <LegalIdentityFooter tagline="AI Revenue Recovery for contractors." />
         </div>
       </footer>
     </div>

@@ -2,6 +2,7 @@ import { motion, MotionConfig, type Variants } from "framer-motion";
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router";
 import logo from "@/assets/logo.svg";
+import { LegalIdentityFooter } from "@/components/legal-identity-footer";
 import {
   ArrowRight,
   Banknote,
@@ -2230,9 +2231,7 @@ export default function Landing() {
                   </span>
                 ))}
               </nav>
-              <p className="text-[11px] text-muted-foreground/60">
-                © {new Date().getFullYear()} Atlas. AI Operating System for Companies. Starting with insurance restoration.
-              </p>
+              <LegalIdentityFooter tagline="AI Operating System for Companies. Starting with insurance restoration." />
             </div>
           </div>
         </footer>

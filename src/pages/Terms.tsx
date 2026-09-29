@@ -1,4 +1,14 @@
 import LegalLayout from "@/components/legal-layout";
+import {
+  CITY,
+  COUNTRY,
+  COMPANY_REGISTRATION_NUMBER,
+  ENTERPRISE_TYPE,
+  LEGAL_ENTITY_NAME,
+  OPERATOR_STATEMENT,
+  PROVINCE,
+  TRADING_NAME,
+} from "@/lib/legal/company-identity";
 import type { ReactNode } from "react";
 
 /**
@@ -10,6 +20,11 @@ import type { ReactNode } from "react";
  *   - Provider: Stripe (payment processor), per src/lib/billing/*
  * No prices, limits, or features are stated here beyond the plan names —
  * those live in the product's pricing surface and are not repeated here.
+ *
+ * Legal identity: the Service is provided by the CIPC-registered company
+ * (src/lib/legal/company-identity is the single source of truth). Atlas AI OS
+ * is that company's trading name, not a separately incorporated entity. The
+ * SARS tax number is deliberately NOT published here.
  */
 
 function Section({ n, title, children }: { n: string; title: string; children: ReactNode }) {
@@ -51,10 +66,21 @@ export default function Terms() {
         <P>
           These Terms of Service ("Terms") govern your access to and use of Atlas, including the
           Atlas website, applications, software, AI functionality, and related services (collectively,
-          the "Service"). The Service is provided by the Atlas company identified in the Service
-          (the "Company", "we", "us", or "our"). By accessing or using the Service, you agree to be
-          bound by these Terms. If you do not agree to these Terms, you may not access or use the
-          Service.
+          the "Service"). The Service is provided by {LEGAL_ENTITY_NAME}, a {ENTERPRISE_TYPE.toLowerCase()}
+          registered in {COUNTRY} under registration number {COMPANY_REGISTRATION_NUMBER}, which trades
+          as {TRADING_NAME} (the "Company", "we", "us", or "our"). {TRADING_NAME} is a trading name of
+          the Company and is not a separately incorporated entity. By accessing or using the Service,
+          you agree to be bound by these Terms. If you do not agree to these Terms, you may not access
+          or use the Service.
+        </P>
+      </Section>
+
+      <Section n="1b" title="Legal Identity of the Service Provider">
+        <P>{OPERATOR_STATEMENT}</P>
+        <P>
+          Contracts, invoices and receipts for the Service are issued by {LEGAL_ENTITY_NAME} as the
+          supplier, with {TRADING_NAME} shown as the trading name. Where a single combined field is
+          required, the Service is presented as {LEGAL_ENTITY_NAME} t/a {TRADING_NAME}.
         </P>
       </Section>
 
@@ -295,17 +321,14 @@ export default function Terms() {
 
       <Section n="21" title="Governing Law">
         <P>
-          These Terms and your use of the Service are governed by the laws of the jurisdiction of
-          the Company's principal place of business, without regard to conflict-of-law
-          principles, to be confirmed as follows:
+          These Terms and your use of the Service are governed by the laws of the {COUNTRY}, without
+          regard to conflict-of-law principles. The Company's principal place of business is in
+          {PROVINCE}, {CITY}, {COUNTRY}.
         </P>
-        <p className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3 font-medium text-amber-800 dark:text-amber-200">
-          [GOVERNING LAW / JURISDICTION TO BE CONFIRMED]
-        </p>
         <P>
           Any dispute arising out of or relating to these Terms or the Service will be subject to
-          the exclusive jurisdiction of the courts in that jurisdiction, subject to any
-          mandatory provisions of applicable law.
+          the exclusive jurisdiction of the courts of {COUNTRY}, subject to any mandatory provisions
+          of applicable law.
         </P>
       </Section>
 
@@ -318,9 +341,9 @@ export default function Terms() {
           >
             admin@atlas-ai-os.com
           </a>
-          , the public Atlas contact address. If that address is not yet confirmed for legal
-          correspondence, please reach out through the contact information displayed on the Atlas
-          website.
+          , the public Atlas contact address. Correspondence may be addressed to {LEGAL_ENTITY_NAME}
+          t/a {TRADING_NAME}, {CITY}, {PROVINCE}, {COUNTRY}, registration number{" "}
+          {COMPANY_REGISTRATION_NUMBER}.
         </P>
       </Section>
     </LegalLayout>

@@ -447,6 +447,23 @@ verify_jwt = false
 [functions.content-engine-worker]
 verify_jwt = true
 
+# Atlas Content Studio — external media upload. The browser posts a thumbnail or
+# a video that was produced outside Atlas. It authenticates the caller's own JWT
+# and derives their organization from their own membership, so JWT verification
+# is the first gate, not a formality. It writes to storage with the service role
+# ONLY after that authorization has passed, and it never enqueues a publication.
+[functions.content-media-upload]
+verify_jwt = true
+
+# Atlas deterministic thumbnail compositor. It renders an APPROVED overlay
+# string onto a supplied PNG background with an embedded font + inlined resvg
+# WASM — no image model, no OCR, no network. It is a CPU-heavy boundary, so it
+# is never exposed to an anonymous caller: JWT verification stays ON, and
+# `requireAtlasCaller` runs before any work. It writes no storage and publishes
+# nothing.
+[functions.content-thumbnail-compose]
+verify_jwt = true
+
 [edge_runtime]
 enabled = true
 # Supported request policies: `oneshot`, `per_worker`.

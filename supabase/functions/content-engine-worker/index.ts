@@ -64,8 +64,25 @@ import {
   reconnectMessage,
   supportsRefresh,
 } from "./token-lifecycle.ts";
+import {
+  ProviderTimeoutError,
+  resolveArticleTimeoutMs,
+  resolveImageTimeoutMs,
+  withProviderDeadline,
+} from "./provider-deadline.ts";
+import {
+  generateThumbnail,
+  readThumbnailRenderer,
+  THUMBNAIL_CONTENT_TYPE,
+  type ThumbnailRenderer,
+} from "./thumbnail.ts";
+import {
+  resolveThumbnailInputs,
+  type ThumbnailInputAsset,
+} from "./thumbnail-input.ts";
 
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/+$/, "");
 const ATLAS_BLOG_ORIGIN = (Deno.env.get("ATLAS_APP_URL") ?? Deno.env.get("SITE_URL") ??
   "https://atlas-ai-os.com").replace(/\/+$/, "");
 
@@ -100,6 +117,7 @@ interface AssetsRow {
   title: string;
   body: string | null;
   externalUrl: string | null;
+  storagePath: string | null;
   externalId: string | null;
   provider: string | null;
   metadata: Json | null;
@@ -134,6 +152,48 @@ function blogUrlForSlug(slug: string | null): string | null {
 
 function env(key: string): string | null {
   return Deno.env.get(key) ?? null;
+}
+
+/**
+ * Write bytes into Atlas's own storage. Used for generated media so a
+ * short-lived provider URL is never stored as the authoritative asset: the
+ * bytes become an Atlas object that still resolves in a year, and the asset row
+ * points at THAT. The service key is only ever a request header.
+ */
+async function uploadToStorage(input: {
+  bucket: string;
+  path: string;
+  bytes: Uint8Array;
+  contentType: string;
+}): Promise<void> {
+  if (!SUPABASE_URL || !SERVICE_ROLE) {
+    throw new Error("Atlas storage is not configured in this deployment.");
+  }
+  const objectPath = input.path.split("/").map(encodeURIComponent).join("/");
+  const response = await fetch(
+    `${SUPABASE_URL}/storage/v1/object/${encodeURIComponent(input.bucket)}/${objectPath}`,
+    {
+      method: "POST",
+      headers: {
+        apikey: SERVICE_ROLE,
+        authorization: `Bearer ${SERVICE_ROLE}`,
+        "content-type": input.contentType,
+      },
+      // A Blob is the portable binary body across Deno and the DOM lib; a bare
+      // Uint8Array is not an accepted BodyInit in every target. `slice()` copies
+      // into a buffer owned solely by this Blob, so the ArrayBuffer cast is safe
+      // and the request cannot alias a pooled/shared buffer.
+      body: new Blob([input.bytes.slice().buffer as ArrayBuffer], { type: input.contentType }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Atlas storage rejected the upload (HTTP ${response.status}).`);
+  }
+}
+
+/** The durable, publicly readable URL for a stored object. */
+function publicStorageUrl(path: string): string {
+  return `${SUPABASE_URL}/storage/v1/object/public/${path}`;
 }
 
 async function loadPackage(packageId: string): Promise<PackagePayload | null> {
@@ -192,7 +252,26 @@ async function enqueue(input: {
 // ---------------------------------------------------------------------------
 
 const NIM_BASE = env("NVIDIA_NIM_BASE_URL") ?? "https://integrate.api.nvidia.com/v1";
-const NIM_MODEL = env("NVIDIA_NIM_DEFAULT_MODEL") ?? "deepseek-ai/deepseek-v4-pro";
+// The fallback must stay a model that NVIDIA still SERVES at this endpoint.
+//
+// `deepseek-ai/deepseek-v4-pro` (and `-v4-pro-0813`) were retired and answer
+// HTTP 410 Gone. `deepseek-ai/deepseek-v4.1-flash` is still LISTED by
+// `GET /v1/models` but is not being SERVED: the gateway accepts the request and
+// then returns no headers, no status and no body, in the Edge Function's 90s
+// deadline and in local diagnostics out to 120s. That is proven to be specific
+// to that model id, not to Atlas: the same endpoint, key and runtime answer a
+// different model id in well under a second, and NVIDIA's own Playground fails
+// the same way. So the fallback moves to a model that demonstrably answers.
+//
+// `NVIDIA_NIM_DEFAULT_MODEL` remains the single override and still wins when it
+// is set. This is the ONE model-selection site for the Content Engine's article
+// request; nothing else in the worker's request (endpoint, authorization,
+// temperature, max_tokens, messages, streaming, deadline, abort) changes with it.
+const NIM_MODEL = env("NVIDIA_NIM_DEFAULT_MODEL") ?? "nvidia/nemotron-3-super-120b-a12b";
+
+// The article-completion deadline (and its derivation) lives in
+// ./provider-deadline.ts, so the abort path can be executed by the test suite
+// rather than only read.
 
 const ARTICLE_SYSTEM_PROMPT = [
   "You are Atlas's content writer for a US insurance restoration and roofing software company.",
@@ -244,37 +323,64 @@ async function generateArticle(input: {
     input.cta ? `Closing call to action (mention once, naturally): ${input.cta}` : null,
   ].filter(Boolean) as string[];
 
-  const response = await fetch(`${NIM_BASE.replace(/\/+$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-    body: JSON.stringify({
-      model: NIM_MODEL,
-      temperature: 0.4,
-      max_tokens: 4000,
-      messages: [
-        { role: "system", content: ARTICLE_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: [
-            `Topic: ${input.topic}`,
-            ...brandLines,
-            "",
-            "Guidance for this article:",
-            input.instructions,
-          ].join("\n"),
-        },
-      ],
-    }),
+  const timeoutMs = resolveArticleTimeoutMs(env("NIM_ARTICLE_TIMEOUT_MS"));
+  const timeoutFailure = (): { ok: false; message: string } => ({
+    ok: false,
+    message:
+      `The AI provider did not respond within ${Math.round(timeoutMs / 1000)} seconds. ` +
+      "The request was aborted and the article was not written.",
   });
 
-  if (!response.ok) {
-    return {
-      ok: false,
-      message: `The AI provider rejected the request (HTTP ${response.status}). The article was not written.`,
-    };
+  type ChatOutcome = { kind: "json"; payload: Json } | { kind: "http"; status: number };
+  let outcome: ChatOutcome;
+  try {
+    // The whole exchange — headers AND body — is inside the deadline, and the
+    // abort tears the socket down, so the provider stops generating instead of
+    // Atlas merely walking away from a request it already gave up on.
+    outcome = await withProviderDeadline(timeoutMs, async (signal) => {
+      const res = await fetch(`${NIM_BASE.replace(/\/+$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: NIM_MODEL,
+          temperature: 0.4,
+          max_tokens: 4000,
+          messages: [
+            { role: "system", content: ARTICLE_SYSTEM_PROMPT },
+            {
+              role: "user",
+              content: [
+                `Topic: ${input.topic}`,
+                ...brandLines,
+                "",
+                "Guidance for this article:",
+                input.instructions,
+              ].join("\n"),
+            },
+          ],
+        }),
+        signal,
+      });
+      // The rejection status is carried out as a value, not an exception, so
+      // the existing "rejected the request (HTTP n)" outcome is unchanged.
+      if (!res.ok) return { kind: "http", status: res.status } as const;
+      return { kind: "json", payload: (await res.json()) as Json } as const;
+    });
+  } catch (error) {
+    // A missed deadline is an ordinary, observable job outcome. Letting it
+    // escape would be recorded as an INTERNAL, RETRYABLE failure, and every
+    // retry would be another full timeout of provider work.
+    if (error instanceof ProviderTimeoutError) return timeoutFailure();
+    throw error;
   }
 
-  const payload = (await response.json()) as Json;
+  if (outcome.kind === "http") {
+    return {
+      ok: false,
+      message: `The AI provider rejected the request (HTTP ${outcome.status}). The article was not written.`,
+    };
+  }
+  const payload = outcome.payload;
   const choices = Array.isArray(payload.choices) ? (payload.choices as Json[]) : [];
   const message = (choices[0]?.message ?? {}) as Json;
   const raw = typeof message.content === "string" ? message.content : "";
@@ -971,102 +1077,124 @@ async function stepGeneratePackage(job: JobRow): Promise<StepOutcome> {
   return { ok: true, result: { package_id: packageId, title: article.title } };
 }
 
+/** Read a stored object as bytes. Throws when it is absent or unreadable. */
+async function downloadFromStorage(storagePath: string): Promise<Uint8Array> {
+  if (!SUPABASE_URL || !SERVICE_ROLE) {
+    throw new Error("Atlas storage is not configured in this deployment.");
+  }
+  const objectPath = storagePath.split("/").map(encodeURIComponent).join("/");
+  const response = await fetch(`${SUPABASE_URL}/storage/v1/object/${objectPath}`, {
+    headers: { apikey: SERVICE_ROLE, authorization: `Bearer ${SERVICE_ROLE}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Atlas storage rejected the download (HTTP ${response.status}).`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
 async function stepGenerateThumbnail(job: JobRow): Promise<StepOutcome> {
   const packageId = str(job.payload.package_id);
   if (!packageId) {
     return { ok: false, code: "VALIDATION", message: "package_id is required.", retryable: false };
   }
+
+  // WHICH RENDERER, read from the job payload and validated before anything is
+  // generated. A payload with no `renderer` names no renderer at all, so the
+  // generative provider remains the default and this is a no-op for every job
+  // that exists today. An unrecognised or malformed renderer FAILS here rather
+  // than falling through to the provider, because silently substituting a paid
+  // model for a requested deterministic render is exactly the substitution this
+  // system must never make.
+  const renderer = readThumbnailRenderer(job.payload);
+  if (!renderer.ok) {
+    return { ok: false, code: renderer.code, message: renderer.message, retryable: renderer.retryable };
+  }
+
   const view = await loadPackage(packageId);
-  const existing = assetOf(view, "youtube_thumbnail");
-  if (existing?.externalUrl && job.payload.regenerate !== true) {
-    return { ok: true, result: { reused: true, url: existing.externalUrl } };
-  }
 
-  // Atlas has NO verified image-generation endpoint. The AI runtime is wired for
-  // chat completions only, so `/v1/images/generations` + a flux model id would be
-  // a guess. Both the endpoint and the model are therefore EXPLICIT configuration,
-  // and without them this step fails with NOT_CONFIGURED. A thumbnail is never
-  // fabricated to keep a package moving.
-  const key = env("IMAGE_PROVIDER_API_KEY") ?? env("NVIDIA_NIM_API_KEY");
-  const baseUrl = env("IMAGE_PROVIDER_BASE_URL");
-  const model = env("IMAGE_PROVIDER_MODEL");
-  if (!key || !baseUrl || !model) {
-    return {
-      ok: false,
-      code: "NOT_CONFIGURED",
-      message:
-        "No verified image provider is configured. Set IMAGE_PROVIDER_BASE_URL and " +
-        "IMAGE_PROVIDER_MODEL (with IMAGE_PROVIDER_API_KEY) to the image endpoint Atlas should use. " +
-        "No thumbnail was generated.",
-      retryable: false,
+  // A compositor job names its two approved inputs BY REFERENCE. They are
+  // resolved here, against the package this job is already rendering for and
+  // the assets `content_package_get` just returned — never from the payload
+  // itself, so no image bytes ever live in a durable job row and a job cannot
+  // point at another package's inputs.
+  let resolvedRenderer = renderer.renderer;
+  if (resolvedRenderer && resolvedRenderer.kind === "compositor" && "backgroundAssetId" in resolvedRenderer) {
+    const resolved = await resolveThumbnailInputs(
+      {
+        packageId,
+        packageOrganizationId: str(view?.package.organizationId),
+        assets: (view?.assets ?? []) as unknown as ThumbnailInputAsset[],
+        backgroundAssetId: resolvedRenderer.backgroundAssetId,
+        overlayAssetId: resolvedRenderer.overlayAssetId,
+      },
+      { download: downloadFromStorage },
+    );
+    if (!resolved.ok) {
+      return { ok: false, code: resolved.code, message: resolved.message, retryable: false };
+    }
+    resolvedRenderer = {
+      kind: "compositor",
+      backgroundDataUri: resolved.backgroundDataUri,
+      overlayLines: resolved.overlayLines,
+      provenance: { ...resolved.provenance },
     };
   }
 
-  const title = String(view?.package.title ?? "Atlas");
+  const existing = assetOf(view, THUMBNAIL_CONTENT_TYPE);
   const brand = await resolveBrand(job.tenant_id);
-  const prompt = [
-    `Editorial YouTube thumbnail for a B2B article titled "${title}".`,
-    "Clean, professional, high contrast, uncluttered, legible at small sizes.",
-    "No statistics, no charts with numbers, no fabricated logos or awards, no text overlay.",
-    brand.brandVoice ? `Brand voice: ${brand.brandVoice}.` : "",
-    "Restrained palette, documentary photography feel, no clickbait.",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const article = assetOf(view, "blog");
 
-  const response = await fetch(baseUrl.replace(/\/+$/, ""), {
-    method: "POST",
-    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-    body: JSON.stringify({
-      model,
-      prompt,
-      width: 1280,
-      height: 720,
-      n: 1,
-      response_format: "url",
-    }),
-  });
-  if (!response.ok) {
-    return {
-      ok: false,
-      code: "PROVIDER_ERROR",
-      message: `The image provider rejected the request (HTTP ${response.status}).`,
-      retryable: true,
-    };
-  }
-  const payload = (await response.json()) as Json;
-  const list = Array.isArray(payload.data) ? (payload.data as Json[]) : [];
-  const imageUrl = str(list[0]?.url);
-  if (!imageUrl) {
-    return {
-      ok: false,
-      code: "PROVIDER_ERROR",
-      message: "The image provider returned no image.",
-      retryable: true,
-    };
-  }
-
-  await upsertAsset({
-    packageId,
-    contentType: "youtube_thumbnail",
-    assetType: "youtube_thumbnail",
-    title: `${title} — thumbnail`,
-    externalUrl: imageUrl,
-    mimeType: "image/jpeg",
-    provider: "nvidia-nim",
-    status: "drafted",
-  });
-
-  // The same thumbnail becomes the blog hero and the Open Graph image.
-  await rpc("content_set_youtube_presentation", {
-    p_package: packageId,
-    p_youtube_url: null,
-    p_youtube_video_id: null,
-    p_thumbnail_url: imageUrl,
-    p_seo: {},
-  });
-
-  return { ok: true, result: { url: imageUrl } };
+  // The whole render — prompt, provider request, durable storage and the
+  // canonical presentation reference — lives in ./thumbnail.ts so it can be
+  // executed and asserted by the test suite. This step is only its wiring.
+  return generateThumbnail(
+    {
+      packageId,
+      tenantId: job.tenant_id,
+      packageOrganizationId: str(view?.package.organizationId),
+      packageTitle: String(view?.package.title ?? "Atlas"),
+      packageSlug: str(view?.package.slug),
+      imagePrompt: str(view?.package.imagePrompt),
+      articleTitle: article ? str(article.title) : null,
+      brandVoice: brand.brandVoice,
+      existing: existing
+        ? { storagePath: existing.storagePath ?? null, externalUrl: existing.externalUrl ?? null }
+        : null,
+      regenerate: job.payload.regenerate === true,
+      // Replacement consent is separate from `regenerate`, and both are
+      // required before an existing canonical thumbnail may be overwritten.
+      replaceExistingThumbnail: job.payload.replaceExistingThumbnail === true,
+      supersedes: existing
+        ? {
+            assetId: existing._id,
+            provider: existing.provider ?? null,
+            source:
+              typeof existing.metadata?.externalSource === "string"
+                ? (existing.metadata.externalSource as string)
+                : null,
+          }
+        : null,
+      renderer: resolvedRenderer as ThumbnailRenderer | undefined,
+    },
+    {
+      env: { get: (key: string) => env(key) },
+      transport: async ({ url, method, headers, body, signal, wantBytes }) => {
+        const res = await fetch(url, { method, headers, body, signal });
+        // A provider that answers with a short-lived image URL has to be read
+        // as BINARY. `res.text()` would corrupt those bytes, so the byte read is
+        // explicit and only happens when the caller asked for it.
+        if (wantBytes) {
+          const bytes = new Uint8Array(await res.arrayBuffer());
+          return { ok: res.ok, status: res.status, text: "", bytes };
+        }
+        return { ok: res.ok, status: res.status, text: await res.text() };
+      },
+      upload: uploadToStorage,
+      publicUrl: publicStorageUrl,
+      rpc: (name, args) => rpc(name, args),
+      timeoutMs: resolveImageTimeoutMs(env("IMAGE_TIMEOUT_MS")),
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -27,6 +27,17 @@ import type {
   ContentPackageView,
   DestinationProvider,
 } from "./types";
+import {
+  MAX_OVERLAY_LINES,
+  MAX_OVERLAY_LINE_CHARS,
+  THUMBNAIL_INPUT_CONTENT_TYPES,
+  THUMBNAIL_OVERLAY_LINES_KEY,
+} from "./types";
+import {
+  uploadManualMediaToPackage,
+  type MediaUploadResult,
+} from "./media-upload-client";
+import type { ManualMediaKind } from "./media-upload";
 
 function client(): SupabaseClient {
   const supabase = getSupabaseClient();
@@ -131,6 +142,70 @@ export const contentStudio = {
       p_idempotency_key: `content:generate:${created.content_id}`,
     });
     return { packageId: created.content_id };
+  },
+
+  /**
+   * Attach an externally produced media file to this package.
+   *
+   * The browser sends bytes and a filename; the SERVER derives the organization
+   * from the caller's session, the storage path from the verified organization
+   * and package, and the stored MIME type from the file's magic bytes. It binds
+   * the result to the EXISTING `youtube_thumbnail` / `youtube_video` asset, so a
+   * replacement updates that asset in place rather than creating a second one.
+   *
+   * This never publishes anything: the package still has to be reviewed and
+   * approved, exactly as before.
+   */
+  uploadMedia: async (
+    packageId: string,
+    kind: ManualMediaKind,
+    file: File,
+    externalSource?: string | null,
+  ): Promise<MediaUploadResult> =>
+    uploadManualMediaToPackage(packageId, { kind, file, externalSource: externalSource ?? null }),
+
+  /**
+   * Save the APPROVED overlay copy for a package's compositor thumbnail.
+   *
+   * This writes an INPUT asset (`thumbnail_overlay`) and nothing else: no
+   * thumbnail is rendered, nothing is published, and the canonical
+   * `youtube_thumbnail` is not touched. The rows are written in `drafted` /
+   * `pending`, so the worker will refuse to compose from them until a human
+   * approves them through the EXISTING review workflow (`reviewPackage`, i.e.
+   * `content_review_decide`). There is no parallel approval system.
+   */
+  saveThumbnailOverlay: async (
+    packageId: string,
+    lines: string[],
+  ): Promise<{ assetId: string | null; error?: string }> => {
+    const trimmed = lines.map((line) => line.trim()).filter((line) => line.length > 0);
+    if (trimmed.length === 0) {
+      return { assetId: null, error: "Enter at least one overlay line." };
+    }
+    if (trimmed.length > MAX_OVERLAY_LINES) {
+      return { assetId: null, error: `At most ${MAX_OVERLAY_LINES} overlay lines are supported.` };
+    }
+    const tooLong = trimmed.find((line) => line.length > MAX_OVERLAY_LINE_CHARS);
+    if (tooLong !== undefined) {
+      return {
+        assetId: null,
+        error: `Each line is limited to ${MAX_OVERLAY_LINE_CHARS} characters: "${tooLong.slice(0, 24)}…" is too long.`,
+      };
+    }
+    const view = await loadContentPackage(client(), packageId);
+    const asset = await rpcCall(client(), "content_asset_upsert", {
+      p_package: packageId,
+      p_content_type: THUMBNAIL_INPUT_CONTENT_TYPES.overlay,
+      p_asset_type: THUMBNAIL_INPUT_CONTENT_TYPES.overlay,
+      p_title: `${view?.title ?? "Atlas"} — thumbnail overlay`,
+      // Human-readable convenience ONLY. metadata.overlayLines is authoritative.
+      p_body: trimmed.join("\n"),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      p_metadata: { [THUMBNAIL_OVERLAY_LINES_KEY]: trimmed } as any,
+      p_provider: "manual_upload",
+      p_status: "drafted",
+    } as never);
+    return { assetId: String((asset as { _id?: unknown })?._id ?? "") || null };
   },
 
   /**

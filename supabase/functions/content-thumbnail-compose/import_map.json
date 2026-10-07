@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "@resvg/resvg-wasm": "npm:@resvg/resvg-wasm@2.6.2"
+  }
+}

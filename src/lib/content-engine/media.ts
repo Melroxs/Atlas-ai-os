@@ -18,6 +18,7 @@ import type {
   VideoGenerationProvider,
   VideoGenerationRequest,
 } from "./types";
+import { describeProviderError, formatProviderError } from "./provider-error";
 
 // ---------------------------------------------------------------------------
 // Video — PixVerse
@@ -275,6 +276,210 @@ export const IMAGE_PROVIDER_REQUIRED = [
   IMAGE_PROVIDER_MODEL_ENV,
 ];
 
+// ---------------------------------------------------------------------------
+// Image — OpenAI (the configured render path for the canonical thumbnail)
+// ---------------------------------------------------------------------------
+
+/** The image endpoint Atlas renders its canonical thumbnail from. */
+export const OPENAI_IMAGE_BASE_URL = "https://api.openai.com/v1/images/generations";
+/**
+ * The model authorized for that endpoint.
+ *
+ * `gpt-image-2.5-flare` is the current OpenAI image model authorized for the
+ * canonical thumbnail. It is absent from OpenAI's deprecations page, is
+ * documented on `POST /v1/images/generations`, and returns `data[0].b64_json`.
+ * It replaces `dall-e-3`, which OpenAI removed from the API on 2026-05-12.
+ * Pinned in src/lib/content-engine/thumbnail-generation.test.ts so it cannot
+ * drift from the worker's copy.
+ */
+export const OPENAI_IMAGE_MODEL = "gpt-image-2.5-flare";
+/**
+ * Landscape master size, 16:9 exactly.
+ *
+ * OpenAI documents arbitrary `WIDTHxHEIGHT` for the current GPT image models
+ * when each edge is a multiple of 16, the longer:shorter ratio is at most 3:1,
+ * the pixel count is between 655,360 and 8,294,400, and only outputs above
+ * 3,686,400 px (2560x1440) are experimental. 2048x1152 satisfies all of those
+ * and is an OpenAI-documented "2K landscape" size. It replaces the DALL·E 3
+ * value `1792x1024`, which is not a GPT image standard size.
+ */
+export const OPENAI_IMAGE_SIZE = "2048x1152";
+/**
+ * NO output-format parameter is sent.
+ *
+ * `response_format` used to be sent as `b64_json`. OpenAI rejects it on the
+ * current image contract: it is documented for dall-e-2 and dall-e-3 only, is
+ * not supported for the GPT image models, and the live provider answered HTTP
+ * 400 `invalid_request_error / unknown_parameter / response_format`. It is
+ * removed rather than replaced with a guessed parameter.
+ *
+ * Durability is preserved on the RESPONSE side instead: whichever shape comes
+ * back — inline `b64_json`, or a short-lived `url` whose bytes are downloaded
+ * immediately — Atlas ends up holding the real image bytes, so the asset it
+ * stores is its own object and never a URL that expires.
+ */
+
+/** OpenAI's credential may arrive under the generic or the vendor-specific name. */
+export const OPENAI_IMAGE_API_KEY_ENV = "OPENAI_API_KEY";
+
+/**
+ * Base64-encode raw bytes so both provider response shapes converge on the
+ * single `imageBase64` contract the durable-storage path already consumes.
+ * Chunked, so a multi-megabyte image never builds one enormous intermediate
+ * string.
+ */
+export function encodeBase64Bytes(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
+  }
+  return btoa(binary);
+}
+
+/**
+ * The request body for the OpenAI image contract.
+ *
+ * Note the `size` field: OpenAI's images endpoint does NOT accept `width`/
+ * `height`, so the NVIDIA-shaped body in `buildImageRequest` above is a
+ * different contract and cannot be reused here.
+ */
+export function buildOpenAiImageRequest(
+  request: ImageGenerationRequest,
+  model: string,
+): Record<string, unknown> {
+  return {
+    model,
+    prompt: request.prompt,
+    // One image per package: the thumbnail is the shared visual identity, not
+    // a pool of candidates to choose from after the fact.
+    n: 1,
+    size: OPENAI_IMAGE_SIZE,
+  };
+}
+
+export const openAiImageProvider: ImageGenerationProvider = {
+  id: "openai",
+  requiredEnvVars: IMAGE_PROVIDER_REQUIRED,
+
+  isConfigured(env) {
+    return Boolean(
+      (env.get(IMAGE_API_KEY_ENV) ?? env.get(OPENAI_IMAGE_API_KEY_ENV)) &&
+        env.get(IMAGE_PROVIDER_BASE_URL_ENV) &&
+        env.get(IMAGE_PROVIDER_MODEL_ENV),
+    );
+  },
+
+  async generate(request, deps) {
+    const key = deps.env.get(IMAGE_API_KEY_ENV) ?? deps.env.get(OPENAI_IMAGE_API_KEY_ENV);
+    const baseUrl = deps.env.get(IMAGE_PROVIDER_BASE_URL_ENV);
+    const model = deps.env.get(IMAGE_PROVIDER_MODEL_ENV);
+    if (!key || !baseUrl || !model) {
+      return {
+        externalId: "",
+        imageUrl: null,
+        storagePath: null,
+        status: "failed",
+        error:
+          `No verified image provider is configured. Set ${IMAGE_PROVIDER_BASE_URL_ENV} and ` +
+          `${IMAGE_PROVIDER_MODEL_ENV} (and ${IMAGE_API_KEY_ENV}) to the provider Atlas should use. ` +
+          "No thumbnail was generated.",
+      };
+    }
+    const response = await deps.transport({
+      url: baseUrl.replace(/\/+$/, ""),
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: buildOpenAiImageRequest(request, model),
+    });
+    if (!response.ok) {
+      // The rejection body is sanitized, bounded and redacted before it becomes
+      // an error string, so a provider can explain itself without the possibility
+      // of echoing a credential back into application state. See ./provider-error.
+      return {
+        externalId: "",
+        imageUrl: null,
+        storagePath: null,
+        status: "failed",
+        error: formatProviderError(
+          describeProviderError({
+            provider: "openai",
+            status: response.status,
+            body:
+              typeof response.json === "string"
+                ? response.json
+                : JSON.stringify(response.json ?? {}),
+          }),
+        ),
+      };
+    }
+    const payload = (response.json ?? {}) as Record<string, unknown>;
+    const list = Array.isArray(payload["data"]) ? (payload["data"] as Array<Record<string, unknown>>) : [];
+    const first = list[0] ?? null;
+
+    // Shape A — inline base64.
+    const imageBase64 =
+      typeof first?.["b64_json"] === "string" ? (first["b64_json"] as string) : null;
+    if (imageBase64) {
+      return {
+        externalId: `${deps.now()}`,
+        imageUrl: null,
+        storagePath: null,
+        imageBase64,
+        status: "ready",
+      };
+    }
+
+    // Shape B — a short-lived URL. It is downloaded, never stored: a provider
+    // URL expires within the hour, so an asset that kept one would silently rot
+    // while still being treated as authoritative.
+    const remote = typeof first?.["url"] === "string" ? (first["url"] as string) : null;
+    if (!remote) {
+      return {
+        externalId: "",
+        imageUrl: null,
+        storagePath: null,
+        status: "failed",
+        error: "The image provider returned neither image bytes nor an image URL.",
+      };
+    }
+    if (!remote.startsWith("https://")) {
+      return {
+        externalId: "",
+        imageUrl: null,
+        storagePath: null,
+        status: "failed",
+        error: "The image provider returned an image URL that is not an https URL.",
+      };
+    }
+    const download = await deps.transport({
+      url: remote,
+      method: "GET",
+      headers: {},
+      wantBytes: true,
+    });
+    const bytes = download.bytes;
+    if (!download.ok || !bytes || bytes.length === 0) {
+      return {
+        externalId: "",
+        imageUrl: null,
+        storagePath: null,
+        status: "failed",
+        error:
+          "The image provider returned a temporary image URL, but its image bytes could not " +
+          "be downloaded, so no durable thumbnail could be written.",
+      };
+    }
+    return {
+      externalId: `${deps.now()}`,
+      imageUrl: null,
+      storagePath: null,
+      imageBase64: encodeBase64Bytes(bytes),
+      status: "ready",
+    };
+  },
+};
+
 export const nvidiaNimImageProvider: ImageGenerationProvider = {
   id: "nvidia-nim",
   requiredEnvVars: IMAGE_PROVIDER_REQUIRED,
@@ -353,6 +558,7 @@ export const VIDEO_PROVIDERS: VideoGenerationProvider[] = [
 ];
 
 export const IMAGE_PROVIDERS: ImageGenerationProvider[] = [
+  openAiImageProvider,
   nvidiaNimImageProvider,
 ];
 

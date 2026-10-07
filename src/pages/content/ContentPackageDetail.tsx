@@ -28,6 +28,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader, Panel, formatDate } from "@/components/atlas-ui";
 import { contentStudio } from "@/lib/content-engine/studio-api";
 import { BlogVideoCard } from "@/components/blog/BlogVideoCard";
+import MediaUploadPanel from "@/components/content/MediaUploadPanel";
+import ThumbnailInputsPanel from "@/components/content/ThumbnailInputsPanel";
+import { getSupabaseClient } from "@/lib/supabase";
+import {
+  VIDEO_BUCKET as CONTENT_MEDIA_BUCKET,
+  mediaObjectKey,
+  type ManualMediaKind,
+} from "@/lib/content-engine/media-upload";
+import type { MediaUploadResult } from "@/lib/content-engine/media-upload-client";
 import {
   DESTINATION_LABEL,
   type ContentAssetRecord,
@@ -104,6 +113,43 @@ export default function ContentPackageDetail() {
     };
   }, [load, apply]);
 
+  // A short-lived signed URL for the private video, minted with the CALLER'S
+  // OWN session so the tenant-scoped storage policy decides whether they may
+  // read it — no service credential and no public bucket. A thumbnail needs no
+  // signature: it is public publication artwork served from blog-media.
+  //
+  // Atlas stores a media path WITH its bucket prefix (the same convention the
+  // generated thumbnail uses, and the one its public URL is built from), while
+  // the storage client is already scoped to a bucket and therefore expects the
+  // object key alone. The prefix is stripped here rather than at write time so
+  // the stored value stays interchangeable with a generated asset's.
+  const videoStoragePath = view?.assets.find((a) => a.contentType === "youtube_video")?.storagePath ?? null;
+  const videoObjectKey = videoStoragePath
+    ? mediaObjectKey(videoStoragePath, "video")
+    : null;
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    if (!videoObjectKey) {
+      setVideoPreviewUrl(null);
+      return;
+    }
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    void supabase.storage
+      .from(CONTENT_MEDIA_BUCKET)
+      .createSignedUrl(videoObjectKey, 60 * 30)
+      .then(({ data }) => {
+        if (active) setVideoPreviewUrl(data?.signedUrl ?? null);
+      })
+      .catch(() => {
+        if (active) setVideoPreviewUrl(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [videoObjectKey]);
+
   const run = useCallback(
     async (key: string, action: () => Promise<unknown>, message: string) => {
       setBusy(key);
@@ -172,6 +218,18 @@ export default function ContentPackageDetail() {
       () => contentStudio.regenerate(view.packageId, kind),
       `Queued regeneration of the ${kind}. Existing assets are updated in place, not duplicated.`,
     );
+
+  /**
+   * Attach an externally produced file to this package.
+   *
+   * The upload never publishes: it only makes the media available. The package
+   * still has to be reviewed and approved, and the success message says so.
+   */
+  const uploadMedia = async (kind: ManualMediaKind, file: File): Promise<MediaUploadResult> => {
+    const result = await contentStudio.uploadMedia(view.packageId, kind, file);
+    apply(await load());
+    return result;
+  };
 
   const queue = (provider: DestinationProvider) =>
     run(
@@ -421,13 +479,28 @@ export default function ContentPackageDetail() {
                 {video.provider && (
                   <p className="text-xs text-muted-foreground">Provider: {video.provider}</p>
                 )}
+                {video.storagePath && (
+                  <p className="text-xs text-muted-foreground">
+                    Stored in Atlas media: {video.storagePath}
+                  </p>
+                )}
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">
-                No video has been rendered. Video generation requires a configured provider.
+                No video is attached yet. Upload a rendered file below, or generate one with a
+                configured provider.
               </p>
             )}
           </Panel>
+
+          <MediaUploadPanel
+            kind="video"
+            asset={video}
+            previewUrl={videoPreviewUrl}
+            onUpload={uploadMedia}
+            onUploaded={() => undefined}
+            disabled={busy !== null}
+          />
         </TabsContent>
 
         <TabsContent value="thumbnail" className="mt-4 space-y-4">
@@ -457,9 +530,56 @@ export default function ContentPackageDetail() {
                 className="w-full max-w-xl rounded-lg border border-border/60"
               />
             ) : (
-              <p className="text-sm text-muted-foreground">No thumbnail has been generated yet.</p>
+              <p className="text-sm text-muted-foreground">
+                No thumbnail has been generated or uploaded yet.
+              </p>
             )}
           </Panel>
+
+          <MediaUploadPanel
+            kind="thumbnail"
+            asset={thumbnail}
+            previewUrl={thumbnailUrl}
+            onUpload={uploadMedia}
+            onUploaded={() => undefined}
+            disabled={busy !== null}
+          />
+
+          <ThumbnailInputsPanel
+            view={view}
+            disabled={busy !== null}
+            busy={busy}
+            onUploadBackground={(file) =>
+              run(
+                "upload-background",
+                async () => {
+                  await contentStudio.uploadMedia(view.packageId, "background", file);
+                },
+                "Background uploaded. Approve it before the compositor may use it.",
+              )
+            }
+            onSaveOverlay={(lines) =>
+              run(
+                "save-overlay",
+                async () => {
+                  const result = await contentStudio.saveThumbnailOverlay(view.packageId, lines);
+                  if (result.error) throw new Error(result.error);
+                },
+                "Overlay copy saved. Approve it before the compositor may use it.",
+              )
+            }
+            onApprove={(assetId) =>
+              // The EXISTING admin review action — this panel does not create a
+              // second approval path.
+              run(
+                `approve-input-${assetId}`,
+                async () => {
+                  await contentStudio.review(assetId, "approved");
+                },
+                "Input approved. The compositor may now use it.",
+              )
+            }
+          />
         </TabsContent>
 
         <TabsContent value="linkedin" className="mt-4 space-y-4">

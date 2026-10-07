@@ -45,6 +45,34 @@ export const ASSET_CONTENT_TYPE: Record<AssetType, string> = {
   linkedin_post: "linkedin_post",
 };
 
+/**
+ * The compositor's two INPUT content types.
+ *
+ * Deliberately NOT part of `ASSET_TYPES`: that union is the OUTPUT vocabulary
+ * (what a package publishes). These are inputs a human supplies and a renderer
+ * consumes, and neither is ever a publish destination. Each occupies its own
+ * slot in the package's `(parentContentId, contentType, assetType)` uniqueness
+ * index, which is what keeps an approved background from ever becoming an
+ * upsert target for the canonical `youtube_thumbnail` asset.
+ *
+ * Mirrored in `supabase/functions/content-engine-worker/thumbnail-input.ts`,
+ * because a Supabase Edge bundle cannot import application code. A drift test
+ * pins the two to each other.
+ */
+export const THUMBNAIL_INPUT_CONTENT_TYPES = {
+  background: "thumbnail_background",
+  overlay: "thumbnail_overlay",
+} as const;
+
+export type ThumbnailInputKind = keyof typeof THUMBNAIL_INPUT_CONTENT_TYPES;
+
+/** The metadata key that carries the authoritative, ordered overlay copy. */
+export const THUMBNAIL_OVERLAY_LINES_KEY = "overlayLines";
+
+/** Compositor overlay ceilings. Mirrored and drift-pinned on the worker side. */
+export const MAX_OVERLAY_LINES = 6;
+export const MAX_OVERLAY_LINE_CHARS = 120;
+
 /** Which destination each asset type is published to (null = not published). */
 export const ASSET_DESTINATION: Record<AssetType, DestinationProvider | null> = {
   blog_article: "blog",
@@ -256,6 +284,12 @@ export interface PublishTransportInput {
    * server-side and forwards it. The browser never sees the file or the token.
    */
   media?: { url: string; contentType?: string };
+  /**
+   * Read the response as raw bytes instead of text. A provider may answer an
+   * image request with a short-lived URL whose payload is binary; decoding that
+   * as text would corrupt the image, so the byte read is explicit.
+   */
+  wantBytes?: boolean;
 }
 
 export interface PublishTransportResponse {
@@ -269,6 +303,8 @@ export interface PublishTransportResponse {
    * not carry one — LinkedIn returns the post URN as `x-restli-id`.
    */
   externalId?: string;
+  /** Raw bytes, present only when the request set `wantBytes`. */
+  bytes?: Uint8Array;
 }
 
 export interface PublishTransport {
@@ -331,6 +367,13 @@ export interface ImageGenerationResult {
   externalId: string;
   imageUrl: string | null;
   storagePath: string | null;
+  /**
+   * Raw base64 image bytes, when the provider returns them inline instead of a
+   * URL. This is what makes a render DURABLE: a provider URL is typically
+   * short-lived, so Atlas must be able to receive the image itself, write it to
+   * its own storage, and treat only that stored object as authoritative.
+   */
+  imageBase64?: string | null;
   status: "ready" | "failed";
   error?: string;
 }

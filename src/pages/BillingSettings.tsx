@@ -2,10 +2,11 @@
  * Billing settings — the authoritative billing view.
  *
  * Every value on this page comes from Atlas (billing_get_state, written by the
- * verified stripe-webhook). The page never infers paid status from a URL
- * parameter, localStorage, frontend state or a successful navigation, and it
- * never contacts Stripe directly: "Manage Billing" asks the
- * stripe-customer-portal Edge Function for a portal URL.
+ * verified provider webhook — stripe-webhook or paystack-webhook). The page
+ * never infers paid status from a URL parameter, localStorage, frontend state
+ * or a successful navigation, and it never contacts a payment provider
+ * directly: "Manage Billing" asks the stripe-customer-portal Edge Function
+ * for a portal URL (Stripe subscriptions; Paystack self-service is Phase 2).
  */
 
 import { useState } from "react";
@@ -36,7 +37,7 @@ interface BillingStateShape {
   cancelAt?: number | null;
   cancelAtPeriodEnd?: boolean;
   canceledAt?: number | null;
-  accessSource?: "stripe" | "complimentary" | null;
+  accessSource?: "stripe" | "paystack" | "complimentary" | null;
   complimentary?: { expires_at?: number | null; reason?: string } | null;
 }
 
@@ -76,14 +77,14 @@ function statusLabel(state?: BillingStateShape | null): string {
 function paymentIssueLabel(state?: BillingStateShape | null): string | null {
   switch (state?.paymentStatus) {
     case "failed":
-      return "The last payment failed. Stripe will retry — update your card in Manage Billing to avoid interruption.";
+      return "The last payment failed. Your payment provider will retry — update your card in Manage Billing to avoid interruption.";
     case "requires_action":
       return "Your bank needs to authenticate the last payment. Finish it in Manage Billing.";
     case "pending":
       return "A payment is pending confirmation.";
     default:
       return state?.status === "past_due"
-        ? "A payment is overdue. Stripe is retrying — update your card in Manage Billing."
+        ? "A payment is overdue. Your payment provider is retrying — update your card in Manage Billing."
         : null;
   }
 }
@@ -145,6 +146,11 @@ export default function BillingSettings() {
 
   const complimentary = state?.accessSource === "complimentary";
   const hasBillingProfile = Boolean(state?.providerCustomerId);
+  const provider = state?.provider === "paystack" ? "paystack" : "stripe";
+  // Only Stripe subscriptions can open the Stripe Billing Portal. A Paystack
+  // organization must never be sent to the Stripe portal function with its
+  // Paystack customer id (Paystack self-service management is Phase 2).
+  const canOpenPortal = provider === "stripe" && hasBillingProfile;
   const billingInterval = state?.billingInterval ?? null;
   const issue = paymentIssueLabel(state);
 
@@ -238,7 +244,9 @@ export default function BillingSettings() {
           <div className="mt-6 space-y-3 text-sm">
             <div className="flex justify-between text-muted-foreground">
               <span>Billing provider</span>
-              <span className="text-foreground font-medium">Stripe</span>
+              <span className="text-foreground font-medium">
+                {provider === "paystack" ? "Paystack" : "Stripe"}
+              </span>
             </div>
 
             {billingInterval && (
@@ -305,7 +313,7 @@ export default function BillingSettings() {
           )}
 
           <div className="mt-6 flex flex-wrap gap-3">
-            {hasBillingProfile && (
+            {canOpenPortal && (
               <Button
                 size="sm"
                 onClick={handleManageBilling}
@@ -319,6 +327,12 @@ export default function BillingSettings() {
                 )}
                 Manage Billing
               </Button>
+            )}
+            {provider === "paystack" && hasBillingProfile && (
+              <p className="text-sm text-muted-foreground">
+                Self-service billing management for Paystack subscriptions is coming
+                soon — contact the Atlas team to change or cancel your plan.
+              </p>
             )}
             <Button variant="outline" size="sm" asChild>
               <a href="/dashboard/settings">Back to settings</a>
@@ -341,20 +355,22 @@ export default function BillingSettings() {
             About Atlas billing
           </h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Atlas subscriptions are billed through Stripe. Payment processing,
-            invoices, receipts, tax handling, plan changes and cancellations are
-            handled in the Stripe billing portal, opened from Manage Billing.
+            {provider === "paystack"
+              ? "Atlas subscriptions are billed through Paystack. Payment processing, invoices and receipts are handled by Paystack; plan changes and cancellations are arranged with the Atlas team."
+              : "Atlas subscriptions are billed through Stripe. Payment processing, invoices, receipts, tax handling, plan changes and cancellations are handled in the Stripe billing portal, opened from Manage Billing."}
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            Atlas stores only the Stripe customer and subscription identifiers and
-            the billing state needed to resolve access. No card details are ever
-            stored in Atlas, and paid access is granted only after Stripe confirms
-            the subscription through a verified webhook.
+            Atlas stores only the payment provider's customer and subscription
+            identifiers and the billing state needed to resolve access. No card
+            details are ever stored in Atlas, and paid access is granted only after
+            the payment provider confirms the subscription through a verified
+            webhook.
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
             Atlas subscriptions bill at the plan price on the selected billing
-            interval — no trial, no setup fee. You can cancel at any time from the
-            billing portal and keep access until the end of the period you paid for.
+            interval — no trial, no setup fee. You can cancel at any time
+            {provider === "stripe" ? " from the billing portal" : " by contacting the Atlas team"} and
+            keep access until the end of the period you paid for.
           </p>
         </div>
 

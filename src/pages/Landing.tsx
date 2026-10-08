@@ -695,7 +695,7 @@ export default function Landing() {
   const toAuth = () => navigate("/auth");
 
   // The generic "Sign Up" CTAs lead into the landing pricing section; the plan
-  // buttons themselves enter the real Stripe checkout flow.
+  // buttons themselves enter the real hosted checkout flow.
   const toPricing = () => {
     document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
@@ -704,10 +704,11 @@ export default function Landing() {
   const annualSavingsPercent = allPricingPlans("annual")[0]?.annualSavingsPercent ?? null;
 
   /**
-   * Enter the existing Stripe checkout flow for the selected plan + interval.
+   * Enter the existing hosted checkout flow for the selected plan + interval.
    *
-   * Signed-in users go straight to /checkout (which calls the stripe-checkout
-   * Edge Function). Signed-out users are sent through /auth with the selected
+   * Signed-in users go straight to /checkout (which calls the provider-neutral
+   * billing-checkout Edge Function; the SERVER picks Stripe or Paystack).
+   * Signed-out users are sent through /auth with the selected
    * plan, interval and a returnTo so the choice survives sign-up. The browser
    * only ever carries a plan slug and an interval — never a price or an amount.
    */
@@ -2098,7 +2099,7 @@ export default function Landing() {
             </div>
 
             <p className="mt-8 text-center text-xs text-muted-foreground">
-              Payments are processed securely by Stripe. Subscriptions renew on the interval you
+              Payments are processed securely by our payment provider. Subscriptions renew on the interval you
               choose until you cancel.{" "}
               <Link
                 to="/pricing"

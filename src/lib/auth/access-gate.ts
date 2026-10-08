@@ -80,11 +80,12 @@ export interface AccessProfileLike {
   /**
    * Server-computed source of the effective access decision:
    *   'stripe'         — active Stripe subscription (active/trialing)
+   *   'paystack'       — active Paystack subscription (active/trialing)
    *   'complimentary'  — active complimentary grant
    *   null             — no active entitlement
    * Never supplied by the client; comes from users_current_user (definer).
    */
-  access_source?: "stripe" | "complimentary" | null;
+  access_source?: "stripe" | "paystack" | "complimentary" | null;
   /**
    * The active complimentary grant (server-computed) when access_source is
    * 'complimentary'. Exposed only for display (expiration, reason).
@@ -179,14 +180,14 @@ export function evaluateAtlasAccess(
 
 /**
  * The server-computed source of effective access:
- * 'stripe' | 'complimentary' | null. UI-only — authorization comes from
- * evaluateAtlasAccess, never from this value.
+ * 'stripe' | 'paystack' | 'complimentary' | null. UI-only — authorization
+ * comes from evaluateAtlasAccess, never from this value.
  */
 export function getEffectiveAccessSource(
   profile: AccessProfileLike | null | undefined,
-): "stripe" | "complimentary" | null {
+): "stripe" | "paystack" | "complimentary" | null {
   const s = profile?.access_source;
-  return s === "stripe" || s === "complimentary" ? s : null;
+  return s === "stripe" || s === "paystack" || s === "complimentary" ? s : null;
 }
 
 /** True when the caller's effective access comes from a complimentary grant. */

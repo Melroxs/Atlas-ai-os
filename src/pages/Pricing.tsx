@@ -31,7 +31,7 @@ const POPULAR_PLAN: InternalPlan = "ATLAS_GROWTH";
 const FAQ = [
   {
     q: "Can I switch plans later?",
-    a: "Yes. Use Manage Billing in Atlas to open the Stripe billing portal, where you can upgrade or downgrade your plan. The change is reflected in Atlas automatically once Stripe confirms it.",
+    a: "Yes. Use Manage Billing in Atlas to open your billing portal, where you can upgrade or downgrade your plan. The change is reflected in Atlas automatically once your payment provider confirms it.",
   },
   {
     q: "Is there a free trial?",
@@ -39,7 +39,7 @@ const FAQ = [
   },
   {
     q: "What payment methods do you accept?",
-    a: "Payments are processed securely by Stripe. All major credit and debit cards are supported, along with the local payment methods Stripe offers in your region.",
+    a: "Payments are processed securely by our payment provider. All major credit and debit cards are supported, along with the local payment methods your provider offers in your region.",
   },
   {
     q: "What happens when my subscription renews?",
@@ -47,7 +47,7 @@ const FAQ = [
   },
   {
     q: "How do I cancel or update my card?",
-    a: "Open the Stripe billing portal from Manage Billing in your Atlas billing settings — cancellation, payment method updates and invoices are handled there.",
+    a: "Open the billing portal from Manage Billing in your Atlas billing settings — payment method updates and invoices are handled there. For Paystack-billed subscriptions, cancellation and plan changes are arranged with the Atlas team.",
   },
 ];
 

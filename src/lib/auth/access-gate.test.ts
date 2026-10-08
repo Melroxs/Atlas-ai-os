@@ -316,10 +316,13 @@ describe("canAssignAdminRoles", () => {
 // Effective-access source helpers (server-computed; UI display only)
 // ---------------------------------------------------------------------------
 describe("getEffectiveAccessSource / hasComplimentaryAccess", () => {
-  it("reports stripe / complimentary / null from the server-computed field", () => {
+  it("reports stripe / paystack / complimentary / null from the server-computed field", () => {
     expect(
       getEffectiveAccessSource({ access_source: "stripe" }),
     ).toBe("stripe");
+    expect(
+      getEffectiveAccessSource({ access_source: "paystack" }),
+    ).toBe("paystack");
     // A legacy Paddle source is no longer a paid source: fail closed.
     expect(
       getEffectiveAccessSource({ access_source: "paddle" as never }),

@@ -67,8 +67,11 @@ export function resolveBillingState(
     canceledAt: subscription?.canceled_at ?? null,
     canUsePaidFeatures: isActive,
     // `accessSource` is computed server-side (billing_get_state) because only
-    // the database can see complimentary grants.
-    accessSource: isActive ? "stripe" : null,
+    // the database can see complimentary grants. The provider-scoped default
+    // below is display-only and follows the stored row's provider.
+    accessSource: isActive
+      ? (subscription?.billing_provider === "paystack" ? "paystack" : "stripe")
+      : null,
   };
 }
 

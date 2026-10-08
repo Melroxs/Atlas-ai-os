@@ -390,6 +390,11 @@ allow_dynamic_registration = false
 #                             Supabase JWT; the function re-checks it and
 #                             re-authorizes the organization membership).
 #   stripe-customer-portal  — verify_jwt = true (same authorization chain).
+#   billing-checkout        — verify_jwt = true: the provider-neutral entry
+#                             the browser posts to; it dispatches server-side
+#                             to the Stripe or Paystack handler based on
+#                             ATLAS_BILLING_PROVIDER (the browser never
+#                             selects the provider).
 #   stripe-webhook          — verify_jwt = false: Stripe does NOT send a
 #                             Supabase JWT. The function verifies Stripe's own
 #                             `Stripe-Signature` header (HMAC-SHA256 over
@@ -397,7 +402,17 @@ allow_dynamic_registration = false
 #                             instead, then runs with the service role. Never
 #                             deploy it with JWT verification — and never
 #                             deploy it without signature verification.
+#   paystack-webhook        — verify_jwt = false: Paystack does NOT send a
+#                             Supabase JWT. The function verifies Paystack's
+#                             `x-paystack-signature` header (HMAC SHA512 of
+#                             the RAW body with PAYSTACK_SECRET_KEY) instead,
+#                             then runs with the service role. Same rule:
+#                             never deploy it with JWT verification or
+#                             without signature verification.
 # ---------------------------------------------------------------------------
+
+[functions.billing-checkout]
+verify_jwt = true
 
 [functions.stripe-checkout]
 verify_jwt = true
@@ -406,6 +421,9 @@ verify_jwt = true
 verify_jwt = true
 
 [functions.stripe-webhook]
+verify_jwt = false
+
+[functions.paystack-webhook]
 verify_jwt = false
 
 # Integration platform: the provider calls this, so it authenticates with its

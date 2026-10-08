@@ -1,21 +1,23 @@
 /**
  * Checkout page — ensures the Atlas organization exists, then starts a
- * server-side Stripe Checkout Session and redirects the customer to Stripe.
+ * server-side hosted checkout session and redirects the customer to the
+ * payment provider (Stripe or Paystack — chosen SERVER-side).
  *
  * Flow:
  *   1. User arrives from /auth or /pricing with ?plan=starter&interval=month
  *   2. Page ensures a tenant exists via tenants_init_for_checkout (idempotent)
- *   3. Calls the `stripe-checkout` Edge Function with plan + interval ONLY.
- *      The server authenticates the user, authorizes the organization, resolves
- *      the Stripe Price id from the canonical catalog and creates the Checkout
- *      Session. The browser never sends a price, an amount or a currency.
- *   4. Redirects to the Stripe-hosted checkout URL.
- *   5. Stripe returns the customer to /pricing-success, which polls the
+ *   3. Calls the provider-neutral `billing-checkout` Edge Function with plan +
+ *      interval ONLY. The server authenticates the user, authorizes the
+ *      organization, selects the billing provider, resolves the price from
+ *      the canonical catalog and creates the hosted checkout session. The
+ *      browser never sends a price, an amount, a currency or a provider.
+ *   4. Redirects to the hosted checkout URL.
+ *   5. The provider returns the customer to /pricing-success, which polls the
  *      server-authored billing state. The redirect itself is NEVER proof of
- *      payment — access is granted only by the verified stripe-webhook.
+ *      payment — access is granted only by the verified provider webhook.
  *
  * Handling of the awkward cases:
- *   - user closes/cancels Stripe checkout → Stripe redirects to /pricing
+ *   - user closes/cancels hosted checkout → provider redirects to /pricing
  *   - network failure / server error → inline error with retry
  *   - duplicate click → a single attempt per mount (startedRef) plus the
  *     server's bucketed idempotency key and its active-subscription check
@@ -75,7 +77,7 @@ export default function Checkout() {
         return;
       }
 
-      // --- Phase 2: server-side Stripe Checkout Session ---
+      // --- Phase 2: server-side hosted checkout session ---
       setPhase("checkout");
       const supabase = getSupabaseClient();
       if (!supabase) {
@@ -109,7 +111,7 @@ export default function Checkout() {
         return;
       }
 
-      // --- Phase 3: hand off to Stripe's hosted checkout ---
+      // --- Phase 3: hand off to the hosted payment page ---
       setPhase("redirecting");
       window.location.assign(result.url);
     } catch {
@@ -151,14 +153,14 @@ export default function Checkout() {
                 ? "Setting up your organization…"
                 : phase === "checkout"
                   ? "Preparing your secure checkout…"
-                  : "Taking you to Stripe…"}
+                  : "Taking you to our secure payment page…"}
             </p>
             <p className="text-xs text-muted-foreground">
               {phase === "init"
                 ? "Creating your Atlas workspace and team ownership."
                 : phase === "checkout"
-                  ? "Payments are processed securely by Stripe."
-                  : "Complete your payment on Stripe's secure page."}
+                  ? "Payments are processed securely by our payment provider."
+                  : "Complete your payment on the secure payment page."}
             </p>
           </div>
         </div>

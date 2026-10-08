@@ -9,14 +9,16 @@
 //      resolves the Stripe Price id and the browser can never send an amount,
 //      a currency or a price id.
 //
-//   2. CHECKOUT REQUEST — `startCheckout()` calls the `stripe-checkout` Edge
-//      Function with plan + interval ONLY and returns the hosted Stripe
-//      Checkout URL to navigate to.
+//   2. CHECKOUT REQUEST — `startCheckout()` calls the provider-neutral
+//      `billing-checkout` Edge Function with plan + interval ONLY and returns
+//      the hosted checkout URL (Stripe or Paystack) to navigate to. The
+//      provider is chosen SERVER-SIDE (ATLAS_BILLING_PROVIDER); the browser
+//      never selects, sends or observes it.
 //
 // The browser NEVER:
-//   * creates a Stripe subscription
-//   * chooses or sends a price id, amount or currency
-//   * holds a Stripe secret key
+//   * creates a subscription
+//   * chooses or sends a price id, amount, currency or provider
+//   * holds a payment-provider secret key
 //   * treats the post-checkout redirect as proof of payment
 //
 // Access is granted only after the verified `stripe-webhook` writes billing
@@ -159,7 +161,7 @@ export type CheckoutStartResult =
 export interface StartCheckoutInput extends CheckoutRequest {
   /** Supabase access token of the signed-in user. */
   accessToken: string;
-  /** Base URL of the Supabase project (…/functions/v1/stripe-checkout). */
+  /** Base URL of the Supabase project (…/functions/v1/billing-checkout). */
   functionsBaseUrl: string;
   /** Public anon key (sent as `apikey`, matching every other Edge call). */
   anonKey?: string;
@@ -181,9 +183,10 @@ function friendlyMessage(status: number, serverMessage: string | null): string {
 }
 
 /**
- * Start hosted Stripe Checkout for the caller's organization.
+ * Start hosted checkout for the caller's organization (provider chosen
+ * server-side).
  *
- * Sends plan + interval only. Returns the Stripe-hosted URL to navigate to —
+ * Sends plan + interval only. Returns the hosted URL to navigate to —
  * never a secret, never a subscription, never an entitlement.
  */
 export async function startCheckout(input: StartCheckoutInput): Promise<CheckoutStartResult> {
@@ -205,18 +208,35 @@ export async function startCheckout(input: StartCheckoutInput): Promise<Checkout
   };
   if (input.anonKey) headers.apikey = input.anonKey;
 
-  let response: Response;
-  try {
-    response = await doFetch(`${base}/functions/v1/stripe-checkout`, {
+  const requestBody = JSON.stringify({
+    plan: normalized.slug,
+    interval: normalized.interval,
+    tenantId: input.tenantId ?? undefined,
+    companyName: input.companyName ?? undefined,
+  });
+  const postTo = (entry: string): Promise<Response> =>
+    doFetch(`${base}/functions/v1/${entry}`, {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        plan: normalized.slug,
-        interval: normalized.interval,
-        tenantId: input.tenantId ?? undefined,
-        companyName: input.companyName ?? undefined,
-      }),
+      body: requestBody,
     });
+
+  let response: Response;
+  try {
+    // Provider-neutral entry: the SERVER decides stripe vs paystack.
+    response = await postTo("billing-checkout");
+    if (response.status === 404) {
+      // Deploy-order safety: billing-checkout is a new entry point. Until it
+      // is deployed, retry the original stripe-checkout entry so the
+      // production Stripe flow keeps working. This is NOT a provider choice:
+      // stripe-checkout serves only the Stripe handler, and everything the
+      // server validates (plan, interval, price, provider) is unchanged.
+      try {
+        response = await postTo("stripe-checkout");
+      } catch {
+        // Network failure on the fallback: keep the original 404 result.
+      }
+    }
   } catch {
     return {
       ok: false,
@@ -274,7 +294,8 @@ export interface OpenPortalInput {
 }
 
 /**
- * Ask the server for a Stripe Billing Portal URL.
+ * Ask the server for a Stripe Billing Portal URL (Stripe subscriptions only —
+ * Paystack self-service management is Phase 2).
  *
  * No customer id is sent — the server resolves it from Atlas storage after
  * re-authorizing the caller. The portal itself is Stripe's; Atlas never

@@ -1,12 +1,17 @@
 /**
- * Pricing success page — shown when Stripe redirects back after checkout.
+ * Pricing success page — shown when the payment provider redirects back
+ * after checkout.
  *
  * We NEVER assume payment succeeded just because the user returned: the page
- * polls Atlas's server-side billing state (written by the verified Stripe
- * webhook) until the subscription appears. Possible outcomes:
+ * polls Atlas's server-side billing state (written by the verified provider
+ * webhook — stripe-webhook or paystack-webhook) until the subscription
+ * appears. Possible outcomes:
  *   - "Activating your Atlas subscription…"  (webhook still in flight)
  *   - "Your Atlas trial is active."          (trialing / active confirmed)
  *   - "We couldn't confirm your subscription yet." (stalled / not active)
+ *
+ * The provider callback query parameters (session_id / reference / trxref)
+ * are never read as proof of payment.
  *
  * This page is PUBLIC — it renders for both authenticated and unauthenticated
  * users. The dashboard auto-redirect only appears when an active session
@@ -58,11 +63,11 @@ export type CheckoutConfirmationStatus = "activating" | "confirmed" | "unconfirm
  * state.
  *
  * The success page never grants access directly: confirmation is ONLY true
- * when the verified Stripe webhook has written an active/trialing
+ * when the verified provider webhook has written an active/trialing
  * subscription that `billing_get_state` reports back. A redirect back from
- * Stripe (including its session_id query parameter), or any client-side shape
- * ({plan, status}) that lacks the server `isActive` flag, is never treated as
- * payment success.
+ * the payment provider (with or without query parameters), or any client-side
+ * shape ({plan, status}) that lacks the server `isActive` flag, is never
+ * treated as payment success.
  */
 export function resolveCheckoutConfirmation(
   billing: { isActive?: boolean } | null | undefined,
@@ -181,8 +186,8 @@ export default function PricingSuccess() {
               </h1>
               <p className="text-muted-foreground leading-relaxed">
                 {showActivating
-                  ? "Stripe is confirming your payment and Atlas is waiting for the verified webhook before it activates your plan. This usually takes a few seconds — hold tight."
-                  : "Your payment may still be processing. Refresh in a moment, or contact support if this persists. No access is granted until Stripe's webhook is verified."}
+                  ? "We're confirming your payment with your payment provider, and Atlas waits for the verified webhook before activating your plan. This usually takes a few seconds — hold tight."
+                  : "Your payment may still be processing. Refresh in a moment, or contact support if this persists. No access is granted until the payment provider's webhook is verified."}
               </p>
             </div>
           </>

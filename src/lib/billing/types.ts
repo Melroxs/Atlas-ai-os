@@ -30,9 +30,13 @@ export const INTERNAL_PLANS = {
 
 export type InternalPlan = (typeof INTERNAL_PLANS)[keyof typeof INTERNAL_PLANS];
 
-/** Billing provider identifiers. Stripe is the sole paid provider. */
+/**
+ * Billing provider identifiers. Stripe is the production provider; Paystack
+ * is added as a second provider (server-selected — never chosen client-side).
+ */
 export const BILLING_PROVIDERS = {
   STRIPE: "stripe",
+  PAYSTACK: "paystack",
 } as const;
 
 export type BillingProvider = (typeof BILLING_PROVIDERS)[keyof typeof BILLING_PROVIDERS];
@@ -211,5 +215,5 @@ export interface BillingState {
    * Which path granted effective access (display only — the authorization
    * decision comes from `tenants.billing_state` via evaluateAtlasAccess).
    */
-  accessSource: "stripe" | "complimentary" | null;
+  accessSource: "stripe" | "paystack" | "complimentary" | null;
 }

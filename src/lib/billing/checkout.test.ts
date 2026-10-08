@@ -199,7 +199,8 @@ describe("startCheckout", () => {
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe("https://project.supabase.co/functions/v1/stripe-checkout");
+    // Provider-neutral entry: the SERVER picks stripe vs paystack.
+    expect(calls[0].url).toBe("https://project.supabase.co/functions/v1/billing-checkout");
     expect((calls[0].init.headers as Record<string, string>).Authorization).toBe(
       "Bearer jwt_test",
     );
@@ -223,6 +224,53 @@ describe("startCheckout", () => {
     ]) {
       expect(body).not.toHaveProperty(forbidden);
     }
+  });
+
+  it("falls back to the original stripe-checkout entry while billing-checkout is undeployed", async () => {
+    const { impl, calls } = mockFetch((call) => {
+      if (call.url.includes("/functions/v1/billing-checkout")) {
+        return jsonResponse({ message: "Not Found" }, 404);
+      }
+      return jsonResponse({
+        data: { url: "https://checkout.stripe.com/c/pay/cs_test_789", sessionId: "cs_test_789" },
+      });
+    });
+
+    const result = await startCheckout({
+      plan: "starter",
+      interval: "month",
+      fetchImpl: impl,
+      ...BASE_INPUT,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      url: "https://checkout.stripe.com/c/pay/cs_test_789",
+      plan: "ATLAS_STARTER",
+      interval: "monthly",
+    });
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://project.supabase.co/functions/v1/billing-checkout",
+      "https://project.supabase.co/functions/v1/stripe-checkout",
+    ]);
+    // The fallback body is identical — plan + interval only, never a provider
+    // or a price (the SERVER decides those).
+    const fallbackBody = JSON.parse(String(calls[1].init.body)) as Record<string, unknown>;
+    expect(Object.keys(fallbackBody).sort()).toEqual(
+      ["companyName", "interval", "plan", "tenantId"].sort(),
+    );
+  });
+
+  it("still fails safely when neither checkout entry is deployed", async () => {
+    const { impl, calls } = mockFetch(() => jsonResponse({ message: "Not Found" }, 404));
+    const result = await startCheckout({
+      plan: "starter",
+      interval: "month",
+      fetchImpl: impl,
+      ...BASE_INPUT,
+    });
+    expect(result).toMatchObject({ ok: false, status: 404 });
+    expect(calls).toHaveLength(2);
   });
 
   it("never calls the server for an invalid plan or interval", async () => {
